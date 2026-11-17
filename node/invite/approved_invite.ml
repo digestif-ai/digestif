@@ -64,22 +64,9 @@ let roles = [ "member"; "admin" ]
 
 (* The document's exact bytes, as every admin signs them. *)
 let document a =
-  Yojson.Safe.to_string
-    (`Assoc
-       [
-         ("format", `String Approval.admission_format);
-         ("circle", `String a.circle);
-         ("created_at", `String a.created_at);
-         ( "guest",
-           `Assoc
-             [
-               ("name", `String a.guest.name); ("email", `String a.guest.email);
-             ] );
-         ("role", `String a.role);
-         ("invite_key", `String a.invite_key);
-         ("subject", `String a.subject);
-         ("body", `String a.body);
-       ])
+  Approval.admission_document ~circle:a.circle ~created_at:a.created_at
+    ~guest_name:a.guest.name ~guest_email:a.guest.email ~role:a.role
+    ~invite_key:a.invite_key ~subject:a.subject ~body:a.body
 
 let parse_document bytes =
   let str j k =
@@ -90,9 +77,9 @@ let parse_document bytes =
         | _ -> Error ("the admission has no string " ^ k))
     | _ -> Error "the admission is not an object"
   in
-  match Yojson.Safe.from_string bytes with
-  | exception Yojson.Json_error m -> Error ("the admission does not parse: " ^ m)
-  | j ->
+  match Approval.parse_json bytes with
+  | Error m -> Error ("the admission does not parse: " ^ m)
+  | Ok j ->
       let* format = str j "format" in
       let* () =
         if format = Approval.admission_format then Ok ()

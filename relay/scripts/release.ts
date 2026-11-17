@@ -3,6 +3,7 @@
 // configuration that deploys the bundle's bytes as they stand. The signatures are checked before
 // any of this by `digestif-update verify`; this reads only a manifest that already verified.
 // Shared with test/release.test.ts.
+import { parseUnique } from "../../conformance/src/strict-json.ts";
 import { parseJsonc } from "./jsonc.ts";
 
 export const RELAY_MANIFEST_FORMAT = "digestif-relay-release-v1";
@@ -44,9 +45,12 @@ export function isVersion(v: string): boolean {
   return VERSION.test(v);
 }
 
-/** The fields a deploy reads from a relay manifest, refusing one of any other format or version. */
+/**
+ * The fields a deploy reads from a relay manifest, refusing one of any other format or version, and
+ * one holding a member twice, which the signers' tools read the first of and JSON.parse the last.
+ */
 export function readManifest(text: string, want: string): RelayManifest {
-  const m = record(JSON.parse(text) as unknown, "the manifest");
+  const m = record(parseUnique(text, "the manifest"), "the manifest");
   if (m.format !== RELAY_MANIFEST_FORMAT) throw new Error(`the manifest's format is ${JSON.stringify(m.format)}, not ${RELAY_MANIFEST_FORMAT}`);
   const version = str(m.version, "version");
   if (version !== want) throw new Error(`the manifest is relay ${version}, not ${want}`);

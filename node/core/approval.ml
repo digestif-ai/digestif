@@ -164,10 +164,26 @@ let signers_document ~created_at signers =
                 signers) );
        ])
 
-let parse_json bytes =
-  match Yojson.Safe.from_string bytes with
-  | j -> Ok j
-  | exception Yojson.Json_error e -> Error ("not JSON: " ^ e)
+(* A digestif-admission-v0 (docs/protocol.md, Approvals): the invite every admin signs. Its body
+   keeps the install command and expiry lines marked (Digestif_invite.Approved_invite). *)
+let admission_document ~circle ~created_at ~guest_name ~guest_email ~role
+    ~invite_key ~subject ~body =
+  Yojson.Safe.to_string
+    (`Assoc
+       [
+         ("format", `String admission_format);
+         ("circle", `String circle);
+         ("created_at", `String created_at);
+         ( "guest",
+           `Assoc
+             [ ("name", `String guest_name); ("email", `String guest_email) ] );
+         ("role", `String role);
+         ("invite_key", `String invite_key);
+         ("subject", `String subject);
+         ("body", `String body);
+       ])
+
+let parse_json = Jcs.parse_unique
 
 let parse_signers bytes =
   let* j = parse_json bytes in

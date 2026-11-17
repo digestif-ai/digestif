@@ -5,6 +5,7 @@
 // signatures over a domain line plus those bytes. No node:crypto, so a Worker can import it.
 import { b64url, bytesOf, fromB64url, type Json } from "./encoding.ts";
 import { Signer, verifySignature } from "./keys.ts";
+import { parseUnique } from "./strict-json.ts";
 
 export const ADMISSION_DOMAIN = "DIGESTIF-ADMISSION-V0\n";
 export const SIGNERS_DOMAIN = "DIGESTIF-SIGNERS-V0\n";
@@ -21,14 +22,17 @@ function isObject(value: Json | undefined): value is { [key: string]: Json } {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** `{ document, signatures }` decoded, its document parsed as a JSON object; undefined when it is not of that shape. */
+/**
+ * `{ document, signatures }` decoded, its document parsed as a JSON object; undefined when it is not
+ * of that shape, or when the document holds a member twice (the signers were shown the first).
+ */
 export function signedDocumentOf(body: Json | undefined): SignedDocument | undefined {
   if (!isObject(body) || typeof body["document"] !== "string" || !Array.isArray(body["signatures"])) return undefined;
   let bytes: Uint8Array;
   let value: Json;
   try {
     bytes = fromB64url(body["document"]);
-    value = JSON.parse(new TextDecoder().decode(bytes)) as Json;
+    value = parseUnique(new TextDecoder().decode(bytes), "the document") as Json;
   } catch {
     return undefined;
   }

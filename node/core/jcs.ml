@@ -160,3 +160,30 @@ let encode j =
   Buffer.contents buf
 
 let encode_result j = try Ok (encode j) with Invalid m -> Error m
+
+(* The first member name some object in [j] holds twice, at any depth, compared as the decoded
+   names. A reader that keeps the first of two members (Yojson's assoc list read by List.assoc_opt)
+   and one that keeps the last (JSON.parse) read different values from the same bytes, so a signed
+   document holding one is refused before anything reads a field of it. *)
+let rec duplicate_member (j : Yojson.Safe.t) =
+  match j with
+  | `Assoc fields -> (
+      let sorted = List.sort (fun (a, _) (b, _) -> String.compare a b) fields in
+      let rec dup = function
+        | (a, _) :: ((b, _) :: _ as rest) -> if a = b then Some a else dup rest
+        | _ -> None
+      in
+      match dup sorted with
+      | Some _ as d -> d
+      | None -> List.find_map (fun (_, v) -> duplicate_member v) fields)
+  | `List l -> List.find_map duplicate_member l
+  | _ -> None
+
+(* [bytes] parsed, refused when it is not JSON or some object in it holds a member twice. *)
+let parse_unique bytes =
+  match Yojson.Safe.from_string bytes with
+  | exception Yojson.Json_error e -> Error ("not JSON: " ^ e)
+  | j -> (
+      match duplicate_member j with
+      | Some name -> Error (Printf.sprintf "it holds member %S twice" name)
+      | None -> Ok j)

@@ -83,8 +83,10 @@ let manifest_json ?(artifact = None) version =
          ("format", `String "digestif-release-v1");
          ("version", `String version);
          ("published_at", `String "2026-10-29T00:00:00.000Z");
+         ("notes", `String "");
          ("artifacts", `List [ a ]);
        ])
+  ^ "\n"
 
 let sign_all ~domain secrets bytes =
   List.fold_left
@@ -3289,14 +3291,14 @@ type relay_fake = {
   r_git : string list list ref;
 }
 
-let relay_gh ?node_draft ?draft ~signed_by () =
+let relay_gh ?node_draft ?draft ?(relay_bytes = bytes_030) ~signed_by () =
   let f = { r_calls = ref []; r_uploaded = ref None; r_git = ref [] } in
   let gh args =
     f.r_calls := !(f.r_calls) @ [ args ];
     match args with
     | [ "api"; "repos/o/r/releases?per_page=50" ] ->
         Ok (relay_listing ?node_draft ?draft ~signed_by ())
-    | [ "api"; "-H"; _; "repos/o/r/releases/assets/51" ] -> Ok bytes_030
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/51" ] -> Ok relay_bytes
     | [ "api"; "-H"; _; "repos/o/r/releases/assets/41" ] -> Ok bytes_020
     | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] ->
         Ok (manifest_json "0.2.1")
@@ -3321,9 +3323,9 @@ let relay_gh ?node_draft ?draft ~signed_by () =
   in
   (f, gh)
 
-let run_relay ?node_draft ?(signed_by = []) ?(key = mike) ?(answers = [ "s" ])
-    () =
-  let f, gh = relay_gh ?node_draft ~signed_by () in
+let run_relay ?node_draft ?relay_bytes ?(signed_by = []) ?(key = mike)
+    ?(answers = [ "s" ]) () =
+  let f, gh = relay_gh ?node_draft ?relay_bytes ~signed_by () in
   let said = Buffer.create 1024 in
   let published = ref [] in
   let answers = ref answers in
@@ -3386,6 +3388,54 @@ let run_relay ?node_draft ?(signed_by = []) ?(key = mike) ?(answers = [ "s" ])
       ~tmp:(temp_dir ()) ~relay ~timer:Timing.none ~listed:(listing gh)
   in
   (f, result, Buffer.contents said, !published)
+
+(* A document with a member twice reads one way to OCaml (the first) and another to JSON.parse (the
+   last), so [extra] is spliced in as the object's last member, after the one it repeats. *)
+let with_last_member extra bytes =
+  let close = String.rindex bytes '}' in
+  String.sub bytes 0 close ^ ",\n  " ^ extra ^ "\n}\n"
+
+let expect_refused ~sub result =
+  match result with
+  | Ok () -> Alcotest.fail "a document not in its canonical form was signed"
+  | Error e ->
+      Alcotest.(check bool)
+        ("refuses with " ^ sub ^ ": " ^ e)
+        true (contains ~sub e)
+
+let test_sign_next_refuses_duplicate_member () =
+  let other =
+    Printf.sprintf
+      {|"artifacts": [ { "platform": %S, "url": "artifacts/evil", "sha256": "sha256:%s", "size": 1 } ]|}
+      platform (String.make 64 'a')
+  in
+  let f, result, _ =
+    run_next ~manifest:(with_last_member other (manifest_json "0.2.1")) "s"
+  in
+  expect_refused ~sub:"\"artifacts\" twice" result;
+  Alcotest.(check int) "the key is never read" 0 !(f.keys_read);
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None)
+
+let test_sign_next_refuses_non_canonical () =
+  (* The same manifest, one space short of what the manifest command writes. *)
+  let bytes = manifest_json "0.2.1" in
+  let bytes = String.sub bytes 0 (String.length bytes - 1) in
+  let f, result, _ = run_next ~manifest:bytes "s" in
+  expect_refused ~sub:"not in its canonical form" result;
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None)
+
+let test_sign_relay_refuses_duplicate_bundle () =
+  let other =
+    Printf.sprintf
+      {|"bundle": { "url": "https://evil.example/bundle.tar.gz", "sha256": "sha256:%s", "size": 1 }|}
+      (String.make 64 'b')
+  in
+  let f, result, _, published =
+    run_relay ~relay_bytes:(with_last_member other bytes_030) ()
+  in
+  expect_refused ~sub:"\"bundle\" twice" result;
+  Alcotest.(check bool) "nothing uploaded" true (!(f.r_uploaded) = None);
+  Alcotest.(check int) "nothing published" 0 (List.length published)
 
 let test_sign_relay_shows () =
   let f, result, said, _ = run_relay ~answers:[ "" ] () in
@@ -5131,6 +5181,91 @@ let test_approve_refuses_a_document_not_its_kind () =
     (contains ~sub:"not the promotion" e);
   Alcotest.(check int) "nothing posted" 0 (List.length !posts)
 
+let test_approve_refuses_duplicate_admission_member () =
+  let doc = with_last_member {|"invite_key":"ed25519:other"|} admission_bytes in
+  let a =
+    ap_approval ~id:"sha256:inv" ~kind:"invite" ~document:doc
+      ~waiting:[ "Roman" ]
+      ~rows:[ (Keys.public mike, true); (Keys.public roman, false) ]
+      ()
+  in
+  let api, posts = fake_node [ a ] in
+  let say, _ = said () in
+  let e =
+    expect_error "a second invite_key"
+      (Approve.sign ~api ~secret:roman ~ask:(fun _ -> "y") ~say "sha256:inv")
+  in
+  Alcotest.(check bool)
+    ("names the member: " ^ e) true
+    (contains ~sub:"\"invite_key\" twice" e);
+  Alcotest.(check int) "nothing posted" 0 (List.length !posts)
+
+let test_approve_refuses_non_canonical_admission () =
+  (* Every member once, but not in the order the node renders them. *)
+  let doc =
+    match Yojson.Safe.from_string admission_bytes with
+    | `Assoc fields -> Yojson.Safe.to_string (`Assoc (List.rev fields))
+    | _ -> Alcotest.fail "admission_bytes is an object"
+  in
+  let a =
+    ap_approval ~id:"sha256:inv" ~kind:"invite" ~document:doc
+      ~waiting:[ "Roman" ]
+      ~rows:[ (Keys.public mike, true); (Keys.public roman, false) ]
+      ()
+  in
+  let api, posts = fake_node [ a ] in
+  let say, _ = said () in
+  let e =
+    expect_error "reordered"
+      (Approve.sign ~api ~secret:roman ~ask:(fun _ -> "y") ~say "sha256:inv")
+  in
+  Alcotest.(check bool)
+    ("says so: " ^ e) true
+    (contains ~sub:"not in its canonical form" e);
+  Alcotest.(check int) "nothing posted" 0 (List.length !posts)
+
+let test_approve_refuses_duplicate_signers_member () =
+  let doc = set_doc [ ("Mike", mike); ("Roman", roman); ("Carol", carol) ] in
+  let other =
+    Printf.sprintf
+      {|"signers": [ { "name": "Mike", "key": %S }, { "name": "Mallory", "key": %S } ]|}
+      (Keys.public mike) (Keys.public mallory)
+  in
+  let a =
+    ap_approval ~id:"sha256:p" ~kind:"promotion" ~member:"Carol"
+      ~document:(with_last_member other doc)
+      ~added:(Keys.public carol) ~waiting:[ "Roman" ]
+      ~rows:
+        [
+          (Keys.public mike, true);
+          (Keys.public roman, false);
+          (Keys.public carol, true);
+        ]
+      ()
+  in
+  let api, posts = fake_node [ a ] in
+  let say, _ = said () in
+  let e =
+    expect_error "a second signers"
+      (Approve.sign ~api ~secret:roman ~ask:(fun _ -> "y") ~say "sha256:p")
+  in
+  Alcotest.(check bool)
+    ("names the member: " ^ e) true
+    (contains ~sub:"\"signers\" twice" e);
+  Alcotest.(check int) "nothing posted" 0 (List.length !posts)
+
+let test_approve_accepts_compact_signers () =
+  (* A removal's document is the node's compact rendering (Approval.signers_document). *)
+  let doc =
+    Approval.signers_document ~created_at:"2026-11-14T15:00:00.000Z"
+      (List.map
+         (fun (n, k) -> { Approval.name = n; key = Keys.public k })
+         [ ("Mike", mike); ("Roman", roman) ])
+  in
+  match Approve.canonical_signers doc with
+  | Ok l -> Alcotest.(check int) "two signers" 2 (List.length l)
+  | Error e -> Alcotest.fail e
+
 let test_approve_replacement_first_signature () =
   let a =
     ap_approval ~id:"sha256:r" ~kind:"replacement" ~member:"Roman"
@@ -5406,6 +5541,8 @@ let () =
             test_out_of_date_skips_recalled;
           t "outsider key" test_sign_next_outsider_key;
           t "wrong version" test_sign_next_wrong_version;
+          t "a member twice" test_sign_next_refuses_duplicate_member;
+          t "not canonical" test_sign_next_refuses_non_canonical;
           t "shows who signed" test_sign_next_shows_who_signed;
           t "waiting" test_sign_next_waiting;
           t "offered" test_sign_next_offered;
@@ -5416,6 +5553,7 @@ let () =
             test_sign_relay_offers_newest_and_completable;
           t "commit titles from the tool's clone" test_titles_from_clone;
           t "relay: shows" test_sign_relay_shows;
+          t "relay: a bundle twice" test_sign_relay_refuses_duplicate_bundle;
           t "relay: signs and waits" test_sign_relay_signs_and_waits;
           t "relay: completes and publishes"
             test_sign_relay_completes_and_publishes;
@@ -5489,6 +5627,14 @@ let () =
             test_approve_promotion_admin_signs_completed;
           t "a document not its kind"
             test_approve_refuses_a_document_not_its_kind;
+          t "an admission member twice"
+            test_approve_refuses_duplicate_admission_member;
+          t "an admission not canonical"
+            test_approve_refuses_non_canonical_admission;
+          t "a signers member twice"
+            test_approve_refuses_duplicate_signers_member;
+          t "a removal's compact signer set"
+            test_approve_accepts_compact_signers;
           t "a replacement's first signature"
             test_approve_replacement_first_signature;
           t "lists what waits on this key"

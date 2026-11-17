@@ -574,6 +574,11 @@ let node_manifest (release : draft) bytes =
       (fun e -> release.tag ^ "'s manifest.json: " ^ e)
       (Release.manifest_of_string bytes)
   in
+  let* manifest =
+    Release.canonical
+      (release.tag ^ "'s manifest.json")
+      ~render:Release.manifest_to_string bytes manifest
+  in
   if Version.equal manifest.version release.version then Ok (bytes, manifest)
   else
     Error
@@ -744,6 +749,11 @@ let relay_manifest_of (release : draft) bytes =
     Result.map_error
       (fun e -> release.tag ^ "'s manifest.json: " ^ e)
       (Release.relay_manifest_of_string bytes)
+  in
+  let* m =
+    Release.canonical
+      (release.tag ^ "'s manifest.json")
+      ~render:Release.relay_manifest_to_string bytes m
   in
   Ok (bytes, m)
 

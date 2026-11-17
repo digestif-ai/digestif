@@ -100,11 +100,16 @@ let all f l =
       Ok (y :: acc))
     l (Ok [])
 
+(* Every document here is read by OCaml, which keeps the first of two members of one name, and by
+   JavaScript, which keeps the last, so an object holding a member twice is refused (Jcs). *)
 let parse_json what bytes =
   match Yojson.Safe.from_string bytes with
-  | json -> Ok json
   | exception Yojson.Json_error e ->
       Error (Printf.sprintf "%s is not JSON: %s" what e)
+  | json -> (
+      match Jcs.duplicate_member json with
+      | Some name -> Error (Printf.sprintf "%s holds member %S twice" what name)
+      | None -> Ok json)
 
 let expect_format want json =
   let* got = string_field "format" json in
@@ -307,6 +312,43 @@ let relay_manifest_to_string m =
          ("compatible_with", `String (Version.to_string m.compatible_with));
        ])
   ^ "\n"
+
+(* A node release manifest's bytes, as `digestif-update manifest` writes it; nobody edits it after,
+   since every signature is over these bytes. *)
+let manifest_to_string m =
+  Yojson.Safe.pretty_to_string
+    (`Assoc
+       [
+         ("format", `String manifest_format);
+         ("version", `String (Version.to_string m.version));
+         ("published_at", `String m.published_at);
+         ("notes", `String m.notes);
+         ( "artifacts",
+           `List
+             (List.map
+                (fun a ->
+                  `Assoc
+                    [
+                      ("platform", `String a.platform);
+                      ("url", `String a.url);
+                      ("sha256", `String a.sha256);
+                      ("size", `Int a.size);
+                    ])
+                m.artifacts) );
+       ])
+  ^ "\n"
+
+(* A document is signed only in its one canonical form: the bytes its renderer writes for what they
+   parse to. Any other bytes (a member twice, a member no reader knows, a reordering) could read
+   one way to the signer and another way to a different reader, so they are refused. *)
+let canonical what ~render bytes doc =
+  if String.equal bytes (render doc) then Ok doc
+  else
+    Error
+      (Printf.sprintf
+         "%s is not in its canonical form (the bytes differ from the rendering \
+          of what they parse to); refusing to sign it"
+         what)
 
 (* Which document [bytes] is, read from its format field alone. *)
 type document_kind = Node_release | Relay_release | Other of string
