@@ -399,6 +399,13 @@ release_state() {
   echo "$s"
 }
 
+# The identity the channel branch's commits carry: the release's own, never the git config of the
+# machine running it. A runner with no identity configured has git refuse the commit ("unable to
+# auto-detect email address"), and a person's identity would credit them with bookkeeping they did not
+# write. The .invalid domain is one nobody can register, so no account is ever credited. An identity
+# the caller puts in the environment (GIT_AUTHOR_*, GIT_COMMITTER_*) still wins over this. ISS-102360
+release_identity=(-c "user.name=Digestif release" -c "user.email=release@digestif.invalid")
+
 # The commit origin's channel branch is at, made with an empty index.json when it does not exist.
 channel_head() {
   if git -C "$root" fetch --quiet --force origin \
@@ -415,7 +422,7 @@ channel_head() {
     '`docs/releases.md` on main, The channel.' | git -C "$root" hash-object -w --stdin)"
   tree="$(printf '100644 blob %s\tREADME.md\n100644 blob %s\tindex.json\n' "$readme" "$index" |
     git -C "$root" mktree)"
-  commit="$(git -C "$root" commit-tree "$tree" -m "The release channel")"
+  commit="$(git "${release_identity[@]}" -C "$root" commit-tree "$tree" -m "The release channel")"
   if git -C "$root" push --quiet origin "$commit:refs/heads/$channel_branch" 2>/dev/null; then
     echo "release.sh: made the $channel_branch branch" >&2
     echo "$commit"
@@ -444,7 +451,7 @@ channel_commit() {
       echo "release.sh: the $channel_branch branch already holds it" >&2
       return
     fi
-    git -C "$wt" commit --quiet -m "$message"
+    git "${release_identity[@]}" -C "$wt" commit --quiet -m "$message"
     if git -C "$wt" push --quiet origin "HEAD:refs/heads/$channel_branch"; then
       echo "release.sh: $message on $channel_branch at $(git -C "$wt" rev-parse HEAD)" >&2
       return
