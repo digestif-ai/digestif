@@ -227,6 +227,14 @@ let own_key_name t author =
       if Log.get_config t.log config = Some author then Some name else None)
     [ (k_device, "device"); (k_mail, "mail") ]
 
+(* The signing key of the own key whose public half is [author]: a relay takes an envelope only with
+   its author as the request signer (relay/src/append.ts), so a mail key's envelope goes out signed
+   by the mail key, never by the device. *)
+let own_signing_key t author =
+  match own_key_name t author with
+  | None -> Error ("not an own key: " ^ author)
+  | Some name -> need name (Keystore.get_signing_key t.keystore name)
+
 (* [body] with every string naming a key of [moved] replaced by what it maps to: a later envelope
    that names an earlier one re-signed beside it (a reply, a retract) names the new hash. *)
 let rec remap_hashes moved (j : Yojson.Safe.t) : Yojson.Safe.t =
@@ -291,43 +299,37 @@ let drop_refused t (row : Log.row) =
   else if List.exists (fun (r : Log.row) -> r.signed.body = None) later then
     Error "a later envelope of its chain has no body to re-sign"
   else
-    match own_key_name t author with
-    | None -> Error ("not an own key: " ^ author)
-    | Some name ->
-        let* key = need name (Keystore.get_signing_key t.keystore name) in
-        let prev =
-          if e.seq <= 1 then None
-          else
-            match Log.by_author_seq t.log ~author ~seq:(e.seq - 1) with
-            | [ r ] -> Some r.hash
-            | _ -> e.prev
+    let* key = own_signing_key t author in
+    let prev =
+      if e.seq <= 1 then None
+      else
+        match Log.by_author_seq t.log ~author ~seq:(e.seq - 1) with
+        | [ r ] -> Some r.hash
+        | _ -> e.prev
+    in
+    Log.transaction t.log (fun () ->
+        Log.delete t.log row.hash;
+        let _, _, moved =
+          List.fold_left
+            (fun (seq, prev, moved) (r : Log.row) ->
+              match resign_check t ~moved r with
+              | Drop after ->
+                  Log.delete t.log r.hash;
+                  after ();
+                  (seq, prev, moved)
+              | Resign ->
+                  let old = r.signed.envelope in
+                  let body = remap_hashes moved (Option.get r.signed.body) in
+                  let sg =
+                    Envelope.create ~key ~seq ?prev ~created_at:old.created_at
+                      ~epoch:old.epoch ~kind:old.kind body
+                  in
+                  let hash = Envelope.hash sg.envelope in
+                  Log.rewrite t.log ~old_hash:r.hash ~hash sg;
+                  (seq + 1, Some hash, (r.hash, hash) :: moved))
+            (e.seq, prev, []) later
         in
-        Log.transaction t.log (fun () ->
-            Log.delete t.log row.hash;
-            let _, _, moved =
-              List.fold_left
-                (fun (seq, prev, moved) (r : Log.row) ->
-                  match resign_check t ~moved r with
-                  | Drop after ->
-                      Log.delete t.log r.hash;
-                      after ();
-                      (seq, prev, moved)
-                  | Resign ->
-                      let old = r.signed.envelope in
-                      let body =
-                        remap_hashes moved (Option.get r.signed.body)
-                      in
-                      let sg =
-                        Envelope.create ~key ~seq ?prev
-                          ~created_at:old.created_at ~epoch:old.epoch
-                          ~kind:old.kind body
-                      in
-                      let hash = Envelope.hash sg.envelope in
-                      Log.rewrite t.log ~old_hash:r.hash ~hash sg;
-                      (seq + 1, Some hash, (r.hash, hash) :: moved))
-                (e.seq, prev, []) later
-            in
-            Ok (List.length moved))
+        Ok (List.length moved))
 
 (* The device message this node signed for [key] in [role] and no relay holds yet: the one a repeat
    of digestif device publish resumes rather than signing a second. *)
