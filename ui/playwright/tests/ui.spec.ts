@@ -128,7 +128,7 @@ test.describe('after first run', () => {
     const list = page.getByRole('list', { name: 'Messages' });
     await expect(list.getByTestId('feed-status-note').filter({ hasText: 'No note from Ben' })).toHaveCount(0);
     const note = list.getByTestId('feed-row').filter({ hasText: 'retry queue' });
-    await expect(note.getByTestId('thread-count')).toHaveText('2');
+    await expect(note.getByTestId('thread-count')).toHaveText('2 messages');
     // Cy's could-not-run line is about no note, and stays a line of its own.
     await expect(list.getByTestId('feed-status-note').filter({ hasText: 'No note from Cy' })).toHaveCount(1);
     await note.click();

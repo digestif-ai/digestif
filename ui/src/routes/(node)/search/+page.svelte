@@ -1,7 +1,9 @@
 <script lang="ts">
   import Empty from '#lib/components/Empty.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
+  import Marked from '#lib/components/Marked.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
+  import { searchWords } from '#lib/highlight.ts';
   import type { PageData } from './$types';
 
   interface Props {
@@ -10,6 +12,7 @@
 
   let { data }: Props = $props();
   const asked = $derived(data.q.trim() !== '');
+  const words = $derived(searchWords(data.q));
 </script>
 
 <PageHeader title={asked ? 'Search: ' + data.q.trim() : 'Search'} />
@@ -32,7 +35,10 @@
           {#each group.hits as hit (hit.href)}
             <li>
               <a class="block min-h-11 px-4 py-3 hover:bg-stone-50 dark:hover:bg-stone-900" href={hit.href} data-testid="search-hit">
-                <span class="block text-sm break-words">{hit.title}</span>
+                <span class="block text-sm break-words"><Marked text={hit.title} {words} /></span>
+                {#if hit.excerpt}<span class="block text-xs break-words text-stone-700 dark:text-stone-300" data-testid="search-excerpt"
+                    ><Marked text={hit.excerpt} {words} /></span
+                  >{/if}
                 {#if hit.detail}<span class="dg-muted block text-xs break-words">{hit.detail}</span>{/if}
               </a>
             </li>

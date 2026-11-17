@@ -1,6 +1,8 @@
 <script lang="ts">
-  // The node's version under the name in the header (DIG-523). A node that sends none, an older
-  // one or a failed status call, shows nothing and the header keeps its layout.
+  import { href } from '../href.ts';
+
+  // The node's version at the right of the footer (DIG-523, DIG-128), the link to what each release
+  // changed. A node that sends none, an older one or a failed status call, shows nothing.
   interface Props {
     version?: string | undefined;
   }
@@ -9,5 +11,5 @@
 </script>
 
 {#if version !== undefined && version !== ''}
-  <span class="dg-muted text-xs leading-none" data-testid="node-version">{version}</span>
+  <a class="dg-muted text-xs hover:underline" href={href.changelog()} title="What's new" data-testid="node-version">{version}</a>
 {/if}

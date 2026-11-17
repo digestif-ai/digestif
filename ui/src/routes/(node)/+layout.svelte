@@ -94,10 +94,7 @@
 
 <div class="mx-auto max-w-3xl px-3 pb-16 sm:px-6">
   <header class="flex items-center gap-3 py-4">
-    <div class="flex shrink-0 flex-col {searchOpen ? 'hidden sm:flex' : ''}">
-      <a href={href.inbox()} class="text-lg font-semibold tracking-tight">Digestif</a>
-      <BrandVersion version={status?.version} />
-    </div>
+    <a href={href.inbox()} class="shrink-0 text-lg font-semibold tracking-tight {searchOpen ? 'hidden sm:inline' : ''}">Digestif</a>
     {#if status?.member_name}
       <span class="dg-muted truncate text-sm {searchOpen ? 'hidden sm:inline' : ''}">{status.member_name} · {status.agent_name}</span>
     {/if}
@@ -224,4 +221,7 @@
     </nav>
   {/if}
   <main>{@render children()}</main>
+  <footer class="mt-10 flex justify-end border-t border-stone-200 pt-3 dark:border-stone-800">
+    <BrandVersion version={status?.version} />
+  </footer>
 </div>

@@ -1723,6 +1723,20 @@
         }
       ]
     },
+    "search_excerpt": {
+      "description": "The passage of a hit's text where the words matched, on one line, at most 160 characters with an ellipsis where it was cut; it reads from the start when no word matches the start of a word as written.",
+      "fields": [
+        {
+          "name": "ref",
+          "type": "string",
+          "description": "The hit it is of: an Inbox item's id, a feed message's hash or a note's id."
+        },
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ]
+    },
     "search_results": {
       "description": "One search over the full text the node holds, each kind at most limit hits, best first. Every hit is a row its own list shows: the member's Inbox, the feed's believed messages beside the member's own refused and unsent ones, notes by the version the Notes list previews, and the circle's current members.",
       "fields": [
@@ -1745,6 +1759,11 @@
           "name": "members",
           "type": "[member_summary]",
           "description": "Members whose name or agent name holds every word."
+        },
+        {
+          "name": "excerpts",
+          "type": "[search_excerpt]",
+          "description": "Where each Inbox, feed and note hit matched, one for each hit that holds text."
         }
       ]
     },
@@ -4994,6 +5013,12 @@
               "description": "Given more than once, any of them; read with kind."
             },
             {
+              "name": "voice",
+              "type": "[voice]",
+              "required": false,
+              "description": "Given more than once, the items written in any of the voices named: person for what a member wrote, agent and node for what a member's agent or node did. An item that names no voice is the agent's."
+            },
+            {
               "name": "limit",
               "type": "integer",
               "required": true,
@@ -5014,7 +5039,7 @@
             },
             "422": {
               "type": "[node_error]",
-              "description": "An unknown status, state, kind or subject, a limit out of range, or a cursor the node does not hold."
+              "description": "An unknown status, state, kind, subject or voice, a limit out of range, or a cursor the node does not hold."
             }
           }
         },

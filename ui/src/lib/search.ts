@@ -1,5 +1,6 @@
-import type { FeedItem, ItemSummary, MemberSummary, NoteSummary } from '#generated/ai-digestif-digestif-node.ts';
+import type { FeedItem, ItemSummary, MemberSummary, NoteSummary, SearchExcerpt } from '#generated/ai-digestif-digestif-node.ts';
 import { createClient, isApiError, type Client } from '#lib/api/client.ts';
+import { withSearch } from './highlight.ts';
 import { href } from './href.ts';
 import { feedThreads, itemThreads, type Thread } from './threads.ts';
 
@@ -14,6 +15,8 @@ export interface SearchHit {
   title: string;
   /** One muted line under the title: who it is from, or what the page holds. */
   detail?: string | undefined;
+  /** Where the words matched (DIG-128), the node's passage of the hit's text; the page marks the words in it. */
+  excerpt?: string | undefined;
   href: string;
 }
 
@@ -98,33 +101,46 @@ function threadHits<T>(threads: Thread<T>[], hitOf: (row: T, thread: Thread<T>) 
   return threads.map((t) => hitOf(t.shown, t));
 }
 
-// The node's hits, each already a match, as rows of the result page.
+// The node's hits, each already a match, as rows of the result page. Each carries its excerpt, where
+// the words matched, by the id it links with (DIG-128).
 
-export function itemHits(items: ItemSummary[]): SearchHit[] {
+type Excerpts = Map<string, string>;
+
+export function itemHits(items: ItemSummary[], excerpts: Excerpts = new Map()): SearchHit[] {
   return threadHits(itemThreads(items), (i, t) => ({
     kind: 'inbox',
     title: i.title,
     detail: 'From ' + i.author.name,
+    excerpt: excerpts.get(i.id),
     href: t.rows.length > 1 ? href.itemThread(t.key) : href.item(i.id)
   }));
 }
 
-export function feedHits(feed: FeedItem[]): SearchHit[] {
+export function feedHits(feed: FeedItem[], excerpts: Excerpts = new Map()): SearchHit[] {
   return threadHits(feedThreads(feed), (f, t) => ({
     kind: 'feed',
     title: f.preview,
     detail: 'From ' + f.author.name,
+    excerpt: excerpts.get(f.hash),
     href: t.rows.length > 1 ? href.feedThread(t.key) : href.message(f.hash)
   }));
 }
 
-export function noteHits(notes: NoteSummary[]): SearchHit[] {
-  return notes.map((n) => ({ kind: 'notes', title: n.preview ?? '', href: href.note(n.id) }));
+export function noteHits(notes: NoteSummary[], excerpts: Excerpts = new Map()): SearchHit[] {
+  return notes.map((n) => ({ kind: 'notes', title: n.preview ?? '', excerpt: excerpts.get(n.id), href: href.note(n.id) }));
 }
 
 export function memberHits(members: MemberSummary[]): SearchHit[] {
   return members.map((m) => ({ kind: 'members', title: m.name, detail: m.agent_name, href: href.member(m.identity) }));
 }
+
+/** The excerpts by the id each is of; an older node sends none. */
+const excerptsOf = (list: SearchExcerpt[] | undefined): Excerpts => new Map((list ?? []).map((e) => [e.ref, e.text]));
+
+/** A node hit opens with the search, so its page marks the words too (DIG-128); a settings page holds none of them. */
+const opened =
+  (query: string) =>
+  (hit: SearchHit): SearchHit => ({ ...hit, href: withSearch(hit.href, query) });
 
 /** [hits] in groups, in the order of SEARCH_KINDS, a kind with no hit left out. */
 export function groupHits(hits: SearchHit[]): SearchGroup[] {
@@ -146,7 +162,7 @@ export async function runSearch(query: string, client: Client = createClient()):
   const settings = settingsHits(query);
   if (isApiError(answer)) return { groups: groupHits(settings), failed: answer.errors.map((e) => e.message).join(' ') };
   const r = answer.data;
-  return {
-    groups: groupHits([...itemHits(r.inbox), ...feedHits(r.feed), ...noteHits(r.notes), ...memberHits(r.members), ...settings])
-  };
+  const excerpts = excerptsOf(r.excerpts);
+  const found = [...itemHits(r.inbox, excerpts), ...feedHits(r.feed, excerpts), ...noteHits(r.notes, excerpts)].map(opened(query));
+  return { groups: groupHits([...found, ...memberHits(r.members), ...settings]) };
 }

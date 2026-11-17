@@ -1454,6 +1454,15 @@ export interface RulesForm {
 }
 
 /**
+ * The passage of a hit's text where the words matched, on one line, at most 160 characters with an ellipsis where it was cut; it reads from the start when no word matches the start of a word as written.
+ */
+export interface SearchExcerpt {
+  /** The hit it is of: an Inbox item's id, a feed message's hash or a note's id. */
+  ref: string;
+  text: string;
+}
+
+/**
  * One search over the full text the node holds, each kind at most limit hits, best first. Every hit is a row its own list shows: the member's Inbox, the feed's believed messages beside the member's own refused and unsent ones, notes by the version the Notes list previews, and the circle's current members.
  */
 export interface SearchResults {
@@ -1465,6 +1474,8 @@ export interface SearchResults {
   notes: NoteSummary[];
   /** Members whose name or agent name holds every word. */
   members: MemberSummary[];
+  /** Where each Inbox, feed and note hit matched, one for each hit that holds text. */
+  excerpts: SearchExcerpt[];
 }
 
 /**
@@ -1847,6 +1858,7 @@ export interface GetItemsOptions {
   state?: ItemState[];
   kind?: ItemKind[];
   subject?: ItemSubject[];
+  voice?: Voice[];
   cursor?: string;
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -3167,6 +3179,9 @@ export class ApiClient {
       }
       if (options?.subject !== undefined && options?.subject !== null) {
         options?.subject.forEach((value) => queryParts.push(`subject=${encodeURIComponent(String(value))}`));
+      }
+      if (options?.voice !== undefined && options?.voice !== null) {
+        options?.voice.forEach((value) => queryParts.push(`voice=${encodeURIComponent(String(value))}`));
       }
       queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
       if (options?.cursor !== undefined && options?.cursor !== null) {

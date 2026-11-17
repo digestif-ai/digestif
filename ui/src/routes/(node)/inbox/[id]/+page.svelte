@@ -298,7 +298,10 @@
   </form>
 {:else if item.detail !== '' || item.closed || (item.about && !item.source) || item.deadline_at || item.link}
   <article class="dg-card p-4">
-    {#if item.detail !== ''}<p class="text-sm break-words whitespace-pre-wrap" data-testid="item-detail">
+    {#if item.detail !== ''}<p
+        class="text-sm break-words whitespace-pre-wrap {item.voice === Voice.Person ? '' : 'dg-agent'}"
+        data-testid="item-detail"
+      >
         <ReviewText review={item.detail} />
       </p>{/if}
     {#if item.closed || (item.about && !item.source) || item.deadline_at || item.link}
@@ -372,7 +375,7 @@
           <span>{relativeTime(a.created_at)}</span>
           {#if unblocked?.hash === a.hash}<span>· unblocked it</span>{/if}
         </p>
-        <p class="text-sm break-words whitespace-pre-wrap"><ReviewText review={a.text} /></p>
+        <p class="text-sm break-words whitespace-pre-wrap {who.agent ? 'dg-agent' : ''}"><ReviewText review={a.text} /></p>
         {#if mode === 'name' && unblocked?.hash !== a.hash}
           <div class="mt-2">
             <Button

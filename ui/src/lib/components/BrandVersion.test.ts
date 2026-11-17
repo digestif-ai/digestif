@@ -4,11 +4,15 @@ import BrandVersion from './BrandVersion.svelte';
 
 const html = (version?: string): string => render(BrandVersion, { props: { version } }).body;
 
-describe('the header version (DIG-523)', () => {
+describe('the footer version (DIG-523, DIG-128)', () => {
   it('shows the version the status carries', () => {
     const out = html('1.2.3');
     expect(out).toContain('data-testid="node-version"');
     expect(out).toContain('1.2.3');
+  });
+
+  it('opens what each release changed', () => {
+    expect(html('1.2.3')).toContain('href="/changelog"');
   });
 
   it('shows nothing when the status has none', () => {

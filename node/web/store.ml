@@ -3179,12 +3179,13 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       List.map Log.s kinds @ List.map Log.s subjects )
 
   (* One page of the Inbox: Draft and New first, then the newest, in any of [status], of [kind],
-     named by [kinds] and [subjects] (named_condition) and in any of [state] when they are given,
-     starting after the item [after] when it is given. [inbox] names the member whose Inbox it is,
+     named by [kinds] and [subjects] (named_condition), in any of [state] and written in any of
+     [voices] when they are given, starting after the item [after] when it is given. An item with
+     no voice reads as the agent's, as [Item.voice_of] reads one (DIG-128). [inbox] names the member whose Inbox it is,
      leaving out what [in_inbox] leaves out but for the state Waiting on others; without it every
      item is read, and [state] reads by status alone. *)
   let page (log : Log.t) ~now ?inbox ?status ?kind ?kinds ?subjects ?state
-      ?after ~limit () =
+      ?voices ?after ~limit () =
     let in_any l = String.concat " OR " (List.map fst l) in
     let inbox_condition =
       match (inbox, state) with
@@ -3229,6 +3230,13 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
             status;
           Option.map (fun k -> ("kind = ?", [ Log.s k ])) kind;
           named;
+          Option.map
+            (fun l ->
+              ( "COALESCE(r.voice, 'agent') IN ("
+                ^ String.concat ", " (List.map (fun _ -> "?") l)
+                ^ ")",
+                List.map Log.s l ))
+            voices;
           Option.map
             (fun id ->
               ( "EXISTS (SELECT 1 FROM r c WHERE c.id = ? AND (r.rank > c.rank \

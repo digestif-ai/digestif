@@ -330,3 +330,6 @@ export const roundResult = (r: RoundResult | undefined): string => (r === undefi
 
 const PICK: Record<PromptPick, string> = { current: 'the current version', suggested: 'the suggested version' };
 export const promptPick = (p: PromptPick): string => PICK[p];
+
+/** "1 reply", "2 replies": a count with what it counts, never a bare number (DIG-128). */
+export const countLabel = (n: number, one: string, many: string): string => String(n) + ' ' + (n === 1 ? one : many);

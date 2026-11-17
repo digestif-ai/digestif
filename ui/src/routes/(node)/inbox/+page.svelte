@@ -6,7 +6,7 @@
   import MoreButton from '#lib/components/MoreButton.svelte';
   import { href } from '#lib/href.ts';
   import { INBOX_PAGE, readInbox } from '#lib/inbox.ts';
-  import { INBOX_VIEWS, ITEM_KINDS, isUnread, toggledKind } from '#lib/items.ts';
+  import { INBOX_FROM, INBOX_VIEWS, isUnread } from '#lib/items.ts';
   import { More } from '#lib/more.svelte.ts';
   import { itemThreads } from '#lib/threads.ts';
   import type { PageData } from './$types';
@@ -16,9 +16,9 @@
   // (ISS-64736), and what they archived leaves it until new activity brings it back. The row opens the
   // item, where everything done to it is done. Items about one message are one thread, shown once as its
   // newest unread item, else its latest; a thread of several opens on all of them (ISS-85464). The
-  // Filters menu picks a view (the Inbox, Waiting on you, Waiting on others, Archived) and kinds
-  // (DIG-476), which the node applies (ISS-86956); threads are formed from the items that pass, 25 at a
-  // time, and More's rows join the threads above.
+  // Filters menu picks a view (the Inbox, Waiting on you, Waiting on others, Archived) (DIG-476) and
+  // whose words, From people or From agents (DIG-128), which the node applies (ISS-86956); threads are
+  // formed from the items that pass, 25 at a time, and More's rows join the threads above.
   interface Props {
     data: PageData;
   }
@@ -29,12 +29,12 @@
     new More(
       data.items,
       (x) => x.id,
-      (page) => readInbox(client, { state: data.state, kinds: data.kinds }, page),
+      (page) => readInbox(client, { state: data.state, from: data.from }, page),
       INBOX_PAGE
     )
   );
   const threads = $derived(itemThreads(items.rows));
-  const view = $derived({ state: data.state, kinds: data.kinds });
+  const view = $derived({ state: data.state, from: data.from });
   const stateLinks = $derived(
     INBOX_VIEWS.map((x) => ({
       label: x.label,
@@ -42,10 +42,15 @@
       href: href.inbox({ ...view, state: x.state })
     }))
   );
-  const kindLinks = $derived(
-    ITEM_KINDS.map((k) => ({ label: k, on: data.kinds.includes(k), href: href.inbox({ ...view, kinds: toggledKind(data.kinds, k) }) }))
+  // Picking the From that is on turns it off: everyone's words again.
+  const fromLinks = $derived(
+    INBOX_FROM.map((f) => ({
+      label: f.label,
+      on: data.from === f.from,
+      href: href.inbox({ ...view, from: data.from === f.from ? undefined : f.from })
+    }))
   );
-  const filtered = $derived(data.kinds.length > 0 || data.state !== undefined);
+  const filtered = $derived(data.from !== undefined || data.state !== undefined);
   const viewLabel = $derived(INBOX_VIEWS.find((x) => x.state === data.state)?.label ?? 'Inbox');
 </script>
 
@@ -71,9 +76,9 @@
         <p class="dg-muted px-4 pt-2 text-xs font-medium">View</p>
         {#each stateLinks as link (link.label)}{@render check(link)}{/each}
       </nav>
-      <nav aria-label="Filter by kind" class="border-t border-stone-200 dark:border-stone-800">
-        <p class="dg-muted px-4 pt-2 text-xs font-medium">Kind</p>
-        {#each kindLinks as link (link.label)}{@render check(link)}{/each}
+      <nav aria-label="Filter by who wrote it" class="border-t border-stone-200 dark:border-stone-800">
+        <p class="dg-muted px-4 pt-2 text-xs font-medium">From</p>
+        {#each fromLinks as link (link.label)}{@render check(link)}{/each}
       </nav>
     </div>
   </details>

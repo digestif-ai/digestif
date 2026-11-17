@@ -1012,12 +1012,21 @@ export class MockNode {
           ...(text === undefined ? {} : { preview: previewLine(text) })
         };
       });
+    const items = this.items.search(has, limit);
+    const messages = newest([...s.messages, ...this.notesInFeed()].filter((m) => has(m.text))).slice(0, limit);
+    const noteTexts = s.notes.filter((n) => notes.some((x) => x.id === n.id));
     return ok({
-      inbox: this.items.search(has, limit),
-      feed: newest([...s.messages, ...this.notesInFeed()].filter((m) => has(m.text)))
-        .slice(0, limit)
-        .map(item),
+      inbox: items.map((x) => x.summary),
+      feed: messages.map(item),
       notes,
+      excerpts: [
+        ...items.map((x) => ({ ref: x.summary.id, text: excerpt(words, x.text) })),
+        ...messages.flatMap((m) => (m.text === undefined ? [] : [{ ref: m.hash, text: excerpt(words, m.text) }])),
+        ...noteTexts.flatMap((n) => {
+          const text = shown(n)?.text;
+          return text === undefined ? [] : [{ ref: n.id, text: excerpt(words, text) }];
+        })
+      ],
       members: s.members
         .filter((m) => m.status !== 'revoked' && has(m.name, m.agent_name))
         .slice(0, limit)
@@ -1258,4 +1267,14 @@ export class MockNode {
     s.deny.push(entry);
     return ok(entry, 201);
   }
+}
+
+/** node/web/excerpt.ml's excerpt, near enough for the mock: the text on one line from a little before the first word matched, at most 160 characters. */
+function excerpt(words: string[], text: string): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  const lower = line.toLowerCase();
+  const at = Math.min(...words.map((w) => lower.indexOf(w)).filter((i) => i >= 0), Number.MAX_SAFE_INTEGER);
+  const start = at === Number.MAX_SAFE_INTEGER || at <= 40 ? 0 : line.indexOf(' ', at - 40) + 1;
+  const rest = line.slice(start);
+  return (start > 0 ? '…' : '') + rest.slice(0, 160) + (rest.length > 160 ? '…' : '');
 }

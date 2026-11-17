@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Voice, type ItemSummary } from '#generated/ai-digestif-digestif-node.ts';
   import { agentOwner, mailTime } from '../format.ts';
-  import { isUnread, itemKind, itemSender, waitingText } from '../items.ts';
+  import { byPerson, isUnread, itemKind, itemSender, waitingText } from '../items.ts';
   import Empty from './Empty.svelte';
   import ReviewText from './ReviewText.svelte';
 
@@ -9,7 +9,8 @@
   // (ISS-85464), shown as one of its items with how many the thread holds; the row is the link. An
   // unread row is bold with a dot, a read one plain and muted, the way a mail client shows it, and
   // Waiting on names whom an item waits on, blank when it asks nothing (ISS-88476). Work its agent
-  // filed shows where under its title, as a link of its own (DIG-124).
+  // filed shows where under its title, as a link of its own (DIG-124). What an agent or a node wrote is
+  // set in monospace, its sender and its title, so a person's words read apart (DIG-128).
   interface Row {
     item: ItemSummary;
     href: string;
@@ -42,12 +43,14 @@
     <tbody>
       {#each rows as { item, href: link, count = 1, unread } (item.id)}
         {@const bold = unread ?? isUnread(item)}
+        {@const agent = !byPerson(item)}
         <tr
           class="border-t border-stone-200 hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900 {bold
             ? 'font-semibold text-stone-900 dark:text-stone-50'
             : 'text-stone-500 dark:text-stone-400'}"
           data-testid="item-row"
           data-unread={bold ? 'true' : undefined}
+          data-voice={agent ? 'agent' : 'person'}
         >
           <td class="px-3 py-2 text-xs" data-testid="item-from">
             <a
@@ -58,7 +61,7 @@
               ><span
                 aria-hidden="true"
                 class="inline-block size-2 shrink-0 rounded-full {bold ? 'bg-dg-accent dark:bg-pink-300' : 'bg-transparent'}"
-              ></span>{itemSender(item, self)}</a
+              ></span><span class={agent ? 'dg-agent' : ''}>{itemSender(item, self)}</span></a
             >
           </td>
           <td class="dg-muted hidden w-px px-3 py-2 text-xs whitespace-nowrap sm:table-cell" data-testid="item-kind">
@@ -66,10 +69,9 @@
           </td>
           <td class="px-3 py-2"
             ><a class="block min-h-11 py-1" href={link}
-              >{#if bold}<span class="sr-only">Unread: </span>{/if}{item.title}{#if count > 1}<span
-                  class="dg-muted ml-2 text-xs font-normal"
-                  data-testid="thread-count"
-                  aria-label="{count} items">{count}</span
+              >{#if bold}<span class="sr-only">Unread: </span>{/if}<span class={agent ? 'dg-agent' : ''}>{item.title}</span
+              >{#if count > 1}<span class="dg-muted ml-2 text-xs font-normal" data-testid="thread-count" aria-label="{count} items"
+                  >{count}</span
                 >{/if}</a
             >{#if item.link}<p class="dg-muted -mt-1 pb-1 text-xs font-normal" data-testid="item-link">
                 <ReviewText review={item.link} />
