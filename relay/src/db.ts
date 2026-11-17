@@ -141,20 +141,43 @@ export interface FoldScope {
   signers?: string[];
 }
 
+const CIRCLE_STATE_IN = CIRCLE_STATE_KINDS.map((k) => `'${k}'`).join(", ");
+
+/**
+ * The circle-state envelopes below a relay_id, read through envelopes_kind_relay_id. INDEXED BY
+ * pins the index: with the relay_id bound alone SQLite prefers walking the primary key, which reads
+ * every row of the log, bodies included, and D1 bills each one. An OR on hash in the same statement
+ * has the same effect, so the retract target is its own statement. DIG-206
+ */
+export const CIRCLE_STATE_SQL = `SELECT ${ENVELOPE_COLUMNS} FROM envelopes INDEXED BY envelopes_kind_relay_id WHERE kind IN (${CIRCLE_STATE_IN}) AND relay_id < ?`;
+export const INCLUDED_SQL = `SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE hash = ? AND relay_id < ?`;
+
+/** The rows foldLog replays, in relay order: one batch, so both statements read the same log. */
+async function logRows(db: D1Database, scope: FoldScope): Promise<EnvelopeRow[]> {
+  const below = scope.before ?? Number.MAX_SAFE_INTEGER;
+  if (scope.all) {
+    const { results } = await db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? ORDER BY relay_id`).bind(below).all<EnvelopeRow>();
+    return results;
+  }
+  const statements = [db.prepare(CIRCLE_STATE_SQL).bind(below)];
+  if (scope.include !== undefined) statements.push(db.prepare(INCLUDED_SQL).bind(scope.include, below));
+  const [state, included] = await db.batch<EnvelopeRow>(statements);
+  if (state === undefined) throw new Error("the circle-state read returned no result");
+  const rows = state.results;
+  const extra = included?.results[0];
+  if (extra !== undefined && !rows.some((row) => row.relay_id === extra.relay_id)) rows.push(extra);
+  return rows.sort((a, b) => a.relay_id - b.relay_id);
+}
+
 /**
  * The fold replayed from the log in relay order. Every stored envelope was accepted by the fold when
  * it arrived, with its relay_id as position and its judged_at, or else its received_at, as the clock,
  * so replaying them with the same inputs reaches the same state; one that does not replay is a corrupt log, not a refusal.
  */
 export async function foldLog(db: D1Database, root: string, scope: FoldScope = {}): Promise<Fold> {
-  const kinds = CIRCLE_STATE_KINDS.map((k) => `'${k}'`).join(", ");
-  const below = scope.before ?? Number.MAX_SAFE_INTEGER;
-  const statement = scope.all
-    ? db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? ORDER BY relay_id`).bind(below)
-    : db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? AND (kind IN (${kinds}) OR hash = ?) ORDER BY relay_id`).bind(below, scope.include ?? "");
-  const { results } = await statement.all<EnvelopeRow>();
+  const rows = await logRows(db, scope);
   const fold = new Fold(root, scope.signers === undefined ? {} : { admission: { cutover: await admissionCutover(db), signers: scope.signers } });
-  for (const row of results) {
+  for (const row of rows) {
     const error = fold.apply({
       hash: row.hash,
       envelope: JSON.parse(row.envelope) as Envelope,

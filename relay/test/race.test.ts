@@ -28,7 +28,7 @@ const realFetch = globalThis.fetch;
 const POINTS: Record<string, RegExp> = {
   "before the position read": /MAX\(relay_id\)/,
   "before the duplicate read": /WHERE hash = \? AND relay_id < \?/,
-  "before the fold read": /FROM envelopes WHERE relay_id < \? AND \(kind IN/,
+  "before the fold read": /FROM envelopes INDEXED BY envelopes_kind_relay_id WHERE kind IN/,
   "before the chain read": /MAX\(seq\)/,
   "before the cap read": /FROM daily_appends/,
   "before the write batch": /INSERT INTO envelopes/,
