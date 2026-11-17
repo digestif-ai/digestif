@@ -377,8 +377,8 @@ let deny_check c ?(count = true) text =
       if count then Option.iter (Store.deny_tripped (log c)) entry;
       Some rule
 
-let sign c ~kind body =
-  match Node.write c.node ~kind body with
+let sign c ?created_at ~kind body =
+  match Node.write c.node ?created_at ~kind body with
   | Ok (hash, _) ->
       c.on_write ();
       Ok hash
@@ -2963,7 +2963,7 @@ module Inbox = struct
         a.a_author <> r.author && a.a_z
         &&
         let t = unix a.a_at in
-        t >= from && t < until)
+        t >= from && Item.before_lapse t ~until)
       (answers c r)
 
   let answered_in_week c (r : I.row) =
@@ -2994,7 +2994,10 @@ module Inbox = struct
     let timed = List.filter (fun (a : I.answer) -> a.a_z) (answers c r) in
     match answers_until c r with
     | None -> timed
-    | Some t -> List.filter (fun (a : I.answer) -> unix a.a_at < t) timed
+    | Some t ->
+        List.filter
+          (fun (a : I.answer) -> Item.before_lapse (unix a.a_at) ~until:t)
+          timed
 
   (* The picks that count: each reader's first, of an option the choice offers, before its
      deadline. Whether a pick counts is stored (decide_follow_ups); only the first per author is
@@ -3232,9 +3235,17 @@ module Inbox = struct
 
   let own c (r : I.row) = self_identity c = Some r.author
 
-  let closed c (r : I.row) =
+  (* Whether [r] is closed at [at]: closed by its own flag, or [at] is not before its lapse, the
+     expression refresh counts an answer by, so an answer signed at [at] is refused exactly when the
+     fold would discount it (DIG-86). *)
+  let closed_at (r : I.row) ~at =
     r.closed_flag
-    || match r.closes_unix with Some t -> t <= c.now | None -> false
+    ||
+    match r.closes_unix with
+    | Some t -> not (Item.before_lapse at ~until:t)
+    | None -> false
+
+  let closed c (r : I.row) = closed_at r ~at:c.now
 
   (* ISS-88476: whom the item waits on, the same reading as Store.Items.waiting_on_you and
      waiting_on_others: the member's ask (their draft to send, an open question, choice or approval
@@ -3751,7 +3762,7 @@ module Inbox = struct
 
   (* Sign an answer or a reply to the sent item [r] (hash [h]) in [voice], through the deny layer: in
      the clear on a circle item, sealed to its readers on a named one. *)
-  let sign_answer c (r : I.row) h ~text ~voice =
+  let sign_answer c (r : I.row) h ~at ~text ~voice =
     match deny_check c text with
     | Some rule -> Error (`Refused rule)
     | None -> (
@@ -3768,7 +3779,7 @@ module Inbox = struct
         match body with
         | Error id -> Error (`No_card id)
         | Ok body -> (
-            match sign c ~kind:"item_answer" body with
+            match sign c ~created_at:at ~kind:"item_answer" body with
             | Error e -> Error (`Not_signed e)
             | Ok hash -> Ok hash))
 
@@ -3792,18 +3803,22 @@ module Inbox = struct
     let text =
       String.trim (Option.value (string_field "text" body) ~default:"")
     in
+    (* DIG-86: one time for the answer, the request's, in the protocol's millisecond form: the time
+       it is refused against and the time its envelope is signed with, so a node never takes an
+       answer the fold then counts as late. *)
+    let at = Time_fmt.of_unix c.now in
     if r.item.voice = "node" || r.local then
       invalid "not_answerable" "Your node's own items take no reply."
     else if to_self c r then
       invalid "to_self"
         "Only you read this item, so a reply would reach no one."
-    else if r.item.kind = "question" && closed c r then
+    else if r.item.kind = "question" && closed_at r ~at:(unix at) then
       invalid "closed" "This question is closed."
     else if text = "" then
       invalid ~field:"text" "empty" "Write an answer first."
     else
       sent_only r (fun h ->
-          match sign_answer c r h ~text ~voice:"person" with
+          match sign_answer c r h ~at ~text ~voice:"person" with
           | Error (`Refused rule) ->
               invalid ~field:"text" "refused"
                 ("Refused before signing: " ^ rule ^ ".")
@@ -4922,6 +4937,8 @@ module Inbox_agent = struct
     let hash = trimmed "item" j and text = trimmed "text" j in
     let asked = Store.Reviews.draft_request (log c) hash <> None in
     let send = field "send" (Some j) <> Some (`Bool false) && not asked in
+    (* DIG-86: the time the answer is refused against is the time it is signed with. *)
+    let signed_at = Time_fmt.now () in
     let keep reason =
       Store.Reviews.set_agent_answer (log c) hash ~text ~reason ~at;
       Store.Reviews.end_draft (log c) hash;
@@ -4935,11 +4952,12 @@ module Inbox_agent = struct
     | Some r when r.item.kind <> "question" -> Error (hash ^ ": not a question")
     | Some r when Inbox.own c r -> Error (hash ^ ": the member's own question")
     | Some _ when text = "" -> Error (hash ^ ": an empty answer")
-    | Some r when Inbox.closed c r -> Error (hash ^ ": the question is closed")
+    | Some r when Inbox.closed_at r ~at:(unix signed_at) ->
+        Error (hash ^ ": the question is closed")
     | Some _ when not send -> keep None
     | Some _ when not (Store.Stages.active (log c)) -> keep (Some inactive)
     | Some r -> (
-        match Inbox.sign_answer c r hash ~text ~voice:"agent" with
+        match Inbox.sign_answer c r hash ~at:signed_at ~text ~voice:"agent" with
         | Ok _ ->
             I.settle (log c) r.id ~why:"answered" ~at;
             Ok `Sent

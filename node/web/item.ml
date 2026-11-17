@@ -93,6 +93,11 @@ let member_subjects = [ "intro"; "suggestion" ]
 (* A question with no answer this long after it was sent closes by itself. *)
 let question_lapse = 7.0 *. 86_400.0
 
+(* DIG-544: an answer signed at [t] counts when it is strictly before [until], the question's
+   lapse; one signed at the lapse or after it is late. The one expression every reading of the
+   lapse uses: the fold that counts answers, and the node that refuses one (DIG-86). *)
+let before_lapse t ~until = t < until
+
 type option_ = { id : string; label : string; recommended : bool }
 
 type t = {

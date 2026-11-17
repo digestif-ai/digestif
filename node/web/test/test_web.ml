@@ -8513,6 +8513,65 @@ let inbox_late_answer_boundary_and_order () =
   Alcotest.(check int) "2: and is listed" 1 (listed late);
   Alcotest.(check bool) "2: an in-week answer counts" false (is_closed early)
 
+(* DIG-86: the member's answer is refused against the very time its envelope is signed with, by the
+   expression the fold counts it by. Answering a peer's question at its lapse is refused; a
+   millisecond before it the answer is taken, signed at that time, and counted, so the question
+   stays answered. *)
+let inbox_answer_refused_at_its_signed_time () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let week = 7. *. 86_400. in
+  let asked = Float.floor (Unix.gettimeofday ()) -. (8. *. 86_400.) in
+  let ask title =
+    peer_item n pia ~created_at:(Time_fmt.of_unix asked) (question title)
+  in
+  let item h = snd (call ("items/" ^ h)) in
+  let is_closed h = member "closed" (item h) = `Bool true in
+  let answer_at h now =
+    let ctx : Api.ctx =
+      {
+        node = n;
+        fold = Node.fold n;
+        now;
+        on_write = (fun () -> ());
+        upkeep_waits = true;
+      }
+    in
+    let r = Option.get (Store.Items.by_hash n.log ~now h) in
+    Api.Inbox.answer ctx r (Some (`Assoc [ ("text", `String "Thursday.") ]))
+  in
+  let answers () = Log.of_kind n.Node.log "item_answer" in
+  let on_line = ask "On the line" and before = ask "A millisecond before" in
+  ignore (item on_line);
+  ignore (item before);
+  let count = List.length (answers ()) in
+  (* 1. At the lapse: refused, and nothing is signed. *)
+  let (res : Api.response) = answer_at on_line (asked +. week) in
+  Alcotest.(check int) "1: refused at the lapse" 422 res.status;
+  Alcotest.(check bool)
+    "1: as closed" true
+    (contains
+       (Yojson.Safe.to_string (Option.value res.body ~default:`Null))
+       "closed");
+  Alcotest.(check int) "1: nothing signed" count (List.length (answers ()));
+  (* 2. A millisecond before: taken, signed at that very time, and counted. *)
+  let t = asked +. week -. 0.001 in
+  let (res : Api.response) = answer_at before t in
+  Alcotest.(check int) "2: taken a millisecond before" 201 res.status;
+  let signed =
+    List.map (fun (r : Log.row) -> r.signed.envelope.created_at) (answers ())
+  in
+  Alcotest.(check (list string))
+    "2: signed at the time it was checked against"
+    [ Time_fmt.of_unix t ]
+    signed;
+  Alcotest.(check bool) "2: and counted" false (is_closed before);
+  Alcotest.(check int)
+    "2: listed" 1
+    (List.length (list (member "answers" (item before))))
+
 (* DIG-554: whether a follow-up counts is decided once and stored on its row. [counts_of] reads the
    stored result of every answer on [item], in order. *)
 let stored_answers n item =
@@ -13909,6 +13968,9 @@ let () =
             inbox_late_answer_reopens_nothing;
           Alcotest.test_case "the Inbox: late answer boundary and order" `Quick
             inbox_late_answer_boundary_and_order;
+          Alcotest.test_case
+            "the Inbox: an answer is refused at its signed time" `Quick
+            inbox_answer_refused_at_its_signed_time;
           Alcotest.test_case "the Inbox: a follow-up's membership is the cutoff"
             `Quick inbox_follow_up_membership_is_the_cutoff;
           Alcotest.test_case
