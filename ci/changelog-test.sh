@@ -108,13 +108,23 @@ g push --quiet origin main
 cp "$root/ci/release.sh" "$repo/ci/release.sh"
 head_sha="$(g rev-parse HEAD)"
 short="$(g rev-parse --short HEAD)"
-rel() { GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com \
-  bash "$repo/ci/release.sh" "$@"; }
+# Run as a machine whose git has no identity: no global or system config, no identity in the
+# environment. The channel's commits carry the release's own identity all the same. ISS-102360
+rel() { (
+  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL EMAIL GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash "$repo/ci/release.sh" "$@"
+); }
 said="$(rel changelog --sha "$short" --file "$tmp/ledger.json" 2>/dev/null)" || fail "release.sh changelog failed"
 expect "release.sh changelog's answer" "$said" "changelog/$head_sha.json"
 expect "the ledger on the channel branch" "$(git --git-dir="$origin" show "channel:changelog/$head_sha.json" | jq -c .)" \
   "$(jq -c . "$tmp/ledger.json")"
 git --git-dir="$origin" show channel:index.json >/dev/null || fail "the channel branch made without its index.json"
+for c in channel channel~1; do
+  expect "the author of $c" "$(git --git-dir="$origin" log -1 --format='%an <%ae>' "$c")" \
+    "Digestif release <release@digestif.invalid>"
+  expect "the committer of $c" "$(git --git-dir="$origin" log -1 --format='%cn <%ce>' "$c")" \
+    "Digestif release <release@digestif.invalid>"
+done
 g checkout --quiet -b side
 commit "Not on main"
 if rel changelog --sha "$(g rev-parse HEAD)" --file "$tmp/ledger.json" >/dev/null 2>&1; then
