@@ -1,0 +1,30 @@
+{
+  "format": "digestif-relay-release-v1",
+  "version": "0.1.68",
+  "published_at": "2026-11-17T23:56:43.426Z",
+  "notes": "- DIG-228: build 9b4caec4, train of DIG-229 digestif#624, DIG-228 digestif#626, DIG-244 digestif#627",
+  "bundle": {
+    "url": "https://github.com/digestif-ai/digestif/releases/download/relay-v0.1.68/digestif-relay-0.1.68.tar.gz",
+    "sha256": "sha256:349aa50758ca5d65f645fd0f2551d400af1df627c4c735cec82402daf0c25d34",
+    "size": 246078
+  },
+  "migrations": [
+    {
+      "name": "0001_init.sql",
+      "sha256": "sha256:dcd6c001f686c17a0660b33f21162e0985a79d1adbe498ace66cbfd659d043ca"
+    },
+    {
+      "name": "0002_mailer.sql",
+      "sha256": "sha256:2365cfc743236d4f0c97a45370f6e42bc85da40ea88deb5068577d43740cc34b"
+    },
+    {
+      "name": "0003_judged_at.sql",
+      "sha256": "sha256:ea944a28a057e1a8e384a7dc045722f4ff6ec4a303afe9afef2e39e40d8a1851"
+    },
+    {
+      "name": "0004_admission_cutover.sql",
+      "sha256": "sha256:8788fab9fc297fc9972c5a05aee6bde0aac4b27802c586417fd876def995454f"
+    }
+  ],
+  "compatible_with": "0.1.67"
+}
