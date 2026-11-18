@@ -1915,6 +1915,9 @@ let test_hook_follows_current () =
 let test_status_problems () =
   let node = supervised_node () in
   Alcotest.(check (list string)) "nothing wrong" [] (Status.problems ~dir:node);
+  Alcotest.(check bool)
+    "nothing to retry" true
+    (Status.retryable ~dir:node = None);
   let path = Schedule.state_path node in
   let s = loaded path in
   State.save path
@@ -1927,23 +1930,115 @@ let test_status_problems () =
         Some
           {
             pending_version = v "0.3.0";
-            cause = "curl exited 56";
+            cause = "unpacking it took over 60 seconds";
             attempts = 1;
             due_at = 0.;
           };
     };
-  match Status.problems ~dir:node with
+  (match Status.entries ~dir:node with
   | [ pending; refused ] ->
       Alcotest.(check bool)
-        pending true
-        (contains ~sub:"Release 0.3.0 could not be staged: curl exited 56"
-           pending);
+        pending.line true
+        (contains
+           ~sub:
+             "Release 0.3.0 could not be installed on this machine yet: \
+              unpacking it took over 60 seconds. Still running 0.1.0; the node \
+              tries again at"
+           pending.line);
+      Alcotest.(check bool)
+        "a waiting stage can be tried now" true
+        (pending.retry = Some (v "0.3.0"));
       Alcotest.(check string)
-        "a refusal newer than what runs"
+        "a refusal that is the release's fault says so, with nothing to do"
         "Release 0.2.0 was refused: it exited with status 1 before it reported \
-         healthy."
-        refused
-  | l -> Alcotest.fail (String.concat " | " l)
+         healthy. That is the release's fault, and the next release replaces \
+         it; there is nothing to do. Still running 0.1.0."
+        refused.line;
+      Alcotest.(check bool) "and offers no retry" true (refused.retry = None)
+  | l ->
+      Alcotest.fail (String.concat " | " (List.map (fun e -> e.Status.line) l)));
+  (* What an older node refused for when the archive was slow to unpack (DIG-255): this machine,
+     so a person may try it again. *)
+  State.save path
+    (State.refuse (loaded path) (v "0.4.0")
+       "the release archive did not unpack: tar: still running after 60 seconds");
+  match List.rev (Status.entries ~dir:node) with
+  | slow :: _ ->
+      Alcotest.(check string)
+        "a refusal that may be this machine"
+        "Release 0.4.0 was refused on this machine: the release archive did \
+         not unpack: tar: still running after 60 seconds. Still running 0.1.0."
+        slow.line;
+      Alcotest.(check bool)
+        "offers Try again" true
+        (slow.retry = Some (v "0.4.0"))
+  | [] -> Alcotest.fail "no entries"
+
+(* A slow unpack or a failed one is this machine, never the release: the archive's bytes are the
+   ones both signers signed. It is retried, never refused. DIG-255 *)
+let test_unpack_failure_is_retried () =
+  let node = temp_dir () in
+  (match Stage.from_archive ~dir:node ~version:(v "0.2.0") "not a tar" with
+  | Error (Stage.Retry why) ->
+      Alcotest.(check bool)
+        ("says unpacking failed: " ^ why)
+        true
+        (contains ~sub:"unpacking it failed" why)
+  | Error (Stage.Refuse why) -> Alcotest.failf "refused: %s" why
+  | Ok _ -> Alcotest.fail "staged garbage");
+  Alcotest.(check bool) "nothing staged" false (Layout.staged node "0.2.0");
+  (* A tar that never finishes (reading a FIFO nobody writes) runs past its bound. *)
+  let dir = temp_dir () in
+  let fifo = Filename.concat dir "archive.tar.gz" in
+  Unix.mkfifo fifo 0o600;
+  let staging = Filename.concat dir "staging" in
+  Unix.mkdir staging 0o755;
+  match Stage.unpack ~bound:2. ~archive:fifo ~staging () with
+  | Error (Stage.Retry why) ->
+      Alcotest.(check string)
+        "says it took too long" "unpacking it took over 2 seconds" why
+  | Error (Stage.Refuse why) -> Alcotest.failf "refused: %s" why
+  | Ok () -> Alcotest.fail "a tar reading nothing finished"
+
+(* Try again (DIG-255): the refusal goes, a waiting stage is due now, and the next tick checks. *)
+let test_retry_clears_refusal () =
+  let node = supervised_node () in
+  let path = Schedule.state_path node in
+  let rpath = Schedule.report_path node in
+  Report.save rpath { Report.empty with last_checked_at = Some 1_000. };
+  State.save path (State.refuse (loaded path) (v "0.2.0") "slow");
+  Alcotest.(check bool)
+    "neither refused nor waiting" true
+    (Result.is_error (Schedule.retry ~dir:node ~now:2_000. (v "0.9.0")));
+  (match Schedule.retry ~dir:node ~now:2_000. (v "0.2.0") with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "the refusal is gone" false
+    (State.is_refused (loaded path) (v "0.2.0"));
+  Alcotest.(check bool)
+    "the next tick checks" true
+    (Schedule.due ~now:2_001. ~woke:false (Report.load rpath));
+  State.save path
+    {
+      (loaded path) with
+      pending =
+        Some
+          {
+            pending_version = v "0.3.0";
+            cause = "unpacking it took over 60 seconds";
+            attempts = 3;
+            due_at = 90_000.;
+          };
+    };
+  (match Schedule.retry ~dir:node ~now:2_000. (v "0.3.0") with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "a waiting stage is due now" true
+    (match (loaded path).pending with
+    | Some p -> p.due_at = 2_000. && p.attempts = 3
+    | None -> false)
 
 let test_awake_clock () =
   let t = Awake.step Awake.zero ~nominal:1. ~wall_delta:1.2 in
@@ -5819,6 +5914,8 @@ let () =
           t "shipped build names two" test_shipped_build_names_two;
           t "hook follows current" test_hook_follows_current;
           t "status problems" test_status_problems;
+          t "an unpack failure is retried" test_unpack_failure_is_retried;
+          t "try again clears a refusal" test_retry_clears_refusal;
         ] );
       ( "relay release",
         [

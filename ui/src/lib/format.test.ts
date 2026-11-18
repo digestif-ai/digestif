@@ -105,22 +105,20 @@ describe('problemLines', () => {
     count: 2,
     ...over
   });
+  const texts = (ps: Problem[]): string[] => problemLines(ps, now).map((l) => l.text);
   it('says each open problem once, since it was first seen', () => {
-    expect(problemLines([problem({})], now)).toEqual(['Agent signed out since 3:27 AM']);
+    expect(texts([problem({})])).toEqual(['Agent signed out since 3:27 AM']);
   });
   it('is one line for two jobs failing the same way, since the earliest', () => {
-    const lines = problemLines([problem({}), problem({ id: 'q', job: ProblemJob.RulesCheck, first_seen_at: at(2, 5) })], now);
+    const lines = texts([problem({}), problem({ id: 'q', job: ProblemJob.RulesCheck, first_seen_at: at(2, 5) })]);
     expect(lines).toEqual(['Agent signed out since 2:05 AM']);
   });
   it('names a source by its label and a job that failed otherwise by the job, never a closed one', () => {
-    const lines = problemLines(
-      [
-        problem({ job: ProblemJob.Source, kind: ProblemKind.SourceFailed, source: 'Athena', first_seen_at: at(1, 0) }),
-        problem({ job: ProblemJob.SelfUpdate, kind: ProblemKind.Failed, first_seen_at: new Date(2026, 9, 30, 8, 15).toISOString() }),
-        problem({ job: ProblemJob.Sync, kind: ProblemKind.RelayUnreachable, closed_at: at(5, 0) })
-      ],
-      now
-    );
+    const lines = texts([
+      problem({ job: ProblemJob.Source, kind: ProblemKind.SourceFailed, source: 'Athena', first_seen_at: at(1, 0) }),
+      problem({ job: ProblemJob.SelfUpdate, kind: ProblemKind.Failed, first_seen_at: new Date(2026, 9, 30, 8, 15).toISOString() }),
+      problem({ job: ProblemJob.Sync, kind: ProblemKind.RelayUnreachable, closed_at: at(5, 0) })
+    ]);
     expect(lines).toEqual(['Self-update failed since Oct 30, 8:15 AM', 'Athena could not be read since 1:00 AM']);
   });
   it('ends with where a source failed when the problem says so', () => {
@@ -131,7 +129,7 @@ describe('problemLines', () => {
       detail: 'past its share of the deadline reading ~/.claude/projects/-Users-m-code/s.jsonl',
       first_seen_at: at(7, 0)
     });
-    expect(problemLines([overran], now)).toEqual([
+    expect(texts([overran])).toEqual([
       'Claude Code sessions could not be read since 7:00 AM: past its share of the deadline reading ~/.claude/projects/-Users-m-code/s.jsonl'
     ]);
   });
@@ -144,9 +142,38 @@ describe('problemLines', () => {
         'it exited with status 6 (curl: (6) Could not resolve host: api.example.com); tried 5 times over 15 minutes. The next note reads what it missed',
       first_seen_at: at(7, 16)
     });
-    expect(problemLines([offline], now)).toEqual([
+    expect(texts([offline])).toEqual([
       'Changelog could not be read since 7:16 AM: it exited with status 6 (curl: (6) Could not resolve host: api.example.com); tried 5 times over 15 minutes. The next note reads what it missed'
     ]);
+  });
+  it('says a self-update problem as the state of the updates, with Try again when it can help (DIG-255)', () => {
+    const waiting = problem({
+      id: 'u',
+      job: ProblemJob.SelfUpdate,
+      kind: ProblemKind.Failed,
+      detail:
+        'Release 0.1.128 could not be installed on this machine yet: unpacking it took over 60 seconds. Still running 0.1.124; the node tries again at 2:10 AM.',
+      retry_version: '0.1.128',
+      first_seen_at: at(1, 9)
+    });
+    expect(problemLines([waiting], now)).toEqual([
+      {
+        text: 'Release 0.1.128 could not be installed on this machine yet: unpacking it took over 60 seconds. Still running 0.1.124; the node tries again at 2:10 AM.',
+        problemId: 'u',
+        retryVersion: '0.1.128'
+      }
+    ]);
+  });
+  it("offers nothing to do for a refusal that is the release's fault", () => {
+    const refused = problem({
+      job: ProblemJob.SelfUpdate,
+      kind: ProblemKind.Failed,
+      detail:
+        "Release 0.1.128 was refused: the release archive holds no bin/digestif. That is the release's fault, and the next release replaces it; there is nothing to do. Still running 0.1.124."
+    });
+    const [line] = problemLines([refused], now);
+    expect(line?.retryVersion).toBeUndefined();
+    expect(line?.text).not.toContain('failed since');
   });
   it('lists the passages a check removed, and none for a detector', () => {
     const e = {
