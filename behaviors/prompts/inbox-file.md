@@ -22,12 +22,17 @@ it to find that out first. When the instructions name no place to file work, fil
 
 Answer with one JSON object and nothing else, no code fences:
 
-{"filed": "<what your tool printed for what it filed: its URL, its owner/repo#n, or its key such as ISS-120>"}
+{"filed": "<the URL of what you filed, as your tool printed it>"}
 
 or, when the person's instructions had you look first and the work is already there:
 
-{"filed": null, "existing": "<the URL, owner/repo#n or key of what is already there>"}
+{"filed": null, "existing": "<the URL of what is already there, else its owner/repo#n or key>"}
 
 or, when you filed nothing:
 
 {"filed": null, "why": "<a few words>"}
+
+Name what you filed, or what is already there, by the URL its page opens at, copied from what
+your tool printed, never composed: the person's Inbox shows it as a link they open. Only when your
+tool printed no URL, name it by its owner/repo#n, or else by its key exactly as printed, such as
+ISS-120, which the Inbox shows as text.
