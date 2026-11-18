@@ -38,7 +38,7 @@ export async function append(relay: Relay, request: Request, url: URL): Promise<
   const raw = new TextDecoder().decode(bytes);
   const signed = parseSigned(raw);
   const { envelope } = signed;
-  const bootstrap = envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
+  const bootstrap = envelope.kind === "circle" || envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
   const auth = await authenticate(relay, request, url, raw, { allowUnsigned: bootstrap });
   const receipt = await appendSigned(relay, auth, signed);
   return json(receipt.status === "duplicate" ? 200 : 201, receipt);
@@ -138,7 +138,7 @@ export async function appendSigned(relay: Relay, auth: Authenticated, signed: Si
  * key it rests on: the join's invite key in invites, the self-authored device's identity in
  * admitted_keys, any other envelope's author as a device or mail key there, revoked or not, since
  * the fold reads a revoked key inside its cutoff. One indexed read, so a self-generated key costs
- * the relay no fold. The root dinner is the one envelope that rests on nothing. Each refusal is the
+ * the relay no fold. The circle root is the one envelope that rests on nothing. Each refusal is the
  * one the fold would give, 422 not_admitted. DIG-228
  */
 async function checkBootstrapAuthor(relay: Relay, signed: SignedEnvelope, hash: string): Promise<void> {
@@ -256,8 +256,8 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string,
     );
   }
   if (fold.epoch !== epochBefore) statements.push(db.prepare("UPDATE circle SET epoch = ? WHERE id = 1").bind(fold.epoch));
-  if (envelope.kind === "dinner") {
-    // The fold recorded these guests (recordGuests): the first dinner listing an invite key wins.
+  if (envelope.kind === "dinner" || envelope.kind === "circle") {
+    // The fold recorded these guests (recordGuests): the first circle or dinner listing an invite key wins.
     for (const guest of guestsOf(body)) {
       statements.push(db.prepare("INSERT OR IGNORE INTO invites (key, dinner, expires_at, spent) VALUES (?, ?, ?, 0)").bind(guest.invite_key, hash, guest.expires_at));
     }

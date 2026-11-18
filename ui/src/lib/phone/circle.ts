@@ -299,6 +299,7 @@ async function admit(envelopes: Stored[], excluded: Set<string>): Promise<{ keys
     const b = obj(s.body);
     if (b === undefined || excluded.has(s.hash)) continue;
     switch (s.envelope.kind) {
+      case 'circle':
       case 'dinner': {
         const host = str(b['host']);
         if (host === undefined) break;
@@ -345,11 +346,11 @@ async function admit(envelopes: Stored[], excluded: Set<string>): Promise<{ keys
 /**
  * Which identity each admitted key speaks for, and each revoked key's cutoff, as the node's fold
  * reads them (node/core/fold.ml, run): an envelope past its author's cutoff that admitted or revoked
- * a key is left out and the fold run again, since it may have admitted keys of its own. The first
- * dinner, the circle root, is never left out.
+ * a key is left out and the fold run again, since it may have admitted keys of its own. The circle
+ * root, its circle envelope or else its first dinner, is never left out.
  */
 async function identities(envelopes: Stored[]): Promise<Keys> {
-  const root = envelopes.find((s) => s.envelope.kind === 'dinner')?.hash;
+  const root = (envelopes.find((s) => s.envelope.kind === 'circle') ?? envelopes.find((s) => s.envelope.kind === 'dinner'))?.hash;
   const excluded = new Set<string>();
   for (;;) {
     const { keys, applied } = await admit(envelopes, excluded);

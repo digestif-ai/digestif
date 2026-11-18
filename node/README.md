@@ -59,7 +59,8 @@ so it never lands in an argv or a shell history.
 ## Commands
 
     digestif phrase new                      a new 24-word recovery phrase, stored nowhere
-    digestif init --root <hash> --relay <url>  set up this machine from the phrase on stdin
+    digestif init [--root <hash>] --relay <url>  set up this machine from the phrase on stdin; a node that
+                                             will found its circle gives no root
     digestif sync                            read every relay, verify, fold, push what a relay lacks; an own
                                              envelope a relay refuses for good is dropped and the rest of
                                              its chain re-signed (docs/protocol.md, The envelope)
@@ -71,6 +72,11 @@ so it never lands in an argv or a shell history.
                                              at a hidden prompt), and what it deploys (docs/releases.md,
                                              Relay releases)
     digestif circle                          the fold: epoch, admitted keys, cards, relays, refusals
+    digestif circle found --name <n> [--guest "Name <email>"]... [--message <text|->] [--from <n>]
+                                             found a circle with this node's identity as founder: a circle
+                                             root naming it and any first guests, no dinner; prints the
+                                             root hash each relay is configured with. A node holds one
+                                             circle; a second is founded from its own --data-dir
     digestif log | show <hash> | faults      the log, one envelope, forks and gaps
     digestif post --kind <kind> --body <file>  sign the next envelope of this device's chain, of a kind
                                              the protocol names; a summary passes the deny layer first
@@ -79,9 +85,9 @@ so it never lands in an argv or a shell history.
     digestif device publish --role mail      admit the mail key (phrase on stdin); a repeat resumes the
                                              message no relay took yet, and an admitted key is refused
     digestif revoke <key> | retract <hash>   revoke a key (phrase on stdin), retract a note
-    digestif invite --message <text|-> --guest "Name <email>"... [--role member|admin] [--date <d> --label <l>]
-                                             found a circle with its root dinner; in a circle with a root,
-                                             print each guest's invite page for an admin, or name the admins
+    digestif invite --message <text|-> --guest "Name <email>"... [--role member|admin]
+                                             print each guest's invite page for an admin to have every admin
+                                             sign, or name the admins
     digestif invite expected <guest> | list  record that a guest installed; the invites and their state
     digestif invite email <guest>            the email of an invite every admin signed, filled in, to send
     digestif join <dg1. token, text or link> set this machine up and join, in the terminal (Setup, below)
