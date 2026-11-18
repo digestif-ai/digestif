@@ -893,10 +893,19 @@ let add_log c ~note_id entries =
 module Problems = struct
   module P = Store.Problems
 
-  let json (p : P.problem) : Yojson.Safe.t =
+  (* The release an open self-update problem's Try again would take another try at, read from the
+     update state now, so the button goes as soon as the retry is asked for. DIG-255 *)
+  let retry_version c (p : P.problem) =
+    if p.job <> "self_update" || p.closed_at <> None then None
+    else
+      Option.map Digestif_update.Version.to_string
+        (Digestif_update.Status.retryable ~dir:c.node.dir)
+
+  let json ?retry (p : P.problem) : Yojson.Safe.t =
     `Assoc
       ([ ("id", str p.p_id); ("job", str p.job); ("kind", str p.kind) ]
       @ opt "source" p.p_source @ opt "detail" p.p_detail
+      @ opt "retry_version" retry
       @ [
           ("first_seen_at", str p.first_seen_at);
           ("last_seen_at", str p.last_seen_at);
@@ -912,7 +921,30 @@ module Problems = struct
       | Some ("true" | "1") -> true
       | _ -> false
     in
-    ok (`List (List.map json (P.list (log c) ~open_only ~limit ())))
+    ok
+      (`List
+         (List.map
+            (fun p -> json ?retry:(retry_version c p) p)
+            (P.list (log c) ~open_only ~limit ())))
+
+  (* Try again on an open self-update problem: the update state forgets the release's refusal or
+     ends its wait, and the service loop's next tick checks for it (Schedule.retry). *)
+  let retry c id =
+    match P.find (log c) id with
+    | None -> not_found ()
+    | Some p -> (
+        match retry_version c p with
+        | None ->
+            errors 422 "not_retryable"
+              "Trying again cannot help with this problem."
+        | Some v -> (
+            match
+              Result.bind (Digestif_update.Version.of_string v) (fun v ->
+                  Digestif_update.Schedule.retry ~dir:c.node.dir
+                    ~now:(Unix.gettimeofday ()) v)
+            with
+            | Ok () -> ok (json ?retry:(retry_version c p) p)
+            | Error e -> errors 422 "not_retryable" e))
 
   (* The member's own words for a problem, where a page says why something did not happen. *)
   let sentence (p : P.problem) =
@@ -6999,6 +7031,7 @@ let route c ~meth ~path ~query ~body =
   | "PUT", [ "settings"; "agent" ] -> Agent.set c body
   | "GET", [ "settings"; "agent"; "check" ] -> Agent.get_check c
   | "GET", [ "problems" ] -> Problems.list c query
+  | "POST", [ "problems"; id; "retry" ] -> Problems.retry c id
   | "GET", [ "organizations" ] -> Repositories.organizations c query
   | "PUT", [ "organizations"; id ] -> Repositories.set_organization c id body
   | "GET", [ "repositories" ] -> Repositories.repositories c query

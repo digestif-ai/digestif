@@ -236,17 +236,33 @@ export function mailTime(iso: string, now: Date = new Date()): string {
     : noteDate(iso);
 }
 
+/** One line at the top of Feed, and the release a Try again takes another try at when it can help. */
+export interface ProblemLine {
+  text: string;
+  problemId?: string;
+  retryVersion?: string;
+}
+
 /**
  * The top of Feed (ISS-47299): one data line per open problem, "Agent signed out since 3:27 AM". Two jobs
  * failing the same way (the writer and a check both signed out) are one line, since the earliest.
  * A problem that says where it failed (the file a source overran in) ends with that, the most
- * recently seen problem's of the line.
+ * recently seen problem's of the line. A self-update problem that says why is that sentence alone,
+ * the state of the node's updates rather than "failed since", and carries its Try again (DIG-255).
  */
-export function problemLines(problems: Problem[], now: Date = new Date()): string[] {
+export function problemLines(problems: Problem[], now: Date = new Date()): ProblemLine[] {
   const since = new Map<string, string>();
   const detail = new Map<string, { text: string; seen: string }>();
+  const lines: { at: string; line: ProblemLine }[] = [];
   for (const p of problems) {
     if (p.closed_at !== undefined) continue;
+    if (p.job === 'self_update' && p.detail !== undefined) {
+      lines.push({
+        at: p.first_seen_at,
+        line: { text: p.detail, ...(p.retry_version === undefined ? {} : { problemId: p.id, retryVersion: p.retry_version }) }
+      });
+      continue;
+    }
     const subject = problemSubject(p);
     const at = since.get(subject);
     if (at === undefined || p.first_seen_at < at) since.set(subject, p.first_seen_at);
@@ -254,12 +270,11 @@ export function problemLines(problems: Problem[], now: Date = new Date()): strin
     if (p.detail !== undefined && (d === undefined || p.last_seen_at > d.seen))
       detail.set(subject, { text: p.detail, seen: p.last_seen_at });
   }
-  return [...since.entries()]
-    .sort((a, b) => a[1].localeCompare(b[1]))
-    .map(([subject, at]) => {
-      const d = detail.get(subject);
-      return subject + ' since ' + clockTime(at, now) + (d === undefined ? '' : ': ' + d.text);
-    });
+  for (const [subject, at] of since.entries()) {
+    const d = detail.get(subject);
+    lines.push({ at, line: { text: subject + ' since ' + clockTime(at, now) + (d === undefined ? '' : ': ' + d.text) } });
+  }
+  return lines.sort((a, b) => a.at.localeCompare(b.at)).map((l) => l.line);
 }
 export const memberStatus = (s: MemberStatus): StatusLabel => MEMBER[s];
 export const memberStage = (s: string): StatusLabel => STAGE[s] ?? { label: s, tone: 'neutral' };

@@ -157,6 +157,20 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('problem-line')).toContainText('Self-update failed since');
   });
 
+  test('a self-update problem says the state and offers Try again when it can help (DIG-255)', async ({ page, request }) => {
+    test.skip(process.env['DIGESTIF_NODE'] !== undefined, "the mock's _problem stands in for a release waiting to be tried again");
+    const detail =
+      'Release 0.1.128 could not be installed on this machine yet: unpacking it took over 60 seconds. Still running 0.1.124; the node tries again at 2:10 AM.';
+    await request.post('/api/v0/_problem', {
+      headers: { 'Digestif-Local': '1' },
+      data: { job: 'self_update', kind: 'failed', detail, retry_version: '0.1.128' }
+    });
+    await page.goto('/feed');
+    await expect(page.getByTestId('problem-line').filter({ hasText: detail })).toBeVisible();
+    await page.getByRole('button', { name: 'Try again' }).click();
+    await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(0);
+  });
+
   test('the Inbox is a section, and Notes is not', async ({ page }) => {
     test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the node keeps items from ISS-52609; the mock plays them');
     await page.goto('/inbox');

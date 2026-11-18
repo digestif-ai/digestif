@@ -191,6 +191,8 @@ export interface Client {
   pause(): Promise<ApiResponse<Paused>>;
   unpause(): Promise<ApiResponse<undefined>>;
   problems(open?: boolean): Promise<ApiResponse<Problem[]>>;
+  /** Try again on a self-update problem: the node takes another try at the release (DIG-255). */
+  retryProblem(id: string): Promise<ApiResponse<Problem>>;
   approvalSetting(): Promise<ApiResponse<Approval>>;
   saveApprovalSetting(setting: ApprovalSetting): Promise<ApiResponse<Approval>>;
   learnings(): Promise<ApiResponse<Learnings>>;
@@ -297,6 +299,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     pause: () => send('POST', path('paused')),
     unpause: () => send('DELETE', path('paused')),
     problems: (open) => get(path('problems') + (open === true ? '?open=true' : '')),
+    retryProblem: (id) => send('POST', path('problems', id, 'retry')),
     approvalSetting: () => get(path('settings', 'approval')),
     saveApprovalSetting: (setting) => send('PUT', path('settings', 'approval'), { setting: setting }),
     learnings: () => get(path('learnings')),

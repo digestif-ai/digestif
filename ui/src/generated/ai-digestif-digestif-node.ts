@@ -1347,8 +1347,10 @@ export interface Problem {
   kind: ProblemKind;
   /** With kind source_failed: the source's label. */
   source?: string;
-  /** Where the job failed, as its latest report said: with kind source_failed, the file the source ran past its share of the deadline in. */
+  /** Where or why the job failed, as its latest report said: with kind source_failed, the file the source ran past its share of the deadline in; with job self_update, the state of the node's updates in the member's words. */
   detail?: string;
+  /** With job self_update while it is open: the release a Try again takes another try at, when that can help (the refusal may have been this machine, or a stage waits out its backoff). */
+  retry_version?: string;
   first_seen_at: ISODateTimeString;
   last_seen_at: ISODateTimeString;
   count: number;
@@ -2107,6 +2109,11 @@ export interface DeletePausedOptions {
 
 export interface GetProblemsOptions {
   open?: boolean;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateProblemRetryByIdOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -4469,6 +4476,37 @@ export class ApiClient {
 
       if (response.status === 200) {
         return await Util.mustParseArray<Problem>(response, 'Problem');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createProblemRetryById(context: CallContext, id: string, options?: CreateProblemRetryByIdOptions): Promise<Problem> {
+    return context.recorder.call(context, 'POST /api/v0/problems/:id/retry', async (note) => {
+      const url = `${this.baseUrl}/api/v0/problems/${encodeURIComponent(id)}/retry`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Problem>(response, 'Problem');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
       }
 
       throw new ApiException(response, `Request failed with status ${response.status}`);

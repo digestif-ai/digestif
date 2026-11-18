@@ -62,6 +62,15 @@
   });
   const menuBusy = $derived((submission.pending('write') && 'Starting…') || (submission.pending('pause') && 'Pausing…') || false);
 
+  /** Try again on a self-update problem: the node takes another try at that release within seconds. */
+  async function handleRetry(problemId: string): Promise<void> {
+    await submission.run(
+      () => client.retryProblem(problemId),
+      () => refreshAll(),
+      'retry-' + problemId
+    );
+  }
+
   async function handleNotNow(): Promise<void> {
     await submission.run(
       () => client.dismissSuggestion(),
@@ -76,8 +85,16 @@
     <ActionMenu label="Actions" actions={menu} busy={menuBusy} disabled={submission.busy()} />
   {/snippet}
 </PageHeader>
-{#each problems as line (line)}
-  <p class="mb-2 text-sm text-red-700 dark:text-red-300" data-testid="problem-line">{line}</p>
+{#each problems as line (line.text)}
+  <div class="mb-2 flex flex-wrap items-center gap-2 text-sm">
+    <p class="mr-auto text-red-700 dark:text-red-300" data-testid="problem-line">{line.text}</p>
+    {#if line.problemId !== undefined}
+      {@const id = line.problemId}
+      <Button busy={submission.pending('retry-' + id) && 'Trying again…'} disabled={submission.busy()} onclick={() => handleRetry(id)}
+        >Try again</Button
+      >
+    {/if}
+  </div>
 {/each}
 <ErrorBanner errors={submission.errors} />
 {#if writing}
