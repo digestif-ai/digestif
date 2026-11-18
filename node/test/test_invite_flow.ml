@@ -29,11 +29,17 @@ let host_circle () =
   ignore (ok (Node.init host ~phrase:host_phrase));
   let inv =
     ok
-      (Invite_node.invite host ~date:"2026-10-27" ~label:"AI Dinner 2"
-         ~relays:urls ~message:"  Great talking with you.\n" guests)
+      (Invite_node.found host ~name:"AI Dinner 2" ~relays:urls
+         ~message:"  Great talking with you.\n" guests)
   in
   Alcotest.(check (option string))
-    "a founding dinner is the root" (Some inv.dinner_hash) (Node.root host);
+    "a founded circle's root is its circle envelope" (Some inv.dinner_hash)
+    (Node.root host);
+  Alcotest.(check (option string))
+    "the root is a circle envelope, not a dinner" (Some "circle")
+    (Option.map
+       (fun (r : Log.row) -> r.signed.envelope.kind)
+       (Log.find host.log inv.dinner_hash));
   Alcotest.(check (list string))
     "every invite stores the host's lines, trimmed"
     [ "Great talking with you."; "Great talking with you." ]
@@ -176,6 +182,65 @@ let refused () =
   | Ok _ -> Alcotest.fail "a spent invite joined again"
   | Error _ -> ());
   ignore relays
+
+(* A circle founded on its own (docs/design.md, Circles): a root naming the circle and its founder,
+   no dinner and no guests, which every relay folds; a second circle on the same node is refused,
+   and a later dinner in the circle carries the circle's name. *)
+let found_alone () =
+  let host = new_node () in
+  ignore (ok (Node.init host ~phrase:(Phrase.generate ())));
+  let host_identity = Option.get (Log.get_config host.log Node.k_identity) in
+  Alcotest.(check bool)
+    "a blank name is refused" true
+    (Result.is_error (Invite_node.found host ~name:"  " ~relays:urls []));
+  Alcotest.(check (option string))
+    "a refused founding leaves no root" None (Node.root host);
+  let inv =
+    ok (Invite_node.found host ~name:"Auto dealership roll-up" ~relays:urls [])
+  in
+  let row = Option.get (Log.find host.log inv.dinner_hash) in
+  Alcotest.(check string) "the root is a circle" "circle"
+    row.signed.envelope.kind;
+  (match row.signed.body with
+  | Some (`Assoc f) ->
+      Alcotest.(check bool) "the root carries no dinner" false
+        (List.mem_assoc "dinner" f);
+      Alcotest.(check bool) "the root names the circle" true
+        (List.assoc_opt "circle" f
+        = Some (`Assoc [ ("name", `String "Auto dealership roll-up") ]))
+  | _ -> Alcotest.fail "the root has a body");
+  let relays =
+    List.map (fun url -> Fake_relay.create ~url ~root:inv.dinner_hash) urls
+  in
+  let net = Fake_relay.network relays in
+  let report, _ = ok (Invite_node.sync ~transport:net host) in
+  List.iter
+    (fun (r : Sync.relay_report) ->
+      Alcotest.(check (option string)) ("synced " ^ r.relay) None r.error;
+      Alcotest.(check int) ("the root reached " ^ r.relay) 1 r.pushed)
+    report.relays;
+  let fold = Node.fold host in
+  Alcotest.(check (list (pair string string))) "nothing refused" []
+    fold.rejected;
+  Alcotest.(check bool)
+    "the founder is admitted by the root" true
+    (Hashtbl.mem fold.keys host_identity);
+  Alcotest.(check string) "the circle's name is the root's"
+    "Auto dealership roll-up"
+    (Approved_invite.circle_label host);
+  Alcotest.(check bool)
+    "a node holds one circle: founding a second is refused" true
+    (Result.is_error (Invite_node.found host ~name:"Another" ~relays:urls []));
+  (* Any circle envelope but the root names another circle, and the fold refuses it. *)
+  let stray, _ =
+    ok
+      (Node.write host ~kind:"circle"
+         (Bodies.circle_json ~host:host_identity ~name:"Stray" ~guests:[]
+            ~relays:urls))
+  in
+  Alcotest.(check bool)
+    "a circle envelope that is not the root is refused" true
+    (List.mem_assoc stray (Node.fold host).rejected)
 
 let asks_store () =
   let n = new_node () in
@@ -1127,6 +1192,8 @@ let () =
         [
           Alcotest.test_case "host, guest, watcher, revoke" `Quick flow;
           Alcotest.test_case "codes no open invite names" `Quick refused;
+          Alcotest.test_case "a circle founded with no dinner and no guests"
+            `Quick found_alone;
           Alcotest.test_case "ask store" `Quick asks_store;
           Alcotest.test_case "an ask that never lapses" `Quick asks_never_lapse;
           Alcotest.test_case "url handler" `Quick url_handler;

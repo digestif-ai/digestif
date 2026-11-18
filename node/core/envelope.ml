@@ -72,13 +72,13 @@ let error_message = function
   | Malformed m -> "malformed: " ^ m
   | Bad_signature m -> "bad_signature: " ^ m
 
-(* A bootstrap append (docs/protocol.md, Request signing): a dinner, a join, or a device message
-   authored by the key it admits. Its own signatures prove it, so it goes to a relay with no request
-   signature: a relay checks a request's Digestif-Key for admission, and the author of a founding
-   dinner or a join is not admitted until that envelope is in. *)
+(* A bootstrap append (docs/protocol.md, Request signing): a circle root, a dinner, a join, or a
+   device message authored by the key it admits. Its own signatures prove it, so it goes to a relay
+   with no request signature: a relay checks a request's Digestif-Key for admission, and the author
+   of a circle root or a join is not admitted until that envelope is in. *)
 let is_bootstrap { envelope = e; body } =
   match e.kind with
-  | "dinner" | "join" -> true
+  | "circle" | "dinner" | "join" -> true
   | "device" -> (
       match body with
       | Some (`Assoc fields) ->
@@ -184,6 +184,7 @@ let signed_of_json j =
 (* Circle-state kinds go to every reader and feed the admission fold. *)
 let circle_state_kinds =
   [
+    "circle";
     "dinner";
     "join";
     "device";

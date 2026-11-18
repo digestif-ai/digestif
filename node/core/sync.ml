@@ -338,7 +338,10 @@ let replicas (node : Node.t) (r : Log.relay_row) =
     (not (List.mem row.signed.envelope.author own))
     && not (Log.held_by node.log ~relay:r.url row.hash)
   in
-  let dinners = List.filter lacks (Log.of_kind node.log "dinner") in
+  let dinners =
+    List.filter lacks
+      (Log.of_kind node.log "circle" @ Log.of_kind node.log "dinner")
+  in
   let joins = List.filter lacks (Log.of_kind node.log "join") in
   let devices =
     List.filter

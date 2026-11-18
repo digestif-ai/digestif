@@ -94,11 +94,9 @@ let dinner_json d : Yojson.Safe.t =
       ("relays", `List (List.map (fun r -> `String r) d.relays));
     ]
 
-let parse_dinner j =
+(* What a dinner and a circle root both carry: the host, the guests and the relays. *)
+let parse_guest_list j =
   let* host = str "host" j in
-  let meta = Option.value (get "dinner" j) ~default:(`Assoc []) in
-  let* date = str "date" meta in
-  let label = Result.value (str "label" meta) ~default:"" in
   let* guests =
     match get "guests" j with
     | Some (`List gs) ->
@@ -124,7 +122,44 @@ let parse_dinner j =
         List.filter_map (function `String s -> Some s | _ -> None) rs
     | _ -> []
   in
+  Ok (host, guests, relays)
+
+let parse_dinner j =
+  let meta = Option.value (get "dinner" j) ~default:(`Assoc []) in
+  let* date = str "date" meta in
+  let label = Result.value (str "label" meta) ~default:"" in
+  let* host, guests, relays = parse_guest_list j in
   Ok { host; date; label; guests; relays }
+
+(* circle: the root of a circle founded on its own (protocol.md, circle). It names the circle and
+   its founder, its [host], and may list first guests exactly as a dinner does. It has no date: a
+   dinner is an event inside a circle, never what makes one. *)
+
+let circle_json ~host ~name ~guests ~relays : Yojson.Safe.t =
+  match dinner_json { host; date = ""; label = name; guests; relays } with
+  | `Assoc fields ->
+      `Assoc
+        (List.map
+           (function
+             | "dinner", _ -> ("circle", `Assoc [ ("name", `String name) ])
+             | f -> f)
+           fields)
+  | j -> j
+
+(* The envelope that lists invites, read as one shape whatever its kind: a dinner as parse_dinner
+   reads it, or a circle root, whose name is the [label] and whose [date] is "", since no dinner
+   founded it. *)
+let parse_listing ~kind j =
+  match kind with
+  | "dinner" -> parse_dinner j
+  | "circle" ->
+      let meta = Option.value (get "circle" j) ~default:(`Assoc []) in
+      let* name = str "name" meta in
+      if String.trim name = "" then Error "a circle needs a name"
+      else
+        let* host, guests, relays = parse_guest_list j in
+        Ok { host; date = ""; label = name; guests; relays }
+  | k -> Error ("not a circle or a dinner: " ^ k)
 
 (* join, authored by the invite key *)
 

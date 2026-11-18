@@ -5,7 +5,7 @@ import type { D1Migration } from "cloudflare:test";
 declare global {
   interface Env {
     DB: D1Database;
-    /** sha256:<hex> of the founding dinner envelope this relay serves. */
+    /** sha256:<hex> of the root envelope (a circle, or a founding dinner) of the circle this relay serves. */
     CIRCLE_ROOT: string;
     MAX_ENVELOPE_BYTES?: string;
     MAX_APPENDS_PER_DEVICE_PER_DAY?: string;

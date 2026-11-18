@@ -1,5 +1,5 @@
-(* The invite flow on a node: the host writes a dinner and keeps its Host_watch ledger beside the
-   log, every sync runs the watcher over the joins it stores and raises its asks in the node's ask
+(* The invite flow on a node: the founder writes the circle's root, listing its first guests, and
+   keeps its Host_watch ledger beside the log, every sync runs the watcher over the joins it stores and raises its asks in the node's ask
    store, and the guest's node reads its dinner and writes its join. *)
 
 open Digestif_core
@@ -11,18 +11,39 @@ let ptime_now () = Option.get (Ptime.of_float_s (Unix.gettimeofday ()))
 
 type invited = {
   dinner_hash : string;
+      (** The envelope that lists the invites: here, the circle's root. *)
   dinner : Dinner.t;
   message : string;  (** The host's lines every guest's email opens with. *)
 }
 
-(* Write a dinner naming [guests], signed with this node's device key, and record an invite per
-   guest in the ledger, each with the host's [message], the lines its email opens with; a blank
-   one is refused before anything is written. [relays] defaults to the node's own; any given are added to the node, so
-   the next sync appends the dinner to every one of them. A node with no circle root yet is
-   founding a circle, and this dinner is its root. *)
-let invite ?(now = ptime_now ()) ?ttl (node : Node.t) ~date ~label ?relays
-    ~message guests =
-  let* message = Invite_email.message_of_string message in
+(* Found a circle on this node (protocol.md, circle): sign its root, a circle envelope naming it
+   [name] with this node's identity as founder and listing [guests] (who may be none), with this
+   node's device key, make it the node's root, and record an invite per guest in the ledger with the
+   founder's [message], the lines its email opens with. A blank message is refused before anything
+   is written when there is a guest to send it to. [relays] defaults to the node's own; any given
+   are added to the node, so the next sync appends the root to every one of them. No dinner is
+   involved: a dinner is an event inside a circle, never its root.
+
+   A node holds one circle. A node that already has a root is refused: a second circle is a second
+   node, with its own data directory, keys, identity and relays (docs/design.md, Circles). *)
+let found ?(now = ptime_now ()) ?ttl (node : Node.t) ~name ?relays ?(message = "")
+    guests =
+  let* () =
+    match Node.root node with
+    | None -> Ok ()
+    | Some root ->
+        Error
+          (Printf.sprintf
+             "this node already holds the circle rooted at %s, and a node \
+              holds one circle; found the new one from its own data \
+              directory: digestif --data-dir <dir> init, then digestif \
+              --data-dir <dir> circle found"
+             root)
+  in
+  let* message =
+    if guests = [] then Ok (String.trim message)
+    else Invite_email.message_of_string message
+  in
   let* host =
     match Log.get_config node.log Node.k_identity with
     | Some h -> Ok h
@@ -34,15 +55,16 @@ let invite ?(now = ptime_now ()) ?ttl (node : Node.t) ~date ~label ?relays
     | _ -> List.map (fun (r : Log.relay_row) -> r.url) (Log.relays node.log)
   in
   let* ledger = Host_watch.load node.dir in
-  let* dinner = Dinner.create ~host ~date ~label ~relays ~now ?ttl guests in
+  let* root = Dinner.create_circle ~host ~name ~relays ~now ?ttl guests in
   List.iter (Log.add_relay node.log) relays;
-  let* dinner_hash, _ = Node.write node ~kind:"dinner" (Dinner.body dinner) in
-  if Node.root node = None then Node.set_root node dinner_hash;
+  let* root_hash, _ = Node.write node ~kind:"circle" (Dinner.circle_body root) in
+  Node.set_root node root_hash;
   let* () =
     Host_watch.save node.dir
-      (ledger @ Host_watch.records_of_dinner ~dinner_hash ~message dinner)
+      (ledger
+      @ Host_watch.records_of_dinner ~dinner_hash:root_hash ~message root)
   in
-  Ok { dinner_hash; dinner; message }
+  Ok { dinner_hash = root_hash; dinner = root; message }
 
 (* The person heard from a guest that they installed: their join will be shown, not asked about.
    [guest] is the guest's name (as the dinner wrote it, any case) or the invite key. *)

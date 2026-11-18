@@ -178,6 +178,7 @@ end
 module Kind = struct
   (* Circle-state kinds go to every admitted reader; content kinds go to readers whose join epoch is at or before the envelope's epoch. A node ignores kinds it does not know. *)
   type t =
+    | Circle
     | Dinner
     | Join
     | Device
@@ -201,9 +202,10 @@ module Kind = struct
     | Retract
     | Undefined of string
 
-  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Signer_set; Prompt; Summary; Decision; Item; Item_answer; Item_close; Approval; Approval_answer; Digest; Deny_list; Retract ]
+  let all = [ Circle; Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Signer_set; Prompt; Summary; Decision; Item; Item_answer; Item_close; Approval; Approval_answer; Digest; Deny_list; Retract ]
 
   let to_string = function
+    | Circle -> "circle"
     | Dinner -> "dinner"
     | Join -> "join"
     | Device -> "device"
@@ -228,6 +230,7 @@ module Kind = struct
     | Undefined s -> s
 
   let of_string = function
+    | "circle" -> Stdlib.Ok Circle
     | "dinner" -> Stdlib.Ok Dinner
     | "join" -> Stdlib.Ok Join
     | "device" -> Stdlib.Ok Device

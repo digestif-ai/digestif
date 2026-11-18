@@ -1,6 +1,6 @@
 (* The admission fold (protocol.md, The admission fold). A relay folds in its own relay order; a node
    reads several relays whose orders differ, so it folds the union in one order every node agrees on:
-   the root dinner first, then every other circle-state envelope by (created_at, hash), applied in
+   the root (a circle envelope, or a founding dinner) first, then every other circle-state envelope by (created_at, hash), applied in
    passes until a pass applies nothing. An envelope whose prerequisite has not arrived (a join before
    its dinner, a device before its identity) waits for a later pass rather than failing, so two nodes
    holding the same envelopes compute the same fold whatever order the relays delivered them in. An
@@ -166,9 +166,12 @@ let parse_body entry parse =
   | None -> Error "body withheld or dropped"
   | Some b -> parse b
 
+(* The root is a circle envelope, or the dinner that founded a circle at a dinner (protocol.md, The
+   admission fold, step 1): either admits its host and authoring device and records its guests. *)
 let apply_root t entry =
-  match parse_body entry Bodies.parse_dinner with
-  | Error m -> Rejected ("root dinner: " ^ m)
+  let kind = entry.envelope.kind in
+  match parse_body entry (Bodies.parse_listing ~kind) with
+  | Error m -> Rejected ("root " ^ kind ^ ": " ^ m)
   | Ok d ->
       admit t ~key:d.host ~role:Identity ~identity:d.host
         ~admitted_by:entry.hash ~join_epoch:0;
@@ -474,6 +477,7 @@ let apply_prompt t entry =
 
 let apply t entry =
   match entry.envelope.kind with
+  | "circle" -> Rejected "a circle envelope is only ever a circle's root"
   | "dinner" -> apply_dinner t entry
   | "join" -> apply_join t entry
   | "device" -> apply_device t entry
@@ -498,7 +502,7 @@ let run_once ~root ~excluded entries =
   in
   match List.find_opt (fun e -> e.hash = root) circle with
   | None ->
-      t.waiting <- [ (root, "the root dinner is not in the log") ];
+      t.waiting <- [ (root, "the circle root is not in the log") ];
       t
   | Some r -> (
       match apply_root t r with
@@ -533,7 +537,7 @@ let run_once ~root ~excluded entries =
 
 (* Fold every circle-state entry from [root]; entries of other kinds are ignored. A folded entry past
    its author's cutoff is left out and the fold run again, until nothing folded is past a cutoff. The
-   root dinner is never left out: a revoke that cut it off would leave no circle to read. *)
+   root is never left out: a revoke that cut it off would leave no circle to read. *)
 let run ~root entries =
   let by_hash = Hashtbl.create 64 in
   List.iter (fun e -> Hashtbl.replace by_hash e.hash e) entries;

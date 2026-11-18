@@ -12,8 +12,12 @@
       "description": "Circle-state kinds go to every admitted reader; content kinds go to readers whose join epoch is at or before the envelope's epoch. A node ignores kinds it does not know.",
       "values": [
         {
+          "name": "circle",
+          "description": "Circle state. The circle root: a founder names the circle, and may name its first guests and their invite keys. Valid only as the root."
+        },
+        {
           "name": "dinner",
-          "description": "Circle state. A host names guests and their invite keys. The founding dinner is the circle root."
+          "description": "Circle state. A host names guests and their invite keys. A circle founded at a dinner has that dinner as its root."
         },
         {
           "name": "join",
@@ -429,7 +433,7 @@
         {
           "name": "root",
           "type": "string",
-          "description": "sha256:<hex> of the founding dinner envelope this relay is configured with."
+          "description": "sha256:<hex> of the circle root this relay is configured with: its circle envelope, or the dinner that founded it."
         },
         {
           "name": "epoch",
