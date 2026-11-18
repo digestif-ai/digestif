@@ -76,15 +76,15 @@ let step_lines = function
   | Staged (v, path) ->
       [
         Printf.sprintf
-          "Release %s is downloaded but not running: run %s service \
-           install            once so the node can switch to it."
+          "Release %s is downloaded but not running: run %s service install \
+           once so the node can switch to it."
           (Version.to_string v) (Layout.binary_in path);
       ]
   | Stage_failed (v, why, due_at) ->
       [
         Printf.sprintf
-          "Release %s could not be staged: %s. The node keeps running what \
-           it            runs and tries again after %s."
+          "Release %s could not be staged: %s. The node keeps running what it \
+           runs and tries again after %s."
           (Version.to_string v) why (clock_line due_at);
       ]
   | Refused (v, why) ->
@@ -159,3 +159,43 @@ let tick ?self_test cfg ~now ~woke =
          (cfg.circle ())
   then Some (pass ?self_test cfg ~now)
   else None
+
+(* A person's Try again for [version] (DIG-255): forget its refusal, make a stage waiting out its
+   backoff due now, and make the next tick run a pass, which a running node's service loop reaches
+   within seconds. A version neither refused nor waiting is an error naming what is. *)
+let retry ~dir ~now version =
+  let ( let* ) = Result.bind in
+  let path = state_path dir in
+  let* s = State.load path in
+  let refused = State.is_refused s version in
+  let waiting =
+    match s.pending with
+    | Some p -> Version.equal p.pending_version version
+    | None -> false
+  in
+  if not (refused || waiting) then
+    Error
+      (Printf.sprintf
+         "release %s is neither refused nor waiting to be tried again"
+         (Version.to_string version))
+  else begin
+    State.save path
+      {
+        s with
+        refused =
+          List.filter
+            (fun (r : State.refused) ->
+              not (Version.equal r.refused_version version))
+            s.refused;
+        pending =
+          Option.map
+            (fun (p : State.pending) ->
+              if Version.equal p.pending_version version then
+                { p with due_at = Float.min p.due_at now }
+              else p)
+            s.pending;
+      };
+    let rpath = report_path dir in
+    Report.save rpath { (Report.load rpath) with last_checked_at = None };
+    Ok ()
+  end

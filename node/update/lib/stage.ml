@@ -4,8 +4,8 @@
    directory exists only when everything in it passed. Nothing here touches current.
 
    A failure is one of two kinds. [Retry]: something about this machine or this attempt (a write
-   failed, a checkout's release finds no Node.js on PATH) that a later pass may not meet; the node
-   keeps what it runs and tries again after a backoff. [Refuse]: the release itself is wrong (no
+   failed, the archive did not unpack, a checkout's release finds no Node.js on PATH) that a later
+   pass may not meet; the node keeps what it runs and tries again after a backoff. [Refuse]: the release itself is wrong (no
    binary, no runtime or one that does not run, a self-test that fails or hangs); the node will not
    take that version again. *)
 
@@ -16,8 +16,11 @@ let ( let* ) = Result.bind
 (* Seconds the staged binary's self-test may take. *)
 let self_test_bound = 120.
 
-let run_quiet argv =
-  match Proc.run ~timeout:60. argv with
+(* Seconds the archive may take to unpack. *)
+let unpack_bound = 60.
+
+let run_quiet ?(timeout = 60.) argv =
+  match Proc.run ~timeout argv with
   | Ok { code = 0; _ } -> Ok ()
   | Ok { code; stderr; _ } ->
       Error
@@ -203,6 +206,19 @@ let finish ?(node_major = node_major) ~dir ~name ~version ~source staging =
 let staging_dir dir name =
   Filename.concat (Layout.releases_dir dir) (".staging-" ^ name)
 
+(* Unpack [archive] into [staging]. The archive's bytes are the ones both signers signed, so a
+   failure here is this machine or this attempt (a night the machine crawled, a full disk), never
+   the release: it is retried, and a slow night never refuses a good release. DIG-255 *)
+let unpack ?(bound = unpack_bound) ~archive ~staging () =
+  let started = Unix.gettimeofday () in
+  match
+    run_quiet ~timeout:bound [| "tar"; "-xzf"; archive; "-C"; staging |]
+  with
+  | Ok () -> Ok ()
+  | Error _ when Unix.gettimeofday () -. started >= bound ->
+      Error (Retry (Printf.sprintf "unpacking it took over %.0f seconds" bound))
+  | Error e -> Error (Retry ("unpacking it failed: " ^ e))
+
 (* Stage a release from its verified archive (a gzipped tar of bin/ and behaviors/). A release
    already staged is not unpacked again. *)
 let from_archive ?node_major ~dir ~version bytes =
@@ -221,11 +237,7 @@ let from_archive ?node_major ~dir ~version bytes =
           Ok ())
     in
     let result =
-      let* () =
-        match run_quiet [| "tar"; "-xzf"; archive; "-C"; staging |] with
-        | Ok () -> Ok ()
-        | Error e -> Error (Refuse ("the release archive did not unpack: " ^ e))
-      in
+      let* () = unpack ~archive ~staging () in
       finish ?node_major ~dir ~name ~version ~source:"channel" staging
     in
     (try Sys.remove archive with Sys_error _ -> ());

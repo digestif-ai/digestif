@@ -2150,7 +2150,13 @@
           "name": "detail",
           "type": "string",
           "required": false,
-          "description": "Where the job failed, as its latest report said: with kind source_failed, the file the source ran past its share of the deadline in."
+          "description": "Where or why the job failed, as its latest report said: with kind source_failed, the file the source ran past its share of the deadline in; with job self_update, the state of the node's updates in the member's words."
+        },
+        {
+          "name": "retry_version",
+          "type": "string",
+          "required": false,
+          "description": "With job self_update while it is open: the release a Try again takes another try at, when that can help (the refusal may have been this machine, or a stage waits out its backoff)."
         },
         {
           "name": "first_seen_at",
@@ -4613,6 +4619,24 @@
           "responses": {
             "200": {
               "type": "[problem]"
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/retry",
+          "description": "Try again on an open self-update problem: the node forgets the release's refusal, or ends its wait before the next try, and checks for updates within seconds.",
+          "responses": {
+            "200": {
+              "type": "problem"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Trying again cannot help with this problem."
             }
           }
         }

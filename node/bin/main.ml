@@ -1491,6 +1491,22 @@ let update_pin =
                 (U.Version.of_string v)))
       $ data_dir $ v)
 
+let update_retry =
+  let v = Arg.(required & pos 0 (some string) None & info [] ~docv:"VERSION") in
+  cmd "retry"
+    "Take another try at VERSION: forget that the node refused it, or end the \
+     wait before its next try, and check for updates. A running node checks \
+     within seconds; `digestif update apply` checks from this command."
+    Term.(
+      const (fun dir v ->
+          let dir = node_dir dir in
+          let v = ok_or_die (U.Version.of_string v) in
+          ok_or_die (U.Schedule.retry ~dir ~now:(Unix.gettimeofday ()) v);
+          Printf.printf
+            "release %s will be tried again at the next update check\n"
+            (U.Version.to_string v))
+      $ data_dir $ v)
+
 let update_unpin =
   cmd "unpin" "Follow the newest release again."
     Term.(
@@ -2299,10 +2315,10 @@ let run =
                   (let module P = Digestif_web.Store.Problems in
                    match U.Status.problems ~dir:(node_dir dir) with
                    | [] -> P.resolve bnode.log ~job:"self_update" ()
-                   | _ ->
+                   | lines ->
                        ignore
                          (P.report bnode.log ~job:"self_update" ~kind:"failed"
-                            ()));
+                            ~detail:(String.concat " " lines) ()));
                   match result with
                   | U.Schedule.Switched v ->
                       Printf.printf
@@ -3373,7 +3389,14 @@ let main =
            ~doc:
              "Self-update: releases both release signers signed \
               (docs/releases.md).")
-        [ update_check; update_apply; update_stage; update_pin; update_unpin ];
+        [
+          update_check;
+          update_apply;
+          update_stage;
+          update_pin;
+          update_retry;
+          update_unpin;
+        ];
       self_test;
       supervise;
       Cmd.group

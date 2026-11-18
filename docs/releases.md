@@ -1,7 +1,7 @@
 # Releases and self-update
 
 How a node decides what code to run. The rules are in `node/update/lib/policy.ml`, a node's own
-commands are `digestif update check|apply|pin|unpin`, a signer's tool is `digestif-update`, and who
+commands are `digestif update check|apply|pin|retry|unpin`, a signer's tool is `digestif-update`, and who
 holds the keys is [GOVERNANCE.md](../GOVERNANCE.md).
 
 ## The rule
@@ -28,7 +28,9 @@ contain.
   release on the node's own disk after a failed switch (below) is not a downgrade: nothing is
   fetched for it.
 - **Refused for good.** A release whose self-test failed, or that was rolled back after a switch,
-  is recorded in `update.json` and never chosen again; a newer release is.
+  is recorded in `update.json` and never chosen again; a newer release is. `digestif update retry
+  0.4.1`, or Try again on the Feed line, forgets one refusal (or ends a pending stage's backoff) and
+  makes the next pass due at once, for a refusal a person judges was the machine.
 - **Pinning.** `digestif update pin 0.4.1` makes the node install exactly that version and nothing
   newer; `unpin` follows the newest release again. A pin never waives a signature. A pin at or below
   the installed version installs nothing; going back is a manual reinstall.
@@ -260,6 +262,12 @@ supervisor found for the person is `update-report.json` beside it:
 refused versions) and the lines the next digest will carry. `digestif run --no-self-update` never
 reads the channel; `digestif update apply` runs a pass at once.
 
+While a stage waits or a newer release is refused, the top of the web UI's Feed says so as the state
+(`node/update/lib/status.ml`): the release, why, the version the node still runs, and what happens
+next. A pending stage, or a refusal that may have been the machine (a self-test that could not run
+or ran past its bound, an unpack an older node refused for), offers Try again; a refusal that is the
+release's own bytes says the next release replaces it and that there is nothing to do.
+
 ## Releases on disk
 
 Each release is a directory under `<data dir>/releases/` that nothing changes once it is there: the
@@ -295,7 +303,9 @@ A pass that chooses a release stages it before anything the node runs changes
 (`node/update/lib/stage.ml`):
 
 1. download the archive and check its size and sha256 against the manifest both signers signed;
-2. unpack it into `releases/.staging-<version>` and check it holds `bin/digestif`;
+2. unpack it into `releases/.staging-<version>`, bounded at a minute, and check it holds
+   `bin/digestif`. The bytes are the ones both signers signed, so an unpack that fails or runs past
+   its bound is this machine (a night it crawled, a full disk) and is retried, never refused;
 3. check the runtime the behaviors need by its path: `runtime/bin/node` must run and be at least the
    major version `behaviors/package.json` names in `engines`. An archive without its runtime, or
    whose runtime does not run or is older, is refused for good, since a later pass would meet the
@@ -307,7 +317,7 @@ A pass that chooses a release stages it before anything the node runs changes
    keys), bounded at two minutes. It must report the version, open the store and read its config;
 5. write `.release.json` and rename the directory to `releases/<version>`.
 
-A failure leaves `current` alone. A download, a write or a checkout's missing Node.js is kept in
+A failure leaves `current` alone. A download, an unpack, a write or a checkout's missing Node.js is kept in
 `update.json` as pending with its cause, and tried again after a backoff (ten minutes, doubling, at
 most a day). A self-test that fails or hangs, or an archive without the binary or a runtime that
 runs, refuses that version for good.

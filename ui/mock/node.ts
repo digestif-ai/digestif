@@ -393,6 +393,20 @@ export class MockNode {
           return { status: 204 };
         }
       ],
+      // Try again (node/web/api.ml Problems.retry): the button goes once the retry is asked for.
+      [
+        'POST',
+        'problems/:/retry',
+        ([id]) =>
+          withFound(
+            s.problems.find((p) => p.id === id),
+            (p) => {
+              if (p.retry_version === undefined) return err(422, 'not_retryable', 'Trying again cannot help with this problem.');
+              delete p.retry_version;
+              return ok(p);
+            }
+          )
+      ],
       ['GET', 'problems', (_p, _b, q) => ok(q.get('open') === 'true' ? s.problems.filter((p) => p.closed_at === undefined) : s.problems)],
       ['GET', 'rules/deny', (_p, _b, q) => page(s.deny, q, (e) => e.id)],
       ['POST', 'rules/deny', (_p, b) => this.addDeny(b)],
@@ -539,11 +553,15 @@ export class MockNode {
         '_problem',
         (_p, b) => {
           const at = new Date().toISOString();
+          const detail = str(b, 'detail');
+          const retry = str(b, 'retry_version');
           s.nextId += 1;
           s.problems.push({
             id: 'problem-' + String(s.nextId),
             job: (str(b, 'job') ?? 'self_update') as Problem['job'],
             kind: (str(b, 'kind') ?? 'failed') as Problem['kind'],
+            ...(detail === undefined ? {} : { detail }),
+            ...(retry === undefined ? {} : { retry_version: retry }),
             first_seen_at: at,
             last_seen_at: at,
             count: 1
