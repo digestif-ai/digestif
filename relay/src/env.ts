@@ -39,7 +39,7 @@ const ROOT = /^sha256:[0-9a-f]{64}$/;
 
 export function rootOf(env: Env): string {
   const root = env.CIRCLE_ROOT;
-  if (typeof root !== "string" || !ROOT.test(root)) throw new ConfigError("CIRCLE_ROOT must be the founding dinner's hash, sha256:<64 hex>");
+  if (typeof root !== "string" || !ROOT.test(root)) throw new ConfigError("CIRCLE_ROOT must be the circle root's hash (its circle or founding dinner envelope), sha256:<64 hex>");
   return root;
 }
 

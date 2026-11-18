@@ -887,7 +887,7 @@
           "name": "circle_label",
           "type": "string",
           "required": false,
-          "description": "The circle's name, its root dinner's label, which the invite email's subject names. Absent before the node holds the root dinner."
+          "description": "The circle's name, as its root names it (a circle's name, or a founding dinner's label), which the invite email's subject names. Absent before the node holds the root."
         },
         {
           "name": "first_run",

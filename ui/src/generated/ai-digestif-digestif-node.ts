@@ -1129,7 +1129,7 @@ export interface NodeStatus {
   /** Absent before the member has joined. */
   member_name?: string;
   agent_name?: string;
-  /** The circle's name, its root dinner's label, which the invite email's subject names. Absent before the node holds the root dinner. */
+  /** The circle's name, as its root names it (a circle's name, or a founding dinner's label), which the invite email's subject names. Absent before the node holds the root. */
   circle_label?: string;
   /** Setup is open and the navigation is hidden: until setup has finished, which is the setup chat starting the first note, or the node holding a note at all. */
   first_run: boolean;

@@ -259,7 +259,7 @@ export class FakeRelay {
       throw new Refusal(422, "malformed", "a relay that does not know the deny_list kind");
     }
     const { envelope } = signed;
-    const bootstrap = envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
+    const bootstrap = envelope.kind === "circle" || envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
     const auth = this.authenticate(req, url, raw, bootstrap, !(envelope.kind === "join" && this.breaks.has("pushed-join-signer")));
     if (!verifyEnvelope(envelope)) throw new Refusal(422, "bad_signature", "the envelope signature does not verify");
     if (signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");

@@ -149,7 +149,7 @@ Clock drift, epoch filtering and limits are relay rules a node has no half of.
 Each of these is a reading of docs/protocol.md the suite holds relays and nodes to. A relay author who
 reads the protocol differently raises it on the protocol, and the suite follows.
 
-- **Bootstrap appends** (the root dinner, every join, and a `device` message authored by the key it
+- **Bootstrap appends** (the root, every join, and a `device` message authored by the key it
   admits) carry none of the four `Digestif-*` headers.
   A later dinner is an ordinary append signed by the host's device key.
 - **Refusal statuses.** `not_admitted` is accepted as 401 or 422, since the spec lists it under both.

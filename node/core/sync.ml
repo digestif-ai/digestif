@@ -315,7 +315,7 @@ let push_relay ?(may_drop = true) (node : Node.t) transport (r : Log.relay_row)
   go 0 0 (unpushed ())
 
 (* A relay that refused the read because this node is not admitted there, then took a push of ours:
-   the push was the bootstrap (a founding dinner, a replacement laptop's device message) that admits
+   the push was the bootstrap (a circle root, a replacement laptop's device message) that admits
    it, so the read is worth making again in the same sync. *)
 let bootstrapped error pushed push_error =
   match (error, push_error) with
@@ -338,7 +338,10 @@ let replicas (node : Node.t) (r : Log.relay_row) =
     (not (List.mem row.signed.envelope.author own))
     && not (Log.held_by node.log ~relay:r.url row.hash)
   in
-  let dinners = List.filter lacks (Log.of_kind node.log "dinner") in
+  let dinners =
+    List.filter lacks
+      (Log.of_kind node.log "circle" @ Log.of_kind node.log "dinner")
+  in
   let joins = List.filter lacks (Log.of_kind node.log "join") in
   let devices =
     List.filter
@@ -397,7 +400,7 @@ let replicate_relay (node : Node.t) transport ~key (r : Log.relay_row) =
 let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
   let fetched, stored, error = fetch_relay ?on_stored node transport ~key r in
   (* A relay that refused the read (this node not admitted there yet) still takes our appends:
-     a founding dinner, or a replacement laptop's device message, reaches it unsigned this way. *)
+     a circle root, or a replacement laptop's device message, reaches it unsigned this way. *)
   let { pushed; dropped; error = push_error } =
     match error with
     | Some (Relay_client.Transport _) ->

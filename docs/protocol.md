@@ -61,7 +61,7 @@ Every request carries four headers:
 
 | Header | Value |
 |---|---|
-| `Digestif-Key` | The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner, join, or a device message authored by the key it admits) whose own signatures prove it. |
+| `Digestif-Key` | The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (circle, dinner, join, or a device message authored by the key it admits) whose own signatures prove it. |
 | `Digestif-Timestamp` | The client's clock, ISO 8601 date-time. The relay accepts up to one hour of skew either way. |
 | `Digestif-Nonce` | 16 random bytes, base64url. The relay refuses a nonce it has seen from the same key inside the skew window, so a captured request cannot be replayed. |
 | `Digestif-Signature` | ed25519 signature, base64url, over the signed string below (method, path with query, timestamp, nonce, sha256 of the body). |
@@ -78,16 +78,16 @@ Replay protection is the nonce; the window only bounds how long nonces are kept.
 characters is refused (`401 bad_signature`) before anything is verified. The relay checks that the
 signer is admitted before it records the nonce, so a key the circle never admitted stores nothing.
 
-A bootstrap append (a `dinner` or `join` body, or a `device` body whose `key` is the envelope's
-author, below) may omit `Digestif-Key`: the signatures inside the body are the proof, checked against
-the fold. Before the fold runs, the relay refuses (`422 not_admitted`) one whose key the circle does
-not know: a join whose invite key no accepted dinner lists, a self-authored `device` whose identity
-was never admitted, or a `dinner` whose author is not an admitted device. The founding dinner is
-the one bootstrap append that rests on nothing.
+A bootstrap append (a `circle`, `dinner` or `join` body, or a `device` body whose `key` is the
+envelope's author, below) may omit `Digestif-Key`: the signatures inside the body are the proof,
+checked against the fold. Before the fold runs, the relay refuses (`422 not_admitted`) one whose key
+the circle does not know: a join whose invite key no accepted circle root or dinner lists, a
+self-authored `device` whose identity was never admitted, or a `circle` or `dinner` whose author is
+not an admitted device. The circle root is the one bootstrap append that rests on nothing.
 
 The **bootstrap read**, `GET /v0/invites/<invite key>`, is the one read a key outside the admitted
-set may make. It is signed by the invite key named in the path and answers the dinner envelope,
-with its body, that lists that invite key, while the invite is unspent and unexpired; otherwise
+set may make. It is signed by the invite key named in the path and answers the envelope (the
+circle root or a dinner), with its body, that lists that invite key, while the invite is unspent and unexpired; otherwise
 404, one answer for all three, and a 404 spends no nonce. A guest's app makes it before writing its join, because the join
 names the dinner's hash and goes to every relay the dinner lists.
 
@@ -95,6 +95,24 @@ names the dinner's hash and goes to every relay the dinner lists.
 
 These are the kinds every admitted reader receives, because admission and cards are folds over
 them.
+
+**circle**, the root of a circle founded on its own, written by the founder's device key:
+
+```json
+{
+  "host": "ed25519:<founder identity key>",
+  "circle": { "name": "Auto dealership roll-up" },
+  "guests": [ { "name": "Ashmer Aslam", "invite_key": "ed25519:...", "expires_at": "2026-11-21T00:00:00.000Z" } ],
+  "relays": [ "https://relay-1.example" ]
+}
+```
+
+A `circle` is valid only as the circle root, and each relay is configured with the hash of its
+envelope; any other `circle` envelope names a circle this one is not, and is refused
+`wrong_circle`. Its `host` is admitted by the message itself. `circle.name` is the circle's name and
+is not blank. `guests` lists the circle's first guests exactly as a dinner does, admitted by their
+invite keys alone, and may be empty or absent: the founder invites everyone else later, with the
+admins' signed admission, in a dinner message. A circle root carries no date and no dinner.
 
 **dinner**, written by the host's device key:
 
@@ -108,19 +126,21 @@ them.
 }
 ```
 
-The **founding dinner** is the circle root. Its `host` is admitted by the message itself, and each
-relay is configured with the hash of its envelope. A relay has no root of its own. Any admitted
-member may write a later dinner, but after the circle's admission cutover a guest entry counts only
+A circle founded at a dinner has that **founding dinner** as its root instead of a `circle`: its
+`host` is admitted by the message itself, each relay is configured with the hash of its envelope,
+and it folds exactly as a circle root does, its label read as the circle's name. A relay has no
+root of its own. Any admitted member may write a later dinner, but after the circle's admission cutover a guest entry counts only
 when its `admission` is a `digestif-admission-v0` every key of the signer set signed (Approvals,
 below; The admission fold), so in practice the starting admin's node writes every dinner once the
-admins signed its guest's admission. Invite keys expire in 72 hours by default, counted from when
-the dinner is written.
+admins signed its guest's admission. A dinner written to carry an admins' invite outside any dinner
+takes the day it was written as its `date` and the circle's name as its `label`. Invite keys expire
+in 72 hours by default, counted from when the root or the dinner is written.
 
 **join**, the outer envelope authored by the invite key:
 
 ```json
 {
-  "dinner": "sha256:<dinner envelope hash>",
+  "dinner": "sha256:<hash of the circle root or dinner that lists the invite key>",
   "identity_key": "ed25519:...",
   "identity_signature": "<invite key over JCS({dinner, identity_key})>",
   "device_key": "ed25519:...",
@@ -128,8 +148,8 @@ the dinner is written.
 }
 ```
 
-A join is accepted once per invite key, before the invite's `expires_at`, and only if the dinner is
-in the fold. It increments the epoch. The join's envelope is the invite key's only one: `seq` 1, no
+A join is accepted once per invite key, before the invite's `expires_at`, and only if the circle
+root or dinner its `dinner` names is in the fold. It increments the epoch. The join's envelope is the invite key's only one: `seq` 1, no
 `prev`, `epoch` 0, since the guest cannot read the circle's epoch before it is admitted; the epoch
 the join creates is the fold's. The host's node watches for joins it did not expect (an invite
 whose guest the host's person has not recorded hearing from) and raises a `join` choice (see
@@ -321,14 +341,16 @@ is the same choice.
 
 A relay and every node compute the admitted set the same way, in relay order:
 
-1. Start from the root dinner: admit its host identity and the authoring device key.
+1. Start from the root, a `circle` or, for a circle founded at a dinner, a `dinner`: admit its host
+   identity and the authoring device key, and record its guests' invite keys and expiries. A
+   `circle` anywhere else is refused `wrong_circle`.
 2. `dinner` from an admitted device: record its guests' invite keys and expiries. A dinner after
    the circle's admission cutover records a guest only when its `admission` is a
    `digestif-admission-v0` naming this circle and that invite key, signed by every key of the signer
    set the fold holds at that point, and records none while a revoked key is in that set. A relay
    refuses such a dinner whole, `not_admitted`, so its writer learns at once that it admitted nobody.
-   The relay's fold starts from the `release-signers.json` its own build carries. The root dinner is
-   unchanged: its host is admitted by the message itself.
+   The relay's fold starts from the `release-signers.json` its own build carries. The root is
+   unchanged: its host is admitted by the message itself, and its guests by their invite keys.
 3. `join` signed by a recorded, unspent, unexpired invite key: admit the identity and device key,
    spend the invite, increment the epoch, set the member's join epoch to the new epoch.
 4. `device` signed by an admitted identity and authored by a device of that identity or by the key
@@ -354,7 +376,7 @@ relays it reads, so a stale node's unsigned dinner after it admits nobody. Conte
 full and content kinds with `epoch >= reader's join epoch`.
 
 A node reads several relays whose orders differ, so it folds the union in one order every node
-agrees on: the root dinner, then every other circle-state envelope by `(created_at, hash)`, applied
+agrees on: the root, then every other circle-state envelope by `(created_at, hash)`, applied
 in passes until a pass applies nothing. An envelope whose prerequisite has not arrived (a join
 before its dinner, a device before its identity) waits for a later pass instead of failing. The
 same order defines "from the revoke forward" for a node, and a join's `created_at` is what its
@@ -371,7 +393,7 @@ join's expiry by who sent it:
   refused `not_admitted`.
 
 An admitted node makes that push. Each sync, after it reads a relay that admits it, it pushes to
-that relay every `dinner` its own fold applied that the relay did not return, unsigned, then every
+that relay the root and every `dinner` its own fold applied that the relay did not return, unsigned, then every
 such join, signed with its device key, then the self-authored `device` messages its fold applied
 that the relay lacks, unsigned as their author's bootstrap would be, each in `(created_at, hash)`
 order. This is how a second relay gets the members the first one admitted, and the dinners their
@@ -743,7 +765,7 @@ the command `digestif-update approve <id>` in its detail), settled once they ans
 - An **invite**'s document is a `digestif-admission-v0`:
 
   ```json
-  { "format": "digestif-admission-v0", "circle": "sha256:<root dinner hash>",
+  { "format": "digestif-admission-v0", "circle": "sha256:<circle root hash>",
     "created_at": "2026-11-14T15:00:00.000Z",
     "guest": { "name": "Priya Raman", "email": "priya@raman.dev" }, "role": "member | admin",
     "invite_key": "ed25519:<the invite key's public half>",

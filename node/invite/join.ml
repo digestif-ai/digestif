@@ -1,4 +1,5 @@
-(* The guest's side: read the dinner that names the invite key, then write the join.
+(* The guest's side: read the dinner (or the circle root) that names the invite key, then write the
+   join, which names that envelope by its hash in its dinner field.
 
    The app is not admitted yet, so it reads the dinner through the bootstrap read
    GET /v0/invites/{invite_key}, signed by the invite key itself, and appends the join, whose own
@@ -18,15 +19,17 @@ type error =
 
 let error_message = function
   | Unreadable m ->
-      "The relay in the invite did not hand back its dinner (" ^ m
+      "The relay in the invite did not hand back the circle or dinner that \
+       lists it (" ^ m
       ^ "). The invite may be used or expired; ask your host for a new one."
   | Not_this_invite ->
-      "This invite code is not on that dinner. Ask your host for a new invite."
+      "This invite code is not on the guest list the relay handed back. Ask \
+       your host for a new invite."
   | Expired t ->
       Printf.sprintf "This invite expired at %s. Ask your host for a new one."
         (Dinner.iso8601 t)
   | Bad_dinner m ->
-      "The relay answered with a dinner that does not verify: " ^ m
+      "The relay answered with a guest list that does not verify: " ^ m
 
 (* The bootstrap read against the relay the code names, signed by the invite key. *)
 let read_dinner ~transport code =
@@ -49,10 +52,11 @@ let check_dinner ~now ~code (sg : Envelope.signed) =
   match (Envelope.verify sg, sg.body) with
   | Error e, _ -> Error (Bad_dinner (Envelope.error_message e))
   | Ok (), None -> Error (Bad_dinner "the relay withheld the dinner's body")
-  | Ok (), _ when sg.envelope.kind <> "dinner" ->
-      Error (Bad_dinner "not a dinner")
+  | Ok (), _ when sg.envelope.kind <> "dinner" && sg.envelope.kind <> "circle"
+    ->
+      Error (Bad_dinner "not a dinner or a circle")
   | Ok (), Some body -> (
-      match Dinner.parse body with
+      match Dinner.parse ~kind:sg.envelope.kind body with
       | Error m -> Error (Bad_dinner m)
       | Ok parsed -> (
           match

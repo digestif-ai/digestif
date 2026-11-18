@@ -257,9 +257,11 @@ export class Fold {
   private applyKind(input: FoldInput): FoldError | null {
     const { envelope, body } = input;
     if (!this.rootFolded) {
-      if (envelope.kind !== "dinner" || input.hash !== this.root) return "wrong_circle";
+      if (!isRootKind(envelope.kind) || input.hash !== this.root) return "wrong_circle";
       return this.foldRoot(input);
     }
+    // A circle envelope is only ever a root: any other names a circle this one is not.
+    if (envelope.kind === "circle") return "wrong_circle";
     if (!isCircleState(envelope.kind) || envelope.kind === "card" || envelope.kind === "relay" || envelope.kind === "release_revocation" || envelope.kind === "release_recall" || envelope.kind === "relay_release" || envelope.kind === "signer_set" || envelope.kind === "prompt") {
       if (this.activeAuthor(envelope.author, { seq: envelope.seq, hash: input.hash }) === undefined) return "not_admitted";
       if (envelope.kind === "retract") return this.checkRetract(envelope, body);
@@ -361,7 +363,9 @@ export class Fold {
     if (!isObject(body)) return "malformed";
     const host = str(body, "host");
     if (host === undefined) return "malformed";
-    const guestError = this.recordGuests(input.hash, body);
+    if (envelope.kind === "circle" && circleName(body) === undefined) return "malformed";
+    // A circle root may list no guests: its founder invites them later, in a dinner.
+    const guestError = envelope.kind === "circle" && body["guests"] === undefined ? null : this.recordGuests(input.hash, body);
     if (guestError !== null) return guestError;
     this.rootFolded = true;
     this.dinners.set(input.hash, host);
@@ -532,4 +536,20 @@ export class Fold {
   admittedKeys(): KeyState[] {
     return [...this.keys.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   }
+}
+
+/**
+ * docs/protocol.md, circle and dinner: a circle's root is a `circle` envelope, which names the circle
+ * and its founder, or, for a circle founded at a dinner, that `dinner`.
+ */
+export function isRootKind(kind: string): boolean {
+  return kind === "circle" || kind === "dinner";
+}
+
+/** The non-blank name a `circle` body carries in `circle.name`. */
+export function circleName(body: { [key: string]: Json }): string | undefined {
+  const circle = body["circle"];
+  if (typeof circle !== "object" || circle === null || Array.isArray(circle)) return undefined;
+  const name = circle["name"];
+  return typeof name === "string" && name.trim() !== "" ? name : undefined;
 }

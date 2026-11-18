@@ -70,7 +70,9 @@ let init =
       value
       & opt (some string) None
       & info [ "root" ] ~docv:"HASH"
-          ~doc:"The circle root: the founding dinner's envelope hash.")
+          ~doc:
+            "The circle root: its circle envelope's hash (or, for a circle \
+             founded at a dinner, that dinner's).")
   in
   let relays =
     Arg.(
@@ -448,80 +450,81 @@ let faults =
                 (Log.open_faults n.log)))
       $ data_dir)
 
-let circle =
-  cmd "circle"
-    "Print the circle as this node folds it: epoch, admitted keys, cards, \
-     relays, and what was refused."
-    Term.(
-      const (fun dir ->
-          with_node dir (fun n ->
-              let f = Node.fold n in
-              let keys =
-                Hashtbl.fold
-                  (fun _ (k : Fold.key_state) acc ->
-                    `Assoc
-                      ([
-                         ("key", `String k.key);
-                         ("role", `String (Bodies.role_to_string k.role));
-                         ("identity", `String k.identity);
-                         ("join_epoch", `Int k.join_epoch);
-                       ]
-                      @ (match k.revoked_by with
-                        | Some r -> [ ("revoked_by", `String r) ]
-                        | None -> [])
-                      @ (match k.after_seq with
-                        | Some n -> [ ("after_seq", `Int n) ]
-                        | None -> [])
-                      @
-                      match k.mail_read with
-                      | Some hs ->
-                          [
-                            ( "mail_read",
-                              `List
-                                (List.map
-                                   (fun h -> `String h)
-                                   (Fold.Hashes.elements hs)) );
-                          ]
+let circle_doc =
+  "Print the circle as this node folds it: epoch, admitted keys, cards, \
+   relays, and what was refused."
+
+let circle_print =
+  Term.(
+    const (fun dir ->
+        with_node dir (fun n ->
+            let f = Node.fold n in
+            let keys =
+              Hashtbl.fold
+                (fun _ (k : Fold.key_state) acc ->
+                  `Assoc
+                    ([
+                       ("key", `String k.key);
+                       ("role", `String (Bodies.role_to_string k.role));
+                       ("identity", `String k.identity);
+                       ("join_epoch", `Int k.join_epoch);
+                     ]
+                    @ (match k.revoked_by with
+                      | Some r -> [ ("revoked_by", `String r) ]
                       | None -> [])
-                    :: acc)
-                  f.keys []
-              in
-              let cards =
-                Hashtbl.fold
-                  (fun id ((c : Bodies.card), _) acc ->
-                    `Assoc
-                      [
-                        ("identity", `String id);
-                        ("name", `String c.card_name);
-                        ("agent_name", `String c.agent_name);
-                        ("encryption_key", `String c.encryption_key);
-                      ]
-                    :: acc)
-                  f.cards []
-              in
-              let pairs l =
-                `List
-                  (List.map
-                     (fun (h, m) ->
-                       `Assoc [ ("hash", `String h); ("reason", `String m) ])
-                     l)
-              in
-              print_json
-                (`Assoc
-                   [
-                     ("root", `String f.root);
-                     ("epoch", `Int f.epoch);
-                     ("keys", `List keys);
-                     ("cards", `List cards);
-                     ( "relays",
-                       `List
-                         (Hashtbl.fold
-                            (fun u _ acc -> `String u :: acc)
-                            f.relays []) );
-                     ("rejected", pairs f.rejected);
-                     ("waiting", pairs f.waiting);
-                   ])))
-      $ data_dir)
+                    @ (match k.after_seq with
+                      | Some n -> [ ("after_seq", `Int n) ]
+                      | None -> [])
+                    @
+                    match k.mail_read with
+                    | Some hs ->
+                        [
+                          ( "mail_read",
+                            `List
+                              (List.map
+                                 (fun h -> `String h)
+                                 (Fold.Hashes.elements hs)) );
+                        ]
+                    | None -> [])
+                  :: acc)
+                f.keys []
+            in
+            let cards =
+              Hashtbl.fold
+                (fun id ((c : Bodies.card), _) acc ->
+                  `Assoc
+                    [
+                      ("identity", `String id);
+                      ("name", `String c.card_name);
+                      ("agent_name", `String c.agent_name);
+                      ("encryption_key", `String c.encryption_key);
+                    ]
+                  :: acc)
+                f.cards []
+            in
+            let pairs l =
+              `List
+                (List.map
+                   (fun (h, m) ->
+                     `Assoc [ ("hash", `String h); ("reason", `String m) ])
+                   l)
+            in
+            print_json
+              (`Assoc
+                 [
+                   ("root", `String f.root);
+                   ("epoch", `Int f.epoch);
+                   ("keys", `List keys);
+                   ("cards", `List cards);
+                   ( "relays",
+                     `List
+                       (Hashtbl.fold
+                          (fun u _ acc -> `String u :: acc)
+                          f.relays []) );
+                   ("rejected", pairs f.rejected);
+                   ("waiting", pairs f.waiting);
+                 ])))
+    $ data_dir)
 
 (* writing *)
 
@@ -568,8 +571,7 @@ let import =
       & info [] ~docv:"FILE" ~doc:"A signed_envelope as JSON, or -.")
   in
   cmd "import"
-    "Verify a signed envelope written elsewhere (a founding dinner) and store \
-     it."
+    "Verify a signed envelope written elsewhere (a circle root) and store it."
     Term.(
       const (fun dir file ->
           with_node dir (fun n ->
@@ -1743,32 +1745,30 @@ let invite_by_approval n ~guests ~message ~role =
           (base ^ Inv.Approved_invite.invite_page ~guest:g ~role ~message))
       guests
 
+let invite_message =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "message" ] ~docv:"TEXT"
+        ~doc:
+          "The host's own lines every guest's email opens with, below the \
+           greeting and above the paragraph every invite carries. Ask the host \
+           what they want to say; - reads them from stdin.")
+
+let read_message = function
+  | Some "-" -> In_channel.input_all stdin
+  | Some m -> m
+  | None -> ""
+
 let invite_create =
-  let date =
-    Arg.(
-      value
-      & opt (some string) None
-      & info [ "date" ] ~docv:"YYYY-MM-DD"
-          ~doc:
-            "The night of the founding dinner; needed only to found a circle.")
-  in
-  let label =
-    Arg.(
-      value
-      & opt (some string) None
-      & info [ "label" ] ~docv:"TEXT"
-          ~doc:
-            "What the founding dinner is called, as the email names it; needed \
-             only to found a circle.")
-  in
   let role =
     Arg.(
       value
       & opt (enum [ ("member", "member"); ("admin", "admin") ]) "member"
       & info [ "role" ] ~docv:"member|admin"
           ~doc:
-            "The role a guest of an existing circle is invited to: admin is \
-             followed by a promotion every admin signs once the guest joins.")
+            "The role a guest is invited to: admin is followed by a promotion \
+             every admin signs once the guest joins.")
   in
   let guests =
     Arg.(
@@ -1776,12 +1776,44 @@ let invite_create =
       & info [ "guest" ] ~docv:"\"NAME <EMAIL>\""
           ~doc:"A guest to invite. Repeatable.")
   in
+  Term.(
+    const (fun dir guests message role ->
+        let message =
+          ok_or_die (Inv.Invite_email.message_of_string (read_message message))
+        in
+        with_node dir (fun n ->
+            if Node.root n = None then
+              die
+                "this node has no circle yet; found one with digestif circle \
+                 found --name NAME, which can invite its first guests too"
+            else invite_by_approval n ~guests ~message ~role))
+    $ data_dir $ guests $ invite_message $ role)
+
+(* Found a circle on its own (docs/design.md, Circles): no dinner, no date. The root names the
+   circle and its founder and lists the first guests, who need no admins' signatures, since the
+   root is admitted by the message itself (docs/protocol.md, The admission fold). *)
+let circle_found =
+  let name =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "name" ] ~docv:"NAME"
+          ~doc:"The circle's name, which every invite email's subject names.")
+  in
+  let guests =
+    Arg.(
+      value & opt_all guest_conv []
+      & info [ "guest" ] ~docv:"\"NAME <EMAIL>\""
+          ~doc:
+            "A first guest to invite in the root; repeatable. With none, the \
+             circle starts with its founder alone.")
+  in
   let relays =
     Arg.(
       value & opt_all string []
       & info [ "relay" ] ~docv:"URL"
           ~doc:
-            "A relay the dinner lists; repeatable. Defaults to this node's \
+            "A relay the circle lists; repeatable. Defaults to this node's \
              relays. The first is the one each invite code names.")
   in
   let from =
@@ -1789,17 +1821,9 @@ let invite_create =
       value
       & opt (some string) None
       & info [ "from" ] ~docv:"NAME"
-          ~doc:"The name the emails are signed with. Defaults to your card.")
-  in
-  let message =
-    Arg.(
-      value
-      & opt (some string) None
-      & info [ "message" ] ~docv:"TEXT"
           ~doc:
-            "The host's own lines every guest's email opens with, below the \
-             greeting and above the paragraph every invite carries. Ask the \
-             host what they want to say; - reads them from stdin.")
+            "The founder's name: the card the circle reads them by, and the \
+             name the emails are signed with. Defaults to your card.")
   in
   let hours =
     Arg.(
@@ -1807,40 +1831,36 @@ let invite_create =
       & info [ "expires-in" ] ~docv:"HOURS"
           ~doc:"How long each invite code works.")
   in
-  Term.(
-    const (fun dir date label guests relays from message hours role ->
-        let message =
-          match message with
-          | Some "-" -> In_channel.input_all stdin
-          | Some m -> m
-          | None -> ""
-        in
-        let message = ok_or_die (Inv.Invite_email.message_of_string message) in
-        with_node dir (fun n ->
-            if Node.root n <> None then
-              invite_by_approval n ~guests ~message ~role
-            else
-              let need what = function
-                | Some v -> v
-                | None -> die "founding a circle needs --%s" what
-              in
-              let date = need "date" date and label = need "label" label in
+  cmd "found"
+    "Found a circle with this node's identity as its founder: sign the root, a \
+     circle envelope naming it and listing any first guests, with this \
+     device's key, make it this node's circle, append it to every relay, keep \
+     a record per invite, and print each guest's email with its mailto: link. \
+     No dinner is involved. A node holds one circle: a second circle is \
+     founded from its own data directory (--data-dir), with its own phrase and \
+     relays. Each relay serving the circle is configured with the root's hash, \
+     which this prints."
+    Term.(
+      const (fun dir name guests relays from message hours ->
+          let message = read_message message in
+          with_node dir (fun n ->
               let carded = has_card n in
               let from = host_name n from in
               let inv =
                 ok_or_die
-                  (Inv.Invite_node.invite n ~date ~label ~relays ~message
+                  (Inv.Invite_node.found n ~name ~relays ~message
                      ~ttl:(Ptime.Span.of_int_s (hours * 3600))
                      guests)
               in
-              (* A host with no card is read as a key; the name the emails are signed with becomes it.
-               After the dinner, which founds a new circle and so must come first. *)
+              (* A founder with no card is read as a key; the name the emails are signed with
+                 becomes it. After the root, which every envelope of the circle follows. *)
               if not carded then
                 ignore
                   (ok_or_die
                      (Inv.Invite_node.write_card n ~name:from
                         ~agent_name:(Inv.Invite_node.default_agent_name from)));
-              Printf.printf "dinner %s\n\n" inv.dinner_hash;
+              Printf.printf "circle %s\nroot %s\n\n" inv.dinner.label
+                inv.dinner_hash;
               List.iter
                 (fun i ->
                   print_email
@@ -1855,10 +1875,16 @@ let invite_create =
                       r.relays
                   then
                     prerr_endline
-                      "digestif: a relay did not take the dinner yet; the next \
+                      "digestif: a relay did not take the root yet (each relay \
+                       must be configured with the root hash above); the next \
                        sync retries it"
-              | Error e -> die "the dinner is in the log but was not sent: %s" e))
-    $ data_dir $ date $ label $ guests $ relays $ from $ message $ hours $ role)
+              | Error e -> die "the root is in the log but was not sent: %s" e))
+      $ data_dir $ name $ guests $ relays $ from $ invite_message $ hours)
+
+let circle =
+  Cmd.group ~default:circle_print
+    (Cmd.info "circle" ~doc:circle_doc)
+    [ circle_found ]
 
 let invite_expected =
   let guest =
@@ -1933,14 +1959,12 @@ let invite =
   Cmd.group ~default:invite_create
     (Cmd.info "invite"
        ~doc:
-         "Invite named guests. Founding a circle (--date, --label), sign the \
-          root dinner with this device's key, append it to every relay, keep a \
-          record per invite, and print each guest's email with its mailto: \
-          link. In a circle that has a root every admin signs each invite, so \
-          nothing is written here: for an admin it prints each guest's invite \
-          page, prefilled, for the admin to read, send to the admins and sign \
-          with digestif-update approve; for any other member it names the \
-          admins who can invite. Each email opens with the host's own lines \
+         "Invite named guests to this node's circle (digestif circle found \
+          founds one). Every admin signs each invite, so nothing is written \
+          here: for an admin it prints each guest's invite page, prefilled, \
+          for the admin to read, send to the admins and sign with \
+          digestif-update approve; for any other member it names the admins \
+          who can invite. Each email opens with the host's own lines \
           (--message), which their agent asks them for, then the paragraph \
           every invite carries and the one install command. Once every admin \
           signed, digestif invite email prints the email to send.")

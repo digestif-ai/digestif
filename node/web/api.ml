@@ -91,13 +91,13 @@ let dinner_bodies c =
   Hashtbl.fold (fun h _ acc -> h :: acc) c.fold.dinners []
   |> List.filter_map (fun h ->
       match Log.find (log c) h with
-      | Some { signed = { body = Some b; _ }; _ } -> (
-          match Bodies.parse_dinner b with
+      | Some { signed = { envelope; body = Some b }; _ } -> (
+          match Bodies.parse_listing ~kind:envelope.kind b with
           | Ok d -> Some (h, d)
           | Error _ -> None)
       | _ -> None)
 
-(* The name a host gave this member as a guest of the dinner that admitted them. *)
+(* The name a host gave this member as a guest of the circle root or dinner that admitted them. *)
 let invited_name c identity =
   List.find_map
     (fun (_, (d : Bodies.dinner)) ->

@@ -4,7 +4,8 @@ The Digestif relay: a Cloudflare Worker with D1, in TypeScript. It implements
 [spec/digestif-relay.json](../spec/digestif-relay.json) and the relay rules in
 [docs/protocol.md](../docs/protocol.md), and passes the relay cases of the suite in
 [conformance/](../conformance). One deployment mirrors one circle: it is configured with the hash of
-the circle's founding dinner and holds nothing until that dinner is appended.
+the circle's root (its `circle` envelope, or the dinner that founded a circle at a dinner) and holds
+nothing until that root is appended. A second circle is a second deployment.
 
 | Route | What it does |
 |---|---|
@@ -53,7 +54,7 @@ Worker variables, in `wrangler.jsonc` (`vars`) or per deployment with `wrangler 
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `CIRCLE_ROOT` | `sha256:<hex>` of the founding dinner envelope this relay serves. Required. | the conformance test circle's root |
+| `CIRCLE_ROOT` | `sha256:<hex>` of the root envelope (a circle, or a founding dinner) of the circle this relay serves. Required. | the conformance test circle's root |
 | `MAX_ENVELOPE_BYTES` | Envelope plus body. | 65536 |
 | `MAX_APPENDS_PER_DEVICE_PER_DAY` | Per author, UTC day. | 500 |
 | `MAX_PAGE_SIZE` | `GET /v0/envelopes` page size. | 500 |
@@ -141,8 +142,8 @@ assets or bindings into an environment, so each repeats them; the top-level conf
 | `INSTALL_SCRIPT_URL`, `SITE_HOST` | the latest release's `install.sh`, `digestif.io` | unset |
 | Secrets (`secrets.required`) | `RELAY_SEALING_KEY`, `RESEND_API_KEY` | `RELAY_SEALING_KEY` |
 
-The root hash is `vars.CIRCLE_ROOT` of each environment, the founding dinner of the circle both
-relays serve (the `ROOT_HASH` environment variable overrides it at deploy time; the Worker reads it
+The root hash is `vars.CIRCLE_ROOT` of each environment, the root of the circle both relays serve
+(the founding circle's is dinner 2's dinner message) (the `ROOT_HASH` environment variable overrides it at deploy time; the Worker reads it
 as `CIRCLE_ROOT`). Placeholders to fill before the first deploy: `RELAY_URL` of `dinners-roman`, and the
 `database_id`s, which the deploy script fills.
 
@@ -161,9 +162,9 @@ the account's holder first (or set `CLOUDFLARE_API_TOKEN` in the shell, never in
    message). Set the secret with `npx wrangler secret put RELAY_SEALING_KEY --env <environment>`,
    pasting the value at the prompt. A relay that does not mail never reads it.
 2. On `dinners` also set `RESEND_API_KEY` (see "Operations").
-3. `npm run deploy -- dinners`. The host's node prints the founding dinner's hash (`digestif keys`
-   shows it as `root`); the conformance suite's is `node conformance/bin/digestif-conformance.ts circle show`.
-4. The host appends the founding dinner (a bootstrap append, no request signature); until then every
+3. `npm run deploy -- dinners`. The founder's node prints the root's hash (`digestif circle found`
+   prints it, and `digestif keys` shows it as `root`); the conformance suite's is `node conformance/bin/digestif-conformance.ts circle show`.
+4. The founder's node appends the root (a bootstrap append, no request signature); until then every
    signed request is `401 not_admitted`, since nobody is admitted. The operator's node then posts a
    `relay` message: `url`, `mailer` (true for dinners) and, for the mailer, `encryption_key` from
    step 1.

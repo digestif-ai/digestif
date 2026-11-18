@@ -51,7 +51,7 @@ let invite_secret (node : Node.t) invite_key =
 (* ---- the digestif-admission-v0 document ---- *)
 
 type admission = {
-  circle : string;  (** sha256:<root dinner hash> *)
+  circle : string;  (** sha256:<circle root hash> *)
   created_at : string;
   guest : Dinner.guest;
   role : string;  (** member or admin *)
@@ -117,11 +117,14 @@ let started_here (node : Node.t) id =
   | None -> false
   | Some row -> List.mem row.signed.envelope.author (Node.own_keys node)
 
-(* The circle's name, the root dinner's label, which a later dinner carries again. *)
+(* The circle's name, as its root names it (a circle's name, or a founding dinner's label), which a
+   later dinner carries again as its label. *)
 let circle_label (node : Node.t) =
   match Option.bind (Node.root node) (Log.find node.log) with
-  | Some { signed = { body = Some b; _ }; _ } -> (
-      match Bodies.parse_dinner b with Ok d -> d.label | Error _ -> "")
+  | Some { signed = { envelope; body = Some b }; _ } -> (
+      match Bodies.parse_listing ~kind:envelope.kind b with
+      | Ok d -> d.label
+      | Error _ -> "")
   | _ -> ""
 
 let utc_date t =

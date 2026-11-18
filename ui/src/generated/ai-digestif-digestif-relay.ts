@@ -51,6 +51,7 @@ export enum KeyRole {
 }
 
 export enum Kind {
+  Circle = 'circle',
   Dinner = 'dinner',
   Join = 'join',
   Device = 'device',
@@ -147,7 +148,7 @@ export interface ApprovalAnswer {
 }
 
 export interface Circle {
-  /** sha256:<hex> of the founding dinner envelope this relay is configured with. */
+  /** sha256:<hex> of the circle root this relay is configured with: its circle envelope, or the dinner that founded it. */
   root: string;
   /** The current epoch by this relay's fold. */
   epoch: number;

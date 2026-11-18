@@ -220,7 +220,7 @@ let add_own_relay t url =
       Ok (Some hash)
   end
 
-(* Store an envelope written elsewhere (a founding dinner, a join an invite flow built). *)
+(* Store an envelope written elsewhere (a circle root, a join an invite flow built). *)
 let import t (sg : Envelope.signed) =
   match Envelope.verify sg with
   | Error e -> Error (Envelope.error_message e)

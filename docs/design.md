@@ -63,12 +63,15 @@ Inbox, written by a person or their agent and addressed to the whole circle or t
 Each member's agent reads everything that reaches them, notes and items, under their Inbox prompt.
 A person hears from the circle through their Inbox and one daily digest, and never otherwise.
 
-The gate to join is attending an AI dinner. After the dinner the host chooses whom to invite, and
-the invite installs the app.
+A circle is founded on its own: a name and its founding member, who is its first admin. A dinner is
+an event inside a circle, never what makes one. The gate to join is an invite: the founder names
+the first guests when founding, every later guest is invited by the admins, and the invite installs
+the app.
 
 | Noun | Definition |
 |---|---|
 | Node | A member's app on one machine: that machine's device key, the member's log, their agent, and a local web UI. The identity key is never stored; it is derived from the recovery phrase when needed. |
+| Circle | The members who read each other: its root names it and its founder, and its relays mirror it. |
 | Relay | A mirror of one circle: accepts signed envelopes from admitted keys and serves them by cursor. |
 | Message | One signed, immutable thing a node wrote. Kinds are listed in protocol.md. |
 | Inbox | The items a member wrote and the items addressed to them, each in its status for them and the time their agent read it. |
@@ -90,9 +93,33 @@ the invite installs the app.
 
 ## Flows
 
-**Joining.** The host tells their agent to invite named guests from a dinner. The host's node
-generates a random invite keypair per guest, writes a dinner message naming each guest beside the
-public half of their invite key and its expiry (72 hours), signed by the host, and emails each guest
+**Founding a circle.** A member founds a circle with `digestif circle found --name <name>`
+(node/README.md), naming any first guests with `--guest`. The node signs the circle's root, a
+`circle` message naming the circle and the founder's identity and listing those guests
+(protocol.md, circle), makes it the node's circle, and emails each guest as an invite does
+(Joining). Nothing about a dinner is asked or written: no date, no label. Each relay serving the
+circle is configured with the root's hash, which the command prints. The root admits its founder by
+the message itself and admits its first guests by their invite keys alone; every later guest is
+invited with the admins' signed admission (protocol.md, Approvals). A dinner is an event a circle
+holds: a member who hosts one invites its guests the same way, and its dinner message carries the
+night and the label. The founding circle, rooted in dinner 2's dinner message, keeps that root; a
+dinner root folds exactly as a circle root does.
+
+**Circles.** A node holds one circle. A person in a second circle runs a second node on the same
+machine, under its own data directory (`--data-dir`, or `DIGESTIF_HOME`): its own log, its own keys
+in the keystore (scoped by data directory), its own recovery phrase and identity, its own relays and
+its own UI port. Two circles never learn that one person is in both, since nothing ties the two
+identities together, and nothing written for one circle (a note, an item, the Rules and Learnings,
+the deny list) can reach the other. One node holding several circles would put every query, fold,
+note and Inbox behind a circle selector and every message one wrong pick away from the other
+circle; separate nodes keep that boundary in the file system. A second node founds its circle with
+`digestif --data-dir <dir> init` and `digestif --data-dir <dir> circle found`, or joins with an
+invite the same way.
+
+**Joining.** A guest is invited when a circle is founded or later by the admins. The inviting node
+generates a random invite keypair per guest, writes a message naming each guest beside the
+public half of their invite key and its expiry (72 hours), signed by the host (the circle's root
+for its first guests, a dinner message for later ones), and emails each guest
 the host's own lines, one fixed paragraph on how Digestif works, and one install command, the same
 on Mac and Linux, whose `dg1.` token carries the private half. The command installs the release
 and runs setup; the installed app also takes the code by paste or through a `digestif://join/<code>`
@@ -109,8 +136,9 @@ it. Whoever reads the email first could still post the join,
 so the host's node shows every join to its person, and a join the host did not expect (from a
 guest the host has not heard has installed) is a choice from the node in the host's Inbox: confirm,
 or revoke the identity. Relays and
-nodes admit keys by the admission fold from the circle root. Any admitted member may host a dinner
-and write its message. The newcomer reads every member's current card and everything written from
+nodes admit keys by the admission fold from the circle root, a `circle` message or, for a circle
+founded at a dinner, that dinner's message. Any admitted member may host a dinner and write its
+message. The newcomer reads every member's current card and everything written from
 the join forward, enforced by the relay on epoch.
 
 **Setup.** After the join the terminal starts the member's chosen agent in a chat that proposes
@@ -565,8 +593,8 @@ Everything in this document, built for the founding circle:
 4. Reference behaviors: the record and where each note starts, the no-tools writer, the PII and
    Rules checks with the deny layer, the note at Note time with approval and auto approval, the
    status note, the read loop with budgets, the digest, the Inbox, quiet hours and muting (Roman).
-5. Invite flow from a dinner: per-guest invite keys, code handed to the app, host confirms
-   unexpected joins (Mike).
+5. Invite flow: a circle founded on its own with its first guests, per-guest invite keys, code
+   handed to the app, host confirms unexpected joins (Mike).
 6. The phone web app (Mike, after the node's UI).
 7. The founding circle: everyone at dinner 2 (Mike, Roman, Andrey, Phong, Connor, Mike Zusman). They
    get it working, then dinner 1's guests are invited.
