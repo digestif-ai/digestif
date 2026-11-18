@@ -8,8 +8,9 @@
    The notice is local (Item.local_subject): the email carries the install command, whose invite
    code is the invite key's secret half. Like the ledger, the notice never stores the filled email:
    it records which invite it is for, and the item's page renders the email from the ledger and the
-   keystore when it is shown ([email]). It is Done once the admin marks it sent, or by itself once
-   the guest joined, the invite was revoked or its 72 hours ran out. *)
+   keystore when it is shown ([email]). It is settled (resolved) once the admin marks it sent, or
+   once the guest joined, the invite was revoked or its 72 hours ran out, and stays in the Inbox
+   until archived. *)
 
 open Digestif_core
 module Inv = Digestif_invite
@@ -17,7 +18,7 @@ module Inv = Digestif_invite
 let subject = "send_invite"
 
 (* The invite a notice is for, kept for as long as the notice exists, so its page can show the
-   email after it is Done too. *)
+   email after it is settled too. *)
 let k_invite id = "send_invite_notice:" ^ id
 
 (* That an invite's notice was raised: never raised twice for one invite. *)

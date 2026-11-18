@@ -20,8 +20,9 @@
 
   let { data }: Props = $props();
   const phone = $derived(data.phone);
-  // The Inbox as the laptop's lists it: New first, then Done, newest first in each. Read is the
-  // laptop's own, so the phone shows an item New until it is Done.
+  // The phone's own split of the laptop's Inbox: New first, then settled (picked, answered or
+  // closed), newest first in each. Read is the laptop's own, so the phone shows an item New until
+  // it is settled; on the laptop a settled item stays in the Inbox, read, until archived.
   const rows = $derived(
     phone.stage === 'paired'
       ? [...phone.items.filter((i) => !itemDone(i)), ...phone.items.filter((i) => itemDone(i))].map((item) => ({
