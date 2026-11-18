@@ -466,8 +466,11 @@ attempts`, and the run fails though nothing in the code is wrong. When a Release
 `.github/workflows/release-retry.yml` runs `ci/release-retry.sh`, which reads the attempt's jobs and
 each failed or cancelled job's annotations, and re-runs the run's failed jobs when every one of them
 carries that annotation, while the attempt is below the third: two retries, then the run fails as it
-stands. A job that failed for any other reason is never retried, so a real red still fails. The
-first attempt's failure still mails its notice; the run's later attempt is what to read.
+stands. A job that failed for any other reason is never retried, so a real red still fails.
+GitHub Actions mail is off: a push, tag, dispatch or scheduled run still red five minutes after its
+last attempt, with no retry after it, reaches the owner as one Inbox notice linking that attempt,
+and a retry that comes later takes the notice back (platform's `RedWorkflowRunNotices`). A retried
+attempt files nothing.
 `ci/release.sh build` waits through a retry, and a test node's job restarted this way reads
 `running` until its attempt ends.
 
