@@ -1187,6 +1187,84 @@ let approved_email_marks () =
     "a body without the expiry mark is refused" true
     (Result.is_error (Invite_email.check_marks "{{install_command}}"))
 
+(* Every circle's node lives under one parent (docs/design.md, Circles): an id names a directory
+   there, a link there resolves to its target as written, a mistyped id is refused rather than set
+   up, and a circle's name and root are read from its log alone. *)
+let circles_under_one_parent () =
+  let parent = tmpdir () in
+  Unix.putenv "DIGESTIF_CIRCLES" parent;
+  Alcotest.(check string)
+    "an id is the slug of the circle's name" "luxury-car-roll-up"
+    (Circles.id_of_name "  Luxury Car -- Roll Up! ");
+  Alcotest.(check string)
+    "a name with no letter is no id" "" (Circles.id_of_name "!!");
+  Alcotest.(check bool)
+    "a cut id ends on no hyphen" true
+    (Circles.is_id (Circles.id_of_name (String.make 31 'a' ^ " b")));
+  List.iter
+    (fun id ->
+      Alcotest.(check bool) ("not an id: " ^ id) false (Circles.is_id id))
+    [ ""; "-a"; "a-"; "a--b"; "A"; "a/b"; ".."; String.make 33 'a' ];
+  Alcotest.(check bool)
+    "a mistyped id is refused" true
+    (Result.is_error (Circles.dir "nope"));
+  Alcotest.(check bool)
+    "a path is never an id" true
+    (Result.is_error (Circles.dir ~create:true "../x"));
+  let fresh = ok (Circles.dir ~create:true "auto") in
+  Alcotest.(check string)
+    "a new circle's node is <parent>/<id>"
+    (Filename.concat parent "auto")
+    fresh;
+  let node = Node.open_ ~keystore:(Keystore.memory ()) fresh in
+  ignore (ok (Node.init node ~phrase:(Phrase.generate ())));
+  let inv =
+    ok (Invite_node.found node ~name:"Luxury Car Roll Up" ~relays:urls [])
+  in
+  Node.close node;
+  Alcotest.(check string) "the id names it now" fresh (ok (Circles.dir "auto"));
+  (match Circles.summary fresh with
+  | Some s ->
+      Alcotest.(check string) "its name" "Luxury Car Roll Up" s.name;
+      Alcotest.(check (option string)) "its root" (Some inv.dinner_hash) s.root
+  | None -> Alcotest.fail "a set-up node has a summary");
+  (* A node set up elsewhere stays there; a link names it, by its name's slug by default. *)
+  let elsewhere = tmpdir () in
+  let other = Node.open_ ~keystore:(Keystore.memory ()) elsewhere in
+  ignore (ok (Node.init other ~phrase:(Phrase.generate ())));
+  Node.close other;
+  Alcotest.(check bool)
+    "a link to no node is refused" true
+    (Result.is_error (Circles.link ~id:"empty" ~target:(tmpdir ())));
+  ignore (ok (Circles.link ~id:"founding" ~target:elsewhere));
+  ignore (ok (Circles.link ~id:"founding" ~target:elsewhere));
+  Alcotest.(check bool)
+    "an id already taken is refused" true
+    (Result.is_error (Circles.link ~id:"auto" ~target:elsewhere));
+  Alcotest.(check string)
+    "a link resolves to its target as written, the keystore's scope" elsewhere
+    (ok (Circles.dir "founding"));
+  Alcotest.(check (list (triple string string bool)))
+    "the list"
+    [ ("auto", fresh, false); ("founding", elsewhere, true) ]
+    (List.map
+       (fun (e : Circles.entry) -> (e.id, e.dir, e.linked))
+       (Circles.entries ()));
+  Alcotest.(check (option string))
+    "a linked node's id" (Some "founding")
+    (Circles.id_of_dir elsewhere);
+  Alcotest.(check (option string))
+    "a node no entry names has none" None
+    (Circles.id_of_dir (tmpdir ()));
+  Alcotest.(check bool)
+    "founding a second circle names the command for its own node" true
+    (let n = Node.open_ ~keystore:(Keystore.memory ()) fresh in
+     let r = Invite_node.found n ~name:"Second Circle" ~relays:urls [] in
+     Node.close n;
+     match r with
+     | Error m -> Astring_contains.contains m "--circle second-circle init"
+     | Ok _ -> false)
+
 let () =
   Ci_alcotest.run "digestif-invite-flow"
     [
@@ -1194,6 +1272,8 @@ let () =
         [
           Alcotest.test_case "host, guest, watcher, revoke" `Quick flow;
           Alcotest.test_case "codes no open invite names" `Quick refused;
+          Alcotest.test_case "every circle's node under one parent" `Quick
+            circles_under_one_parent;
           Alcotest.test_case "a circle founded with no dinner and no guests"
             `Quick found_alone;
           Alcotest.test_case "ask store" `Quick asks_store;

@@ -15,12 +15,37 @@ let die fmt =
 let ok_or_die = function Ok v -> v | Error e -> die "%s" e
 let print_json j = print_endline (Yojson.Safe.pretty_to_string j)
 
-let data_dir =
+let data_dir_arg =
   let doc =
     "The node's data directory. Defaults to \\$DIGESTIF_HOME, else the \
      platform's application data directory."
   in
   Arg.(value & opt (some string) None & info [ "data-dir" ] ~docv:"DIR" ~doc)
+
+let circle_arg =
+  let doc =
+    "The circle whose node to act on: its id, the name of its directory under \
+     ~/digestif (\\$DIGESTIF_CIRCLES overrides the parent). digestif circle \
+     list names each. Instead of --data-dir."
+  in
+  Arg.(value & opt (some string) None & info [ "circle" ] ~docv:"ID" ~doc)
+
+(* The data directory a command acts on: --data-dir, else the circle --circle names (docs/design.md,
+   Circles), else None for the default. [create] lets an id that names nothing yet be the directory
+   a new node is set up in. *)
+let resolve_data_dir ~create dir circle =
+  match (dir, circle) with
+  | Some _, Some _ -> die "give --data-dir or --circle, not both"
+  | Some d, None -> Some d
+  | None, Some id -> Some (ok_or_die (Circles.dir ~create id))
+  | None, None -> None
+
+let data_dir =
+  Term.(const (resolve_data_dir ~create:false) $ data_dir_arg $ circle_arg)
+
+(* For the commands that set a node up: init and join. *)
+let data_dir_new =
+  Term.(const (resolve_data_dir ~create:true) $ data_dir_arg $ circle_arg)
 
 let with_node dir f =
   let node = Node.open_ (Option.value dir ~default:(Node.default_dir ())) in
@@ -105,7 +130,7 @@ let init =
                    ~default:"")
                 (Option.value (Log.get_config node.log Node.k_mail) ~default:"")
                 node.keystore.backend))
-      $ data_dir $ root $ relays)
+      $ data_dir_new $ root $ relays)
 
 let keys =
   cmd "keys" "Print this node's public keys and circle root."
@@ -1847,9 +1872,9 @@ let circle_found =
      device's key, make it this node's circle, append it to every relay, keep \
      a record per invite, and print each guest's email with its mailto: link. \
      No dinner is involved. A node holds one circle: a second circle is \
-     founded from its own data directory (--data-dir), with its own phrase and \
-     relays. Each relay serving the circle is configured with the root's hash, \
-     which this prints."
+     founded from its own node, digestif --circle ID init then digestif \
+     --circle ID circle found, with its own phrase and relays. Each relay \
+     serving the circle is configured with the root's hash, which this prints."
     Term.(
       const (fun dir name guests relays from message hours ->
           let message = read_message message in
@@ -1891,10 +1916,72 @@ let circle_found =
               | Error e -> die "the root is in the log but was not sent: %s" e))
       $ data_dir $ name $ guests $ relays $ from $ invite_message $ hours)
 
+(* Every circle's node on this machine (docs/design.md, Circles): each id under ~/digestif, and the
+   default node when no id names it. *)
+let circle_list =
+  cmd "list"
+    "List every circle's node on this machine, one per line: its id (the name \
+     --circle takes), the circle's name, its root, and its data directory. The \
+     default node (\\$DIGESTIF_HOME, else the platform's application data \
+     directory) is listed as default until an id links it."
+    Term.(
+      const (fun () ->
+          let line id dir =
+            match Circles.summary dir with
+            | None -> Printf.printf "%s\t\t\t%s (no node set up)\n" id dir
+            | Some s ->
+                Printf.printf "%s\t%s\t%s\t%s\n" id
+                  (if s.name = "" then "-" else s.name)
+                  (Option.value s.root ~default:"-")
+                  dir
+          in
+          let entries = Circles.entries () in
+          List.iter (fun (e : Circles.entry) -> line e.id e.dir) entries;
+          let default = Node.default_dir () in
+          if
+            Sys.file_exists (Node.log_path default)
+            && not
+                 (List.exists
+                    (fun (e : Circles.entry) -> e.dir = default)
+                    entries)
+          then line "default" default)
+      $ const ())
+
+let circle_link =
+  let id =
+    Arg.(
+      value
+      & pos 0 (some string) None
+      & info [] ~docv:"ID"
+          ~doc:
+            "The id to link it as. Defaults to the slug of the circle's name.")
+  in
+  cmd "link"
+    "Make ~/digestif/ID a link to this node (--data-dir, else the default \
+     node), so --circle ID selects it and digestif circle list names it. The \
+     node stays where it is: its keys, its service and its join link name its \
+     path. Linking the same node again changes nothing."
+    Term.(
+      const (fun dir id ->
+          let dir = node_dir dir in
+          let id =
+            match id with
+            | Some id -> id
+            | None -> (
+                match Circles.summary dir with
+                | None -> die "no node is set up in %s" dir
+                | Some { name = ""; _ } ->
+                    die "this node holds no named circle yet; give the ID"
+                | Some { name; _ } -> Circles.id_of_name name)
+          in
+          let path = ok_or_die (Circles.link ~id ~target:dir) in
+          Printf.printf "%s\t%s -> %s\n" id path dir)
+      $ data_dir $ id)
+
 let circle =
   Cmd.group ~default:circle_print
     (Cmd.info "circle" ~doc:circle_doc)
-    [ circle_found ]
+    [ circle_found; circle_list; circle_link ]
 
 let invite_expected =
   let guest =
@@ -2935,7 +3022,7 @@ let join =
               Inv.Setup.join
                 (setup_env n ~dir ?agent_name ~code io)
                 ~invite_key:(Inv.Invite_code.invite_public_key code)))
-      $ data_dir $ text $ agent_name)
+      $ data_dir_new $ text $ agent_name)
 
 let setup_resume =
   Term.(
