@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Deploys the relay to one of its two environments.
-#   scripts/deploy.sh <dinners|dinners-roman> [--dry-run] [--release <version>]
+# Deploys the relay to one of the environments wrangler.jsonc defines, one per relay of a circle.
+#   scripts/deploy.sh <environment> [--dry-run] [--release <version>]
 # Without --release it deploys a build of this checkout. With --release it deploys the signed relay
 # release <version> instead (README "Operations", Break glass): it downloads the manifest and its
 # signatures from the channel, checks them with `digestif-update verify` against the release signer
@@ -18,15 +18,15 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-usage() { echo "usage: scripts/deploy.sh <dinners|dinners-roman> [--dry-run] [--release <version>]" >&2; exit 2; }
+usage() { echo "usage: scripts/deploy.sh <environment> [--dry-run] [--release <version>]  (an env of wrangler.jsonc)" >&2; exit 2; }
 
 env_name="" dry=0 release=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry=1 ;;
     --release) [ $# -ge 2 ] || usage; release="${2#relay-v}"; shift ;;
-    dinners|dinners-roman) env_name="$1" ;;
-    *) usage ;;
+    -*) usage ;;
+    *) [ -z "$env_name" ] || usage; env_name="$1" ;;
   esac
   shift
 done
@@ -37,6 +37,10 @@ if [ -n "$release" ] && ! [[ "$release" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0
 fi
 
 cfg() { node scripts/jsonc.ts wrangler.jsonc "env.$env_name.$1"; }
+if [ -z "$(cfg name)" ]; then
+  echo "refusing: wrangler.jsonc defines no env.$env_name; it defines: $(node scripts/jsonc.ts wrangler.jsonc env | node -e 'process.stdout.write(Object.keys(JSON.parse(require("fs").readFileSync(0,"utf8"))).join(", "))')" >&2
+  exit 2
+fi
 # Every wrangler call names the release's configuration when there is one (wcfg, set below).
 wcfg=()
 wrangler() { npx wrangler "$@" ${wcfg[@]+"${wcfg[@]}"}; }

@@ -1,4 +1,4 @@
-// The deployment configuration: two wrangler environments, their bindings, variables and the
+// The deployment configuration: a wrangler environment per relay of each circle, their bindings, variables and the
 // secrets each one documents (wrangler.jsonc, README "Configuration").
 import { describe, expect, it } from "vitest";
 import raw from "../wrangler.jsonc?raw";
@@ -16,10 +16,11 @@ interface Environment {
 const config = parseJsonc(raw) as { env: Record<string, Environment> };
 const dinners = config.env["dinners"];
 const dinnersRoman = config.env["dinners-roman"];
+const luxury = config.env["luxury"];
 
 describe("wrangler environments", () => {
-  it("defines exactly dinners and dinners-roman", () => {
-    expect(Object.keys(config.env).sort()).toEqual(["dinners", "dinners-roman"]);
+  it("defines the founding circle's dinners and dinners-roman, and the Luxury Car Roll Up circle's luxury", () => {
+    expect(Object.keys(config.env).sort()).toEqual(["dinners", "dinners-roman", "luxury"]);
     expect(dinners).toBeDefined();
     expect(dinnersRoman).toBeDefined();
   });
@@ -34,11 +35,13 @@ describe("wrangler environments", () => {
     }
   });
 
-  it("roots both in one circle and carries the protocol's default limits", () => {
-    // Both relays mirror the same circle, so they name one founding dinner.
-    expect(dinners?.vars.CIRCLE_ROOT).toMatch(/^sha256:[0-9a-f]{64}$/);
+  it("roots each relay in its circle and carries the protocol's default limits", () => {
+    // The founding circle's two relays mirror one circle, so they name one founding dinner; a second
+    // circle's relay names its own root.
+    expect(dinnersRoman?.vars.CIRCLE_ROOT).toBe(dinners?.vars.CIRCLE_ROOT);
+    expect(luxury?.vars.CIRCLE_ROOT).not.toBe(dinners?.vars.CIRCLE_ROOT);
     for (const e of Object.values(config.env)) {
-      expect(e.vars.CIRCLE_ROOT).toBe(dinners?.vars.CIRCLE_ROOT);
+      expect(e.vars.CIRCLE_ROOT).toMatch(/^sha256:[0-9a-f]{64}$/);
       expect(e.vars).toMatchObject({ MAX_ENVELOPE_BYTES: "65536", MAX_APPENDS_PER_DEVICE_PER_DAY: "500", MAX_PAGE_SIZE: "500", SKEW_SECONDS: "3600" });
       expect(e.vars.MAIL_FROM).toBeTruthy();
       expect(e.vars.RELAY_URL).toBeTruthy();
@@ -69,7 +72,21 @@ describe("wrangler environments", () => {
     expect(dinnersRoman?.secrets.required).toEqual(["RELAY_SEALING_KEY"]);
   });
 
-  it("documents RELAY_SEALING_KEY for both and RESEND_API_KEY for dinners only in the README", () => {
+  it("makes luxury its circle's mailer at luxury.digestif.io, never the install script's host", () => {
+    expect(luxury?.vars.MAILER).toBe("1");
+    expect(luxury?.vars.RELAY_URL).toBe("https://luxury.digestif.io");
+    expect(luxury?.routes).toEqual([{ pattern: "luxury.digestif.io", custom_domain: true }]);
+    expect(luxury?.vars.INSTALL_SCRIPT_URL).toBeUndefined();
+    expect(luxury?.vars.SITE_HOST).toBeUndefined();
+    expect(luxury?.secrets.required).toEqual(["RELAY_SEALING_KEY", "RESEND_API_KEY"]);
+  });
+
+  it("gives every environment its own rate-limit namespace", () => {
+    const ids = Object.values(config.env).map((e) => (e as unknown as { ratelimits: { namespace_id: string }[] }).ratelimits[0]?.namespace_id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("documents RELAY_SEALING_KEY for both and RESEND_API_KEY for the mailers in the README", () => {
     for (const e of Object.values(config.env)) expect(e.secrets.required).toContain("RELAY_SEALING_KEY");
     expect(readme).toContain("`RELAY_SEALING_KEY`");
     expect(readme).toContain("`RESEND_API_KEY`");

@@ -32,8 +32,8 @@
       "migrations_dir": "migrations"
     }
   ],
-  // Two deployments of the same Worker (docs/design.md "Two relays to start"). wrangler does not
-  // inherit vars, assets or bindings into an environment, so each one repeats them.
+  // One deployment of the same Worker per relay of a circle (docs/design.md "Two relays to start").
+  // wrangler does not inherit vars, assets or bindings into an environment, so each one repeats them.
   // Secret values are never in this file; each environment lists the names it needs under
   // "secrets.required" and they are set with `wrangler secret put <NAME> --env <environment>`.
   "env": {
@@ -113,6 +113,43 @@
           // Replaced by scripts/deploy.sh from `wrangler d1 create digestif-dinners-roman`.
           "database_name": "digestif-dinners-roman",
           "database_id": "26e4568b-f457-46c6-af40-43a5d7880fcf",
+          "migrations_dir": "migrations"
+        }
+      ]
+    },
+    // luxury: the Luxury Car Roll Up circle, founded without a dinner (DIG-263), in the project's
+    // Cloudflare account at luxury.digestif.io. Its one relay, so it is the circle's mailer.
+    "luxury": {
+      "name": "digestif-luxury",
+      "secrets": { "required": ["RELAY_SEALING_KEY", "RESEND_API_KEY"] },
+      "routes": [{ "pattern": "luxury.digestif.io", "custom_domain": true }],
+      "vars": {
+        // The circle's root: its circle envelope, which digestif circle found printed.
+        "CIRCLE_ROOT": "sha256:0cf82b1cb858af57de218dce5359009da5659fe6572a833d74632632aadb6e1d",
+        "MAX_ENVELOPE_BYTES": "65536",
+        "MAX_APPENDS_PER_DEVICE_PER_DAY": "500",
+        "MAX_PAGE_SIZE": "500",
+        "SKEW_SECONDS": "3600",
+        "MAILER": "1",
+        "MAIL_FROM": "Digestif <digest@mail.digestif.io>",
+        "RELAY_URL": "https://luxury.digestif.io"
+      },
+      "assets": {
+        "directory": "./app",
+        "binding": "ASSETS",
+        "html_handling": "none",
+        "run_worker_first": true
+      },
+      "ratelimits": [
+        // The same ceiling as dinners.
+        { "name": "APPEND_LIMITER", "namespace_id": "2282", "simple": { "limit": 120, "period": 60 } }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          // Replaced by scripts/deploy.sh from `wrangler d1 create digestif-luxury`.
+          "database_name": "digestif-luxury",
+          "database_id": "00000000-0000-0000-0000-000000000000",
           "migrations_dir": "migrations"
         }
       ]

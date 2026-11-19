@@ -5,7 +5,8 @@ The Digestif relay: a Cloudflare Worker with D1, in TypeScript. It implements
 [docs/protocol.md](../docs/protocol.md), and passes the relay cases of the suite in
 [conformance/](../conformance). One deployment mirrors one circle: it is configured with the hash of
 the circle's root (its `circle` envelope, or the dinner that founded a circle at a dinner) and holds
-nothing until that root is appended. A second circle is a second deployment.
+nothing until that root is appended. A second circle is a second deployment: one more environment
+in `wrangler.jsonc`, deployed by name (see "Deploying").
 
 | Route | What it does |
 |---|---|
@@ -127,8 +128,10 @@ Locally, for a relay that keeps its state between runs:
 
 ## Deploying
 
-The same Worker is deployed twice (docs/design.md "Two relays to start"), as the wrangler
-environments `dinners` and `dinners-roman` in `wrangler.jsonc`. wrangler does not inherit variables,
+The same Worker is deployed once per relay of a circle, each a wrangler environment in
+`wrangler.jsonc`. The founding circle has two (docs/design.md "Two relays to start"), `dinners` and
+`dinners-roman`; the Luxury Car Roll Up circle has one, `luxury`, in the project's account at
+`luxury.digestif.io`, which is its mailer. wrangler does not inherit variables,
 assets or bindings into an environment, so each repeats them; the top-level configuration is for
 `wrangler dev` and the tests only.
 
@@ -147,7 +150,8 @@ The root hash is `vars.CIRCLE_ROOT` of each environment, the root of the circle 
 as `CIRCLE_ROOT`). Placeholders to fill before the first deploy: `RELAY_URL` of `dinners-roman`, and the
 `database_id`s, which the deploy script fills.
 
-Deploy with `npm run deploy -- <dinners|dinners-roman> [--dry-run] [--release <version>]`
+Deploy with `npm run deploy -- <environment> [--dry-run] [--release <version>]`, any environment
+`wrangler.jsonc` defines
 (`scripts/deploy.sh`; `--release` is "Operations", Break glass). Without `--release` it refuses
 without the root hash, prints the account and the environment, creates the D1 database when its
 id is still the placeholder (and writes the id into `wrangler.jsonc`; commit that), refuses unless
