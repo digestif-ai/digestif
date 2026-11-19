@@ -22,13 +22,17 @@ export function dinnerBody(host: Signer, label: string, guests: Guest[], relays:
   };
 }
 
-/** docs/protocol.md, circle: a circle's root, naming the circle and its founder, with any first guests and no dinner. */
-export function circleBody(founder: Signer, name: string, guests: Guest[], relays: string[]): Json {
+/**
+ * docs/protocol.md, circle: a circle's root, naming the circle and its founder, with any first guests
+ * and no dinner, and the circle's own `admins` when given, who judge its later admissions.
+ */
+export function circleBody(founder: Signer, name: string, guests: Guest[], relays: string[], admins?: Array<{ name: string; key: string }>): Json {
   return {
     host: founder.key,
     circle: { name },
     guests: guests.map((g) => ({ name: g.name, invite_key: g.invite_key, expires_at: g.expires_at })),
     relays,
+    ...(admins === undefined ? {} : { admins }),
   };
 }
 

@@ -56,6 +56,9 @@ let from_circle ~state_path (node : Node.t) (fold : Fold.t) :
     (signer_set signed list, string) result =
   match on_circle node fold with
   | [] -> Ok []
+  (* A circle whose root names its own admins changes their set, never the release signer set:
+     its signer_set messages are read by Circle_admins. *)
+  | _ when Fold.root_admins fold <> None -> Ok []
   | changes ->
       let* state = State.load state_path in
       let revocations = Circle_revocation.on_circle fold node in
@@ -93,6 +96,8 @@ let adopt ~state_path (change : signer_set signed) =
 
 (* The changes the update state at [state_path] holds that the circle does not carry yet. *)
 let missing ~state_path (node : Node.t) (fold : Fold.t) =
+  if Fold.root_admins fold <> None then Ok []
+  else
   let* state = State.load state_path in
   let carried =
     List.map (fun (s : signer_set signed) -> s.bytes) (on_circle node fold)
@@ -105,7 +110,8 @@ let missing ~state_path (node : Node.t) (fold : Fold.t) =
 (* Post every change the node holds and the circle lacks, oldest first, so a circle on the same
    channel whose admins changed the set elsewhere folds the same chain (docs/protocol.md,
    signer_set). Any admitted member's node may post one: a relay adopts it only when it verifies
-   against the set the relay holds. Returns the hashes written. *)
+   against the set the relay holds. A circle whose root names its own admins carries none: the
+   release signer set is not its admins. Returns the hashes written. *)
 let post_missing ~state_path (node : Node.t) (fold : Fold.t) =
   let* sets = missing ~state_path node fold in
   all
