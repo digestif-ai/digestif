@@ -78,7 +78,10 @@ so it never lands in an argv or a shell history.
                                              (signer.json's public_key, or --admin-key) as the circle's own
                                              admins, who sign every later invite; no dinner; prints the
                                              root hash each relay is configured with. A node holds one
-                                             circle; a second is founded from its own --data-dir
+                                             circle; a second is founded from its own node, --circle <id>
+    digestif circle list                     every circle's node on this machine: id, name, root, data dir
+    digestif circle link [<id>]              make ~/digestif/<id> a link to this node (default: the slug of
+                                             its circle's name); the node stays where it is
     digestif log | show <hash> | faults      the log, one envelope, forks and gaps
     digestif post --kind <kind> --body <file>  sign the next envelope of this device's chain, of a kind
                                              the protocol names; a summary passes the deny layer first
@@ -121,7 +124,10 @@ so it never lands in an argv or a shell history.
     digestif conformance sync ...            the conformance suite's node adapter
 
 The data directory is `$DIGESTIF_HOME`, else `~/Library/Application Support/Digestif` on macOS and
-`$XDG_DATA_HOME/digestif` on Linux; `--data-dir` overrides it.
+`$XDG_DATA_HOME/digestif` on Linux; `--data-dir` overrides it. Every circle's node lives at
+`~/digestif/<circle id>` (`$DIGESTIF_CIRCLES` overrides the parent), and `--circle <id>` selects it
+instead of `--data-dir`; `init` and `join` set up an id that names nothing yet, and every other
+command refuses one (docs/design.md, Circles).
 
 ## The web UI
 

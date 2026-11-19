@@ -34,13 +34,14 @@ let found ?(now = ptime_now ()) ?ttl ?admins (node : Node.t) ~name ?relays
     match Node.root node with
     | None -> Ok ()
     | Some root ->
+        let id = match Circles.id_of_name name with "" -> "<id>" | id -> id in
         Error
           (Printf.sprintf
              "this node already holds the circle rooted at %s, and a node \
-              holds one circle; found the new one from its own data directory: \
-              digestif --data-dir <dir> init, then digestif --data-dir <dir> \
+              holds one circle; found the new one from its own node under \
+              ~/digestif: digestif --circle %s init, then digestif --circle %s \
               circle found"
-             root)
+             root id id)
   in
   let* message =
     if guests = [] then Ok (String.trim message)

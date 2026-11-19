@@ -115,9 +115,25 @@ its own UI port. Two circles never learn that one person is in both, since nothi
 identities together, and nothing written for one circle (a note, an item, the Rules and Learnings,
 the deny list) can reach the other. One node holding several circles would put every query, fold,
 note and Inbox behind a circle selector and every message one wrong pick away from the other
-circle; separate nodes keep that boundary in the file system. A second node founds its circle with
-`digestif --data-dir <dir> init` and `digestif --data-dir <dir> circle found`, or joins with an
-invite the same way.
+circle; separate nodes keep that boundary in the file system.
+
+Every circle's node on a machine lives under one parent, `~/digestif` (`DIGESTIF_CIRCLES` overrides
+it), at `~/digestif/<circle id>`. A circle id is a slug the member picks when the node is set up,
+by default the circle name's (`luxury-car-roll-up` for Luxury Car Roll Up): lower-case letters,
+digits and single hyphens, at most 32 characters. It names the node on this machine only; the
+circle on the wire stays its root hash, and two members may file the same circle under different
+ids. It is not the root hash because the node, and with it the keystore scope its path sets, exists
+before the root is signed. Every command takes `--circle <id>` in place of `--data-dir`, `digestif
+circle list` prints every circle's id, name, root and data directory, and a command given neither
+acts on the default node. A second node founds its circle with `digestif init --circle <id>` and
+`digestif circle found --circle <id>`, or joins with `digestif join --circle <id>`; only those two
+set up an id that names nothing yet, so a mistyped id is refused rather than set up empty.
+
+A node set up before the parent existed (the default node in the platform's application data
+directory, holding the founding circle, or one under a `--data-dir` picked by hand) stays where it
+is, because its keys, its service and its `digestif://join` link name its path. `digestif circle
+link [<id>]` makes `~/digestif/<id>` a link to it, and `--circle` reads the link's target exactly as
+written, so the node opens under the same keystore scope.
 
 **Joining.** A guest is invited when a circle is founded or later by the admins. The inviting node
 generates a random invite keypair per guest, writes a message naming each guest beside the
