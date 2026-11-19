@@ -14,7 +14,11 @@
    a link the member made elsewhere) is the member's and is left alone. A missing digestif-update
    is made beside an existing ~/.local/bin, since nothing else puts the signer's tool on PATH; a
    missing digestif is not, since a member who builds from source may keep the CLI elsewhere on
-   PATH (install.sh). *)
+   PATH (install.sh).
+
+   They are the standard node's alone (Node.is_standard): a second node on the machine, in a data
+   directory of its own, never moves or makes them, so the CLI on PATH runs the release of the node
+   that was there first. DIG-264 *)
 
 let names = [ "digestif"; "digestif-update" ]
 
@@ -120,6 +124,7 @@ let describe c = Printf.sprintf "%s -> %s" c.path c.now
 let link_default ?(last = ref None) ~dir () =
   match default_bin_dir () with
   | None -> ()
+  | Some _ when not (Digestif_core.Node.is_standard dir) -> ()
   | Some bin_dir -> (
       match link ~dir ~bin_dir with
       | Ok changes ->
