@@ -1712,17 +1712,19 @@ let host_name n from =
           )
       | None -> die "this node has no identity; run digestif init")
 
-(* The admins as this node holds the signer set (DES-85466): the set in its update state, which
-   every adopted signer-set change advances (Circle_signer_set), and whether this machine's
+(* The admins as this node holds the signer set (DES-85466): the circle's own when its root names
+   them (Circle_admins, DIG-265), else the set in its update state, which every adopted signer-set
+   change advances (Circle_signer_set), and whether this machine's
    signer.json names one of their keys. A member is an admin when their release key is in the set,
    and only an admin starts an invite. ISS-88005 *)
 let release_admins n =
   let set =
     match
-      Digestif_update.State.load
-        (Digestif_update.Schedule.state_path n.Node.dir)
+      Digestif_update.Circle_admins.trust
+        ~state_path:(Digestif_update.Schedule.state_path n.Node.dir)
+        n
     with
-    | Ok st -> st.trust.signers
+    | Ok trust -> trust.signers
     | Error e -> die "the update state could not be read: %s" e
   in
   let mine =
@@ -1751,8 +1753,9 @@ let invite_by_approval n ~guests ~message ~role =
   (match
      Digestif_update.Signer_halt.admission_refusal
        ~halted:
-         (Digestif_update.Signer_halt.of_state_path
-            (Digestif_update.Schedule.state_path n.Node.dir))
+         (Digestif_update.Signer_halt.of_node
+            ~state_path:(Digestif_update.Schedule.state_path n.Node.dir)
+            n)
    with
   | Some why -> die "%s" why
   | None -> ());
@@ -1824,6 +1827,29 @@ let invite_create =
             else invite_by_approval n ~guests ~message ~role))
     $ data_dir $ guests $ invite_message $ role)
 
+(* The founder as the circle's first admin (docs/protocol.md, circle): the key --admin-key names, or
+   this machine's signer.json public_key. A circle founded on its own is judged by its own admins and
+   never by the release signers, so a founder with no admin key is told how to make one. DIG-265 *)
+let founder_admin ~name admin_key : Approval.signer =
+  let key =
+    match admin_key with
+    | Some k -> (
+        match Keys.parse_ed25519 (String.trim k) with
+        | Ok k -> k
+        | Error e -> die "--admin-key: %s" e)
+    | None -> (
+        match Digestif_update.Signer_halt.own_key () with
+        | Some k -> k
+        | None ->
+            die
+              "a circle founded on its own is judged by its founder's admin \
+               key, which signs every invite after the root: make one with \
+               digestif-update keygen FILE, name its command and public_key in \
+               signer.json (docs/releases.md, Where the key comes from), and \
+               run this again, or pass --admin-key ed25519:...")
+  in
+  { Approval.name; key }
+
 (* Found a circle on its own (docs/design.md, Circles): no dinner, no date. The root names the
    circle and its founder and lists the first guests, who need no admins' signatures, since the
    root is admitted by the message itself (docs/protocol.md, The admission fold). *)
@@ -1866,6 +1892,17 @@ let circle_found =
       & info [ "expires-in" ] ~docv:"HOURS"
           ~doc:"How long each invite code works.")
   in
+  let admin_key =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "admin-key" ] ~docv:"ED25519_KEY"
+          ~doc:
+            "The founder's admin key, the ed25519:... public half \
+             digestif-update keygen prints: the circle's first admin, who \
+             signs every invite after the root. Defaults to the public_key \
+             this machine's signer.json names.")
+  in
   cmd "found"
     "Found a circle with this node's identity as its founder: sign the root, a \
      circle envelope naming it and listing any first guests, with this \
@@ -1874,16 +1911,19 @@ let circle_found =
      No dinner is involved. A node holds one circle: a second circle is \
      founded from its own node, digestif --circle ID init then digestif \
      --circle ID circle found, with its own phrase and relays. Each relay \
-     serving the circle is configured with the root's hash, which this prints."
+     serving the circle is configured with the root's hash, which this prints. \
+     The root names the founder's admin key as the circle's own admins, who \
+     sign every later invite; the release signers never do."
     Term.(
-      const (fun dir name guests relays from message hours ->
+      const (fun dir name guests relays from message hours admin_key ->
           let message = read_message message in
           with_node dir (fun n ->
               let carded = has_card n in
               let from = host_name n from in
+              let admins = [ founder_admin ~name:from admin_key ] in
               let inv =
                 ok_or_die
-                  (Inv.Invite_node.found n ~name ~relays ~message
+                  (Inv.Invite_node.found n ~admins ~name ~relays ~message
                      ~ttl:(Ptime.Span.of_int_s (hours * 3600))
                      guests)
               in
@@ -1914,7 +1954,8 @@ let circle_found =
                        must be configured with the root hash above); the next \
                        sync retries it"
               | Error e -> die "the root is in the log but was not sent: %s" e))
-      $ data_dir $ name $ guests $ relays $ from $ invite_message $ hours)
+      $ data_dir $ name $ guests $ relays $ from $ invite_message $ hours
+      $ admin_key)
 
 (* Every circle's node on this machine (docs/design.md, Circles): each id under ~/digestif, and the
    default node when no id names it. *)

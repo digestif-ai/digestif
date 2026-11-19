@@ -72,9 +72,11 @@ so it never lands in an argv or a shell history.
                                              at a hidden prompt), and what it deploys (docs/releases.md,
                                              Relay releases)
     digestif circle                          the fold: epoch, admitted keys, cards, relays, refusals
-    digestif circle found --name <n> [--guest "Name <email>"]... [--message <text|->] [--from <n>]
+    digestif circle found --name <n> [--guest "Name <email>"]... [--message <text|->] [--from <n>] [--admin-key <key>]
                                              found a circle with this node's identity as founder: a circle
-                                             root naming it and any first guests, no dinner; prints the
+                                             root naming it, any first guests and the founder's admin key
+                                             (signer.json's public_key, or --admin-key) as the circle's own
+                                             admins, who sign every later invite; no dinner; prints the
                                              root hash each relay is configured with. A node holds one
                                              circle; a second is founded from its own node, --circle <id>
     digestif circle list                     every circle's node on this machine: id, name, root, data dir

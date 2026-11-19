@@ -100,7 +100,10 @@ the app.
 (Joining). Nothing about a dinner is asked or written: no date, no label. Each relay serving the
 circle is configured with the root's hash, which the command prints. The root admits its founder by
 the message itself and admits its first guests by their invite keys alone; every later guest is
-invited with the admins' signed admission (protocol.md, Approvals). A dinner is an event a circle
+invited with the admins' signed admission (protocol.md, Approvals). The admins are the circle's
+own: the root names the founder's admin key as its first, and the circle promotes the rest, so the
+release signers never sign for a circle they are not in, or learn who is
+in it. The founding circle, rooted in a dinner, keeps the release signers as its admins. A dinner is an event a circle
 holds: a member who hosts one invites its guests the same way, and its dinner message carries the
 night and the label. The founding circle, rooted in dinner 2's dinner message, keeps that root; a
 dinner root folds exactly as a circle root does.

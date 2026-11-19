@@ -481,20 +481,21 @@ let stage_of_member c heard (k : Fold.key_state) =
     | Some h -> h.stage
     | None -> "onboarding"
 
-(* A member's role: admin when their release key is in the folded signer set (docs/protocol.md,
-   signer_set). A node ties a release key to an identity only for its own member, by this machine's
+(* A member's role: admin when their release key is in the signer set that judges this circle's
+   admissions (docs/protocol.md, signer_set; Digestif_update.Circle_admins). A node ties a release key to an identity only for its own member, by this machine's
    signer.json (Signer_halt.own_key), so every other member reads as a member here. *)
 let member_role c identity =
   match (Digestif_update.Signer_halt.own_key (), self_identity c) with
   | Some key, Some me when me = identity -> (
       match
-        Digestif_update.State.load
-          (Digestif_update.Schedule.state_path c.node.dir)
+        Digestif_update.Circle_admins.trust
+          ~state_path:(Digestif_update.Schedule.state_path c.node.dir)
+          c.node
       with
-      | Ok st
+      | Ok trust
         when List.exists
                (fun (s : Digestif_update.Release.signer) -> s.key = key)
-               st.trust.signers ->
+               trust.signers ->
           "admin"
       | _ -> "member")
   | _ -> "member"
@@ -6131,15 +6132,17 @@ module Approvals = struct
     List.map (fun (s : Digestif_update.Release.signer) ->
         { Approval.name = s.name; key = s.key })
 
-  (* The release signer set this node judges approvals by: the set in its update state, which every
-     adopted signer-set change advances (Circle_signer_set), so a promoted admin's signature is
-     needed from the moment the change is adopted. A test sets its own. *)
+  (* The signer set this node judges approvals by: the circle's own admins when its root names them
+     (Circle_admins), else the release signer set in its update state, which every adopted
+     signer-set change advances (Circle_signer_set), so a promoted admin's signature is needed from
+     the moment the change is adopted. A test sets its own. *)
   let folded_signers c =
     match
-      Digestif_update.State.load
-        (Digestif_update.Schedule.state_path c.node.dir)
+      Digestif_update.Circle_admins.trust
+        ~state_path:(Digestif_update.Schedule.state_path c.node.dir)
+        c.node
     with
-    | Ok st -> approval_signers st.trust.signers
+    | Ok trust -> approval_signers trust.signers
     | Error _ -> approval_signers (Digestif_update.Trust_root.signers ())
 
   let signer_set = ref folded_signers
@@ -6148,8 +6151,9 @@ module Approvals = struct
   (* The revoked keys of the set this node holds: while any is, no approval but a removal or a
      replacement starts, and every other one still waiting ends halted (Signer_halt). *)
   let halted c =
-    Digestif_update.Signer_halt.of_state_path
-      (Digestif_update.Schedule.state_path c.node.dir)
+    Digestif_update.Signer_halt.of_node
+      ~state_path:(Digestif_update.Schedule.state_path c.node.dir)
+      c.node
 
   let keys_of (l : Approval.signer list) =
     List.map (fun (s : Approval.signer) -> s.key) l
@@ -6880,17 +6884,16 @@ module Approvals = struct
     Inbox.sync_approvals := sync_now
 end
 
-(* The channel's release signer set as this node folded it (docs/protocol.md, signer_set): the set
-   in the node's update state, which every signer-set change on the circle or the channel advances
+(* The signer set that judges this circle's admissions as this node folded it (docs/protocol.md,
+   signer_set): the circle's own admins when its root names them (Circle_admins), else the channel's
+   release signer set in the node's update state, which every signer-set change on the circle or the channel advances
    (Circle_signer_set), each key with whether it is revoked, and whether the halt holds. A key is
    tied to a member only where this node knows it: its own member, by this machine's signer.json. *)
 module Signers = struct
   module U = Digestif_update
 
   let trust c =
-    match U.State.load (U.Schedule.state_path c.node.dir) with
-    | Ok st -> Ok st.trust
-    | Error e -> Error e
+    U.Circle_admins.trust ~state_path:(U.Schedule.state_path c.node.dir) c.node
 
   let get c =
     match trust c with

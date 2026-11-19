@@ -1422,6 +1422,49 @@ let circle_signer_set_is_adopted () =
     "a later pass adopts nothing new" 0
     (List.length (fst (ok again.signer_sets)))
 
+(* DIG-265: a circle founded on its own names its admins in its root, and they judge its approvals
+   and admissions. Its signer_set changes their set and never the release signer set in the update
+   state, and nothing of the release set is posted into it. *)
+let own_admins_judge_their_circle () =
+  let m = member () in
+  trust_test_signers m;
+  let root, _ =
+    ok
+      (Node.write m.node ~kind:"circle"
+         (Bodies.circle_json
+            ~admins:
+              [ { Approval.name = "Founder"; key = Keys.public signer_c } ]
+            ~host:m.identity ~name:"Auto dealership roll-up" ~guests:[]
+            ~relays:[ mailing ] ()))
+  in
+  Node.set_root m.node root;
+  let state_path = U.Schedule.state_path m.dir in
+  let names (t : U.Policy.trust) =
+    List.map (fun (s : U.Release.signer) -> s.name) t.signers
+  in
+  Alcotest.(check (list string))
+    "the root's admins judge the circle, not the release signers" [ "Founder" ]
+    (names (ok (U.Circle_admins.trust ~state_path m.node)));
+  let promotion = [ ("Founder", signer_c); ("A", signer_a) ] in
+  ignore
+    (ok
+       (Node.write m.node ~kind:"signer_set"
+          (U.Circle_signer_set.to_body
+             (signer_set ~by:[ signer_c; signer_a ] promotion))));
+  Alcotest.(check (list string))
+    "the circle's own signer_set promotes its second admin" [ "Founder"; "A" ]
+    (names (ok (U.Circle_admins.trust ~state_path m.node)));
+  let fold = Node.fold m.node in
+  Alcotest.(check int)
+    "nothing reaches the update state" 0
+    (List.length (ok (U.Circle_signer_set.from_circle ~state_path m.node fold)));
+  Alcotest.(check (list string))
+    "the release signer set is untouched" [ "A"; "B" ] (signers_in m);
+  Alcotest.(check int)
+    "no release signer-set change is posted into the circle" 0
+    (List.length
+       (ok (U.Circle_signer_set.post_missing ~state_path m.node fold)))
+
 let circle_signer_set_needs_every_key () =
   let c = make_circle () in
   trust_test_signers c.host;
@@ -1779,6 +1822,8 @@ let () =
             circle_signer_set_is_adopted;
           Alcotest.test_case "every key signs it" `Quick
             circle_signer_set_needs_every_key;
+          Alcotest.test_case "a circle's own admins judge it" `Quick
+            own_admins_judge_their_circle;
           Alcotest.test_case "a held change is posted" `Quick
             held_signer_set_is_posted;
           Alcotest.test_case "a removal lifts the halt" `Quick
