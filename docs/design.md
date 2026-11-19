@@ -110,8 +110,9 @@ dinner root folds exactly as a circle root does.
 
 **Circles.** A node holds one circle. A person in a second circle runs a second node on the same
 machine, under its own data directory (`--data-dir`, or `DIGESTIF_HOME`): its own log, its own keys
-in the keystore (scoped by data directory), its own recovery phrase and identity, its own relays and
-its own UI port. Two circles never learn that one person is in both, since nothing ties the two
+in the keystore (scoped by data directory), its own recovery phrase and identity, its own relays,
+its own UI port and its own service, both named from its data directory (node/README.md). The
+commands on PATH stay the first node's. Two circles never learn that one person is in both, since nothing ties the two
 identities together, and nothing written for one circle (a note, an item, the Rules and Learnings,
 the deny list) can reach the other. One node holding several circles would put every query, fold,
 note and Inbox behind a circle selector and every message one wrong pick away from the other
