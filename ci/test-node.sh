@@ -57,7 +57,6 @@ done
 [ -n "$feed" ] || feed="${channel%/}/candidate/"
 
 work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/test-node.XXXXXX")"
-data="$work/data"
 label=com.digestif.node
 unit=digestif.service
 
@@ -71,6 +70,14 @@ case "$(uname -m)" in
   x86_64 | amd64) platform="$os-x86_64" ;;
   *) unobserved "no test node on $(uname -m)" ;;
 esac
+# The node lives at the standard data directory, the one whose service keeps the fixed names above
+# whichever version installs it; a node anywhere else gets names derived from its directory
+# (node/core/service.ml). DIG-264
+case "$os" in
+  darwin) data="$HOME/Library/Application Support/Digestif" ;;
+  linux) data="${XDG_DATA_HOME:-$HOME/.local/share}/digestif" ;;
+esac
+[ ! -e "$data/log.sqlite3" ] || unobserved "$data already holds a node"
 
 show_logs() {
   step "what the node said"

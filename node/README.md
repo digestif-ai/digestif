@@ -127,10 +127,20 @@ The data directory is `$DIGESTIF_HOME`, else `~/Library/Application Support/Dige
 instead of `--data-dir`; `init` and `join` set up an id that names nothing yet, and every other
 command refuses one (docs/design.md, Circles).
 
+The node at that standard place (`DIGESTIF_HOME` aside) is the machine's first: its service is
+`com.digestif.node` (launchd) or `digestif.service` (systemd), its UI answers on 7420, and the
+commands on PATH run its release. A node in any other data directory, such as a second circle's,
+gets names derived from that directory: `com.digestif.node.<slug>` or `digestif-<slug>.service`,
+where the slug is the directory's base name and eight hex digits of its path, and a UI port in
+7421-7999. `digestif --data-dir <dir> service install` installs it beside the first, and
+`digestif --data-dir <dir> open` opens it. Its updates move its own releases and never the commands
+on PATH. A service a second node installed under the fixed names, before they were derived, is
+retired by its next `service install`.
+
 ## The web UI
 
-`digestif run` serves the web UI and the local API (`spec/digestif-node.json`) on 127.0.0.1:7420
-(`--ui-port`, `--no-ui`), from one origin, with the UI's build embedded in the binary. Nothing
+`digestif run` serves the web UI and the local API (`spec/digestif-node.json`) on 127.0.0.1:7420,
+or a second node's own port (`--ui-port`, `--no-ui`), from one origin, with the UI's build embedded in the binary. Nothing
 answers on any other interface. `digestif open` mints a launch link good once, for five minutes; it
 sets an HttpOnly, SameSite=Strict session cookie good for 30 days and redirects to the UI, or to the
 page `digestif open PAGE` names, a link the digest carries to this machine or its path. Every API request must

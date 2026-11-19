@@ -2,20 +2,40 @@
 
 type t = { dir : string; log : Log.t; keystore : Keystore.t }
 
+(* Where a node lives when nothing names its data directory: the platform's place for it. *)
+let standard_dir () =
+  let home = Option.value (Sys.getenv_opt "HOME") ~default:"." in
+  if Keystore.is_macos () then
+    Filename.concat home "Library/Application Support/Digestif"
+  else
+    let data =
+      match Sys.getenv_opt "XDG_DATA_HOME" with
+      | Some d when d <> "" -> d
+      | _ -> Filename.concat home ".local/share"
+    in
+    Filename.concat data "digestif"
+
 let default_dir () =
   match Sys.getenv_opt "DIGESTIF_HOME" with
   | Some d when d <> "" -> d
-  | _ ->
-      let home = Option.value (Sys.getenv_opt "HOME") ~default:"." in
-      if Keystore.is_macos () then
-        Filename.concat home "Library/Application Support/Digestif"
-      else
-        let data =
-          match Sys.getenv_opt "XDG_DATA_HOME" with
-          | Some d when d <> "" -> d
-          | _ -> Filename.concat home ".local/share"
-        in
-        Filename.concat data "digestif"
+  | _ -> standard_dir ()
+
+(* [d] as one spelling: its real path when it exists, else absolute without a trailing slash. *)
+let canonical_dir d =
+  match Unix.realpath d with
+  | r -> r
+  | exception Unix.Unix_error _ ->
+      let a =
+        if Filename.is_relative d then Filename.concat (Sys.getcwd ()) d else d
+      in
+      let n = String.length a in
+      if n > 1 && a.[n - 1] = '/' then String.sub a 0 (n - 1) else a
+
+(* Whether [dir] is the machine's first node, the one at the standard place: its service, its UI
+   port and the commands on PATH keep their fixed names, and every other node's are derived from
+   its data directory (Service). DIGESTIF_HOME does not make a directory standard, since the
+   service it installs runs without it. DIG-264 *)
+let is_standard dir = canonical_dir dir = canonical_dir (standard_dir ())
 
 let rec mkdir_p d =
   if not (Sys.file_exists d) then begin

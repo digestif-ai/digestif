@@ -557,6 +557,58 @@ let test_cli_links_leave_the_members_own () =
     "the member's link stays" (Some "/opt/elsewhere/digestif-update")
     (readlink_opt (Filename.concat bin_dir "digestif-update"))
 
+(* Runs [f] with HOME and XDG_DATA_HOME naming [home], restoring both after. *)
+let with_home home f =
+  let saved =
+    List.map (fun k -> (k, Sys.getenv_opt k)) [ "HOME"; "XDG_DATA_HOME" ]
+  in
+  Unix.putenv "HOME" home;
+  Unix.putenv "XDG_DATA_HOME" (Filename.concat home ".local/share");
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter (fun (k, v) -> Unix.putenv k (Option.value v ~default:"")) saved)
+    f
+
+(* The commands on PATH are the standard node's: link_default moves them for the node at the
+   standard data directory and leaves them alone for any other one. DIG-264 *)
+let test_cli_links_are_the_standard_nodes () =
+  let pinned node =
+    Filename.concat (Layout.release_dir node "0.1.0") "bin/digestif"
+  in
+  let setup () =
+    let home = temp_dir () in
+    let bin_dir = Filename.concat home ".local/bin" in
+    Digestif_core.Node.mkdir_p bin_dir;
+    (home, bin_dir)
+  in
+  (* A second node: its own data directory, nowhere near the standard one. *)
+  let home, bin_dir = setup () in
+  let second = supervised_node () in
+  Unix.symlink (pinned second) (Filename.concat bin_dir "digestif");
+  with_home home (fun () -> Cli_links.link_default ~dir:second ());
+  Alcotest.(check (option string))
+    "a second node leaves the link alone"
+    (Some (pinned second))
+    (readlink_opt (Filename.concat bin_dir "digestif"));
+  Alcotest.(check (option string))
+    "and makes no digestif-update" None
+    (readlink_opt (Filename.concat bin_dir "digestif-update"));
+  (* The standard node, reached through a link at the standard place. *)
+  let home, bin_dir = setup () in
+  let first = Unix.realpath (supervised_node ()) in
+  Unix.symlink (pinned first) (Filename.concat bin_dir "digestif");
+  with_home home (fun () ->
+      let standard = Digestif_core.Node.standard_dir () in
+      Digestif_core.Node.mkdir_p (Filename.dirname standard);
+      Unix.symlink first standard;
+      Cli_links.link_default ~dir:standard ());
+  Alcotest.(check bool)
+    "the standard node moves it to good" true
+    (match readlink_opt (Filename.concat bin_dir "digestif") with
+    | Some t ->
+        Filename.basename (Filename.dirname (Filename.dirname t)) = "good"
+    | None -> false)
+
 let test_cli_links_wait_for_good () =
   let node = temp_dir () in
   let bin_dir = Filename.concat (temp_dir ()) "bin" in
@@ -5992,6 +6044,7 @@ let () =
           t "leave the member's own" test_cli_links_leave_the_members_own;
           t "wait for good" test_cli_links_wait_for_good;
           t "after an update" test_cli_links_after_an_update;
+          t "the standard node's" test_cli_links_are_the_standard_nodes;
         ] );
       ( "supervisor",
         [

@@ -1663,10 +1663,10 @@ let keystore_held () =
   Alcotest.(check int) "so it reads again" 4 !reads
 
 let service_files () =
+  let standard = Node.standard_dir () in
   let plist =
-    Service.launchd_plist ~exe:"/usr/local/bin/digestif"
-      ~dir:"/Users/x/Library/Application Support/Digestif" ~log_dir:"/tmp/x"
-      ~path:"/opt/homebrew/bin:/usr/bin:/bin" ()
+    Service.launchd_plist ~exe:"/usr/local/bin/digestif" ~dir:standard
+      ~log_dir:"/tmp/x" ~path:"/opt/homebrew/bin:/usr/bin:/bin" ()
   in
   Alcotest.(check bool)
     "plist runs the node" true
@@ -1675,7 +1675,7 @@ let service_files () =
        [
          "<string>com.digestif.node</string>";
          "<string>run</string>";
-         "<string>/Users/x/Library/Application Support/Digestif</string>";
+         "<string>" ^ Service.xml_escape standard ^ "</string>";
          "<key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/bin:/bin</string>";
        ]);
   let unit =
@@ -1706,6 +1706,77 @@ let service_files () =
        "ExecStart=/d/good/bin/digestif supervise --data-dir /d");
   check_str "quotes a path with a space" "\"/a b\""
     (Service.systemd_quote "/a b")
+
+(* Runs [f] with HOME, XDG_DATA_HOME and XDG_CONFIG_HOME under a fresh directory, restoring them
+   after. *)
+let with_temp_home f =
+  let keys = [ "HOME"; "XDG_DATA_HOME"; "XDG_CONFIG_HOME"; "DIGESTIF_HOME" ] in
+  let saved = List.map (fun k -> (k, Sys.getenv_opt k)) keys in
+  let home = Filename.temp_dir "digestif-home" "" in
+  Unix.putenv "HOME" home;
+  Unix.putenv "XDG_DATA_HOME" (Filename.concat home ".local/share");
+  Unix.putenv "XDG_CONFIG_HOME" (Filename.concat home ".config");
+  Unix.putenv "DIGESTIF_HOME" "";
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter (fun (k, v) -> Unix.putenv k (Option.value v ~default:"")) saved)
+    (fun () -> f home)
+
+(* A second node on the machine gets a service, a unit and a UI port of its own, derived from its
+   data directory; the standard node keeps the fixed ones. DIG-264 *)
+let service_per_data_directory () =
+  with_temp_home @@ fun home ->
+  let standard = Node.standard_dir () in
+  let second = Filename.concat home "circles/Second Circle" in
+  Node.mkdir_p second;
+  check_str "the standard node's label" "com.digestif.node"
+    (Service.label_of standard);
+  check_str "the standard node's unit" "digestif.service"
+    (Service.unit_name_of standard);
+  Alcotest.(check int)
+    "the standard node's port" 7420 (Service.ui_port standard);
+  let label = Service.label_of second in
+  let prefix = "com.digestif.node.second-circle-" in
+  Alcotest.(check bool)
+    ("a second node's label: " ^ label)
+    true
+    (String.length label = String.length prefix + 8
+    && String.sub label 0 (String.length prefix) = prefix);
+  check_str "its unit carries the same slug"
+    ("digestif-" ^ String.sub label 18 (String.length label - 18) ^ ".service")
+    (Service.unit_name_of second);
+  let port = Service.ui_port second in
+  Alcotest.(check bool) "its port is its own" true (port > 7420 && port < 8000);
+  Alcotest.(check int)
+    "the same directory, spelled with a trailing slash, is the same node" port
+    (Service.ui_port (second ^ "/"));
+  let other = Filename.concat home "elsewhere/Second Circle" in
+  Node.mkdir_p other;
+  Alcotest.(check bool)
+    "one base name in two places is two services" true
+    (Service.label_of other <> label);
+  let plan dir = Service.plan ~exe:"/x/digestif" ~dir ~path:"/bin" () in
+  Alcotest.(check bool)
+    "the two plans write different files" true
+    ((plan standard).path <> (plan second).path);
+  Alcotest.(check (list string)) "nothing to retire" [] (plan second).retire;
+  (* A fixed-name file that runs this directory was this node's, installed before the names were
+     derived: the install retires it. One that runs the standard node stays. *)
+  let fixed = (plan standard).path in
+  Node.mkdir_p (Filename.dirname fixed);
+  let write_fixed dir =
+    Out_channel.with_open_bin fixed (fun oc ->
+        output_string oc (plan dir).contents)
+  in
+  write_fixed standard;
+  Alcotest.(check (list string))
+    "the standard node's service stays" [] (plan second).retire;
+  write_fixed second;
+  Alcotest.(check (list string))
+    "this node's fixed-name service is retired" [ fixed ] (plan second).retire;
+  Alcotest.(check int)
+    "and unloaded beside its own" 2
+    (List.length (plan second).unload)
 
 (* launchd's bootout returns before the job is gone: install waits for the probe to stop finding
    it, and says so when it never does. *)
@@ -2109,6 +2180,8 @@ let () =
           Alcotest.test_case "held keystore" `Quick keystore_held;
           Alcotest.test_case "a reopened log" `Quick log_reopen;
           Alcotest.test_case "service files" `Quick service_files;
+          Alcotest.test_case "service per data directory" `Quick
+            service_per_data_directory;
           Alcotest.test_case "service waits for unload" `Quick
             service_waits_for_unload;
         ] );
