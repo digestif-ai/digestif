@@ -708,11 +708,20 @@ let retract =
 
 let ui_port =
   Arg.(
-    value & opt int 7420
+    value
+    & opt (some int) None
     & info [ "ui-port" ] ~docv:"PORT"
         ~doc:
           "The port the web UI listens on, on 127.0.0.1 only. 0 takes any free \
-           port.")
+           port. Defaults to 7420 for the node at the standard data directory, \
+           and to a port in 7421-7999 derived from the data directory for any \
+           other node.")
+
+(* --ui-port, else the node's own port (Service.ui_port). *)
+let ui_port_of dir port =
+  match port with
+  | Some p -> p
+  | None -> Service.ui_port (Option.value dir ~default:(Node.default_dir ()))
 
 (* How long `digestif run` waits for its UI port to come free before it exits. *)
 let ui_bind_wait = 30.
@@ -748,6 +757,7 @@ let ui_cmd =
       const (fun dir port browse ->
           let stop = stop_on_signals () in
           with_node dir (fun n ->
+              let port = ui_port_of dir port in
               let fd = ok_or_die (Digestif_web.Server.start ~port n) in
               print_launch n ~browse;
               Digestif_web.Server.serve ~stop:(fun () -> !stop) n fd))
@@ -2134,6 +2144,7 @@ let run =
                  that ends the process, and the service manager starts it again. The exit names
                  the environment, so the supervisor does not count it against the release.
                  ISS-47299 DIG-205 *)
+              let port = ui_port_of dir port in
               match
                 Digestif_web.Server.start ~wait_for:ui_bind_wait ~port n
               with

@@ -598,6 +598,8 @@ file or a link anywhere else at that path is the member's and is left alone, so 
 elsewhere on PATH. A release staged from a checkout carries `bin/digestif` alone, and gets no
 `digestif-update` link; when `good` names one, the hosted install script links `digestif-update`
 to the release it staged instead, which `service install` and the supervisor then leave alone.
+The links are the standard node's: a node in a data directory of its own (a second circle's)
+never moves or makes them, so the CLI on PATH stays the release of the machine's first node.
 
 ### Where the key comes from
 
