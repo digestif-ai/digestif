@@ -14,6 +14,13 @@ let revoked (trust : Policy.trust) = Policy.halted trust
 let of_state_path state_path =
   match State.load state_path with Ok st -> revoked st.trust | Error _ -> []
 
+(* The revoked admins of [node]'s circle: its own admins' when its root names them
+   (Circle_admins), else the update state's as [of_state_path] reads them. *)
+let of_node ~state_path (node : Node.t) =
+  match Circle_admins.of_fold node (Node.fold node) with
+  | Some trust -> revoked trust
+  | None -> of_state_path state_path
+
 let names (signers : signer list) =
   String.concat " and " (List.map (fun (s : signer) -> s.name) signers)
 

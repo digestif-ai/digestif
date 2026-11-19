@@ -65,6 +65,8 @@ type t = {
   revokes : (string, entry) Hashtbl.t;  (** revoke envelope hash -> entry *)
   mutable signer_sets : entry list;
       (** every signer_set the fold applied, newest first ([signer_sets]) *)
+  mutable root_admins : Approval.signer list option;
+      (** the admins a circle root names ([root_admins]) *)
   mutable applied : string list;  (** in application order *)
   mutable rejected : (string * string) list;  (** hash, reason *)
   mutable waiting : (string * string) list;  (** hash, what it waits for *)
@@ -87,6 +89,7 @@ let empty root =
     relay_operators = Hashtbl.create 8;
     revokes = Hashtbl.create 8;
     signer_sets = [];
+    root_admins = None;
     applied = [];
     rejected = [];
     waiting = [];
@@ -170,9 +173,16 @@ let parse_body entry parse =
    admission fold, step 1): either admits its host and authoring device and records its guests. *)
 let apply_root t entry =
   let kind = entry.envelope.kind in
-  match parse_body entry (Bodies.parse_listing ~kind) with
+  let ( let* ) = Result.bind in
+  let parse b =
+    let* d = Bodies.parse_listing ~kind b in
+    let* admins = Bodies.circle_admins ~kind b in
+    Ok (d, admins)
+  in
+  match parse_body entry parse with
   | Error m -> Rejected ("root " ^ kind ^ ": " ^ m)
-  | Ok d ->
+  | Ok (d, admins) ->
+      t.root_admins <- admins;
       admit t ~key:d.host ~role:Identity ~identity:d.host
         ~admitted_by:entry.hash ~join_epoch:0;
       admit t ~key:entry.envelope.author ~role:Device ~identity:d.host
@@ -447,6 +457,12 @@ let apply_release_document t entry =
    set the node holds, which lives in its update state and not in the circle (Circle_signer_set),
    so posting one grants nothing. *)
 let on_signer_set t entry = t.signer_sets <- entry :: t.signer_sets
+
+(* The admins the circle root names (protocol.md, circle): the circle's own signer set, which a
+   node judges its approvals and admissions by (Digestif_update.Circle_admins), changed by the
+   circle's signer_set messages alone. None for a root that names none, a dinner root included,
+   whose circle is judged by the release signer set. *)
+let root_admins t = t.root_admins
 
 (* Every signer_set the fold applied, in fold order. *)
 let signer_sets t = List.rev t.signer_sets

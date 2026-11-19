@@ -110,10 +110,11 @@ let body t : Yojson.Safe.t =
       relays = t.relays;
     }
 
-(* A circle root's body: its name, founder, first guests and relays. *)
-let circle_body t : Yojson.Safe.t =
-  Digestif_core.Bodies.circle_json ~host:t.host ~name:t.label
-    ~guests:(guests_json t) ~relays:t.relays
+(* A circle root's body: its name, founder, first guests and relays, and the admins who judge its
+   later invites (protocol.md, circle). *)
+let circle_body ?admins t : Yojson.Safe.t =
+  Digestif_core.Bodies.circle_json ?admins ~host:t.host ~name:t.label
+    ~guests:(guests_json t) ~relays:t.relays ()
 
 (* The dinner envelope, signed by the host's device key. A node writes it with Node.write, which
    takes seq, prev and epoch from its own chain; this is the same act for a caller holding those. *)
