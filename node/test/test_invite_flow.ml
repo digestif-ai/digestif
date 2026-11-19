@@ -238,7 +238,7 @@ let found_alone () =
     ok
       (Node.write host ~kind:"circle"
          (Bodies.circle_json ~host:host_identity ~name:"Stray" ~guests:[]
-            ~relays:urls))
+            ~relays:urls ()))
   in
   Alcotest.(check bool)
     "a circle envelope that is not the root is refused" true

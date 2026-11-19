@@ -23,10 +23,12 @@ type invited = {
    is written when there is a guest to send it to. [relays] defaults to the node's own; any given
    are added to the node, so the next sync appends the root to every one of them. No dinner is
    involved: a dinner is an event inside a circle, never its root.
+   [admins], the founder's admin key when given, are the circle's own signer set: they, and not
+   the release signers, sign every later invite (protocol.md, circle).
 
    A node holds one circle. A node that already has a root is refused: a second circle is a second
    node, with its own data directory, keys, identity and relays (docs/design.md, Circles). *)
-let found ?(now = ptime_now ()) ?ttl (node : Node.t) ~name ?relays
+let found ?(now = ptime_now ()) ?ttl ?admins (node : Node.t) ~name ?relays
     ?(message = "") guests =
   let* () =
     match Node.root node with
@@ -58,7 +60,7 @@ let found ?(now = ptime_now ()) ?ttl (node : Node.t) ~name ?relays
   let* root = Dinner.create_circle ~host ~name ~relays ~now ?ttl guests in
   List.iter (Log.add_relay node.log) relays;
   let* root_hash, _ =
-    Node.write node ~kind:"circle" (Dinner.circle_body root)
+    Node.write node ~kind:"circle" (Dinner.circle_body ?admins root)
   in
   Node.set_root node root_hash;
   let* () =

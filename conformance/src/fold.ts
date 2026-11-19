@@ -125,8 +125,9 @@ export interface FoldOptions {
   /**
    * docs/protocol.md, The admission fold: a dinner after `cutover` records its guests only when each
    * carries an admission every key of the folded signer set signed, and none while a revoked key is
-   * in that set. The set starts from `signers` (a relay's build's release-signers.json) and changes
-   * by each signer_set and release_revocation that verifies against it. Absent: every dinner
+   * in that set. The set starts from `signers` (a relay's build's release-signers.json), or from the
+   * `admins` a circle root names, and changes by each signer_set and release_revocation that
+   * verifies against it. Absent: every dinner
    * admits by its guests' invite keys alone, the rule before the cutover.
    */
   admission?: { cutover: number; signers: string[] };
@@ -138,8 +139,11 @@ export class Fold {
   readonly readsCutoffs: boolean;
   /** The admission cutover, when the fold judges admissions. */
   readonly admissionCutover: number | undefined;
-  /** The signer set dinners after the cutover are judged by, when the fold judges admissions. */
-  readonly signerSet: SignerSet | undefined;
+  /**
+   * The signer set dinners after the cutover are judged by, when the fold judges admissions: the
+   * one the fold was given, until a circle root naming `admins` replaces it with those.
+   */
+  signerSet: SignerSet | undefined;
   rootFolded = false;
   epoch = 0;
   readonly keys = new Map<string, KeyState>();
@@ -364,10 +368,14 @@ export class Fold {
     const host = str(body, "host");
     if (host === undefined) return "malformed";
     if (envelope.kind === "circle" && circleName(body) === undefined) return "malformed";
+    const admins = envelope.kind === "circle" ? circleAdmins(body) : null;
+    if (admins === undefined) return "malformed";
     // A circle root may list no guests: its founder invites them later, in a dinner.
     const guestError = envelope.kind === "circle" && body["guests"] === undefined ? null : this.recordGuests(input.hash, body);
     if (guestError !== null) return guestError;
     this.rootFolded = true;
+    // A circle that names its own admins is judged by them, never by the release signers.
+    if (admins !== null && this.signerSet !== undefined) this.signerSet = new SignerSet(admins);
     this.dinners.set(input.hash, host);
     this.dinnerAuthors.set(input.hash, envelope.author);
     this.keys.set(host, { key: host, role: "identity", identity: host, admitted_at: input.position, join_epoch: 0 });
@@ -552,4 +560,21 @@ export function circleName(body: { [key: string]: Json }): string | undefined {
   if (typeof circle !== "object" || circle === null || Array.isArray(circle)) return undefined;
   const name = circle["name"];
   return typeof name === "string" && name.trim() !== "" ? name : undefined;
+}
+
+/**
+ * The keys a `circle` body's `admins` names (docs/protocol.md, circle): the circle's own signer set.
+ * null when the body names none; undefined when `admins` is not a non-empty list of `{ name, key }`
+ * with an ed25519 key, none twice.
+ */
+export function circleAdmins(body: { [key: string]: Json }): string[] | null | undefined {
+  const admins = body["admins"];
+  if (admins === undefined) return null;
+  if (!Array.isArray(admins) || admins.length === 0) return undefined;
+  const keys: string[] = [];
+  for (const a of admins) {
+    if (!isObject(a) || typeof a["name"] !== "string" || typeof a["key"] !== "string" || !a["key"].startsWith("ed25519:")) return undefined;
+    keys.push(a["key"]);
+  }
+  return new Set(keys).size === keys.length ? keys : undefined;
 }

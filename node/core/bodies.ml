@@ -135,7 +135,7 @@ let parse_dinner j =
    its founder, its [host], and may list first guests exactly as a dinner does. It has no date: a
    dinner is an event inside a circle, never what makes one. *)
 
-let circle_json ~host ~name ~guests ~relays : Yojson.Safe.t =
+let circle_json ?(admins = []) ~host ~name ~guests ~relays () : Yojson.Safe.t =
   match dinner_json { host; date = ""; label = name; guests; relays } with
   | `Assoc fields ->
       `Assoc
@@ -143,8 +143,46 @@ let circle_json ~host ~name ~guests ~relays : Yojson.Safe.t =
            (function
              | "dinner", _ -> ("circle", `Assoc [ ("name", `String name) ])
              | f -> f)
-           fields)
+           fields
+        @
+        match admins with
+        | [] -> []
+        | l ->
+            [
+              ( "admins",
+                `List
+                  (List.map
+                     (fun (s : Approval.signer) ->
+                       `Assoc
+                         [ ("name", `String s.name); ("key", `String s.key) ])
+                     l) );
+            ])
   | j -> j
+
+(* A circle root's [admins] (protocol.md, circle): the circle's own signer set, which judges its
+   later admissions in place of the release signers. None when the root names none, a dinner root
+   included: that circle's admissions are judged by the release signer set. Each admin has a name
+   and an ed25519 key, at least one, none twice. *)
+let circle_admins ~kind j : (Approval.signer list option, string) result =
+  match (kind, get "admins" j) with
+  | "circle", Some (`List (_ :: _ as l)) ->
+      let* admins =
+        List.fold_right
+          (fun a acc ->
+            let* acc = acc in
+            match
+              (str "name" a, Result.bind (str "key" a) Keys.parse_ed25519)
+            with
+            | Ok name, Ok key -> Ok ({ Approval.name; key } :: acc)
+            | _ -> Error "every admin has a name and an ed25519 key")
+          l (Ok [])
+      in
+      let keys = List.map (fun (s : Approval.signer) -> s.key) admins in
+      if List.length (List.sort_uniq String.compare keys) <> List.length keys
+      then Error "the admins name a key twice"
+      else Ok (Some admins)
+  | "circle", Some _ -> Error "admins is a non-empty list"
+  | _ -> Ok None
 
 (* The envelope that lists invites, read as one shape whatever its kind: a dinner as parse_dinner
    reads it, or a circle root, whose name is the [label] and whose [date] is "", since no dinner
