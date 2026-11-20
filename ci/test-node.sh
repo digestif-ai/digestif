@@ -22,6 +22,18 @@
 
 set -uo pipefail
 
+step() { printf '\n==> %s\n' "$*"; }
+# Defined before the first verdict below can call it; before the node's directory is known it has
+# nothing to show.
+show_logs() {
+  [ -n "${data:-}" ] || return 0
+  step "what the node said"
+  case "$os" in
+    darwin) tail -n 60 "$data/digestif.log" 2>/dev/null ;;
+    linux) journalctl --user -u "$unit" --no-pager -n 60 2>/dev/null ;;
+  esac
+  cat "$data/update-report.json" 2>/dev/null
+}
 no() {
   echo "test-node.sh: VERSION FAILED: $*" >&2
   show_logs
@@ -32,7 +44,6 @@ unobserved() {
   show_logs
   exit 75
 }
-step() { printf '\n==> %s\n' "$*"; }
 
 [ "${GITHUB_ACTIONS:-}" = true ] || {
   echo "test-node.sh: this replaces the machine's Digestif service, so it runs only on a CI runner" >&2
@@ -79,14 +90,20 @@ case "$os" in
 esac
 [ ! -e "$data/log.sqlite3" ] || unobserved "$data already holds a node"
 
-show_logs() {
-  step "what the node said"
-  case "$os" in
-    darwin) tail -n 60 "$data/digestif.log" 2>/dev/null ;;
-    linux) journalctl --user -u "$unit" --no-pager -n 60 2>/dev/null ;;
-  esac
-  cat "$data/update-report.json" 2>/dev/null
+# The node this run installs is removed when it ends, whatever the verdict, so the machine holds no
+# node afterwards and the next run on it (the rehearsal runs three in a row) starts from none.
+remove_node() {
+  local bin
+  for bin in "$data/current/bin/digestif" "$work/version/bin/digestif" "$work/start/bin/digestif"; do
+    if [ -x "$bin" ]; then
+      "$bin" service uninstall --data-dir "$data" >/dev/null 2>&1 ||
+        echo "test-node.sh: the service of $data did not uninstall" >&2
+      break
+    fi
+  done
+  rm -rf "$data"
 }
+trap remove_node EXIT
 
 # A systemd user manager that runs with no login session, which is what a runner has.
 prepare_service_manager() {
