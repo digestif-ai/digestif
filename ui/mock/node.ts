@@ -322,7 +322,19 @@ export class MockNode {
     const memberOf = (identity: string | undefined): Member | undefined => s.members.find((x) => x.identity === identity);
     return [
       ['GET', 'status', () => this.status()],
-      ['GET', 'feed', () => ok([...s.messages, ...this.notesInFeed()].sort((x, y) => y.created_at.localeCompare(x.created_at)).map(item))],
+      [
+        'GET',
+        'feed',
+        (_p, _b, q) => {
+          // Newest first, strictly before `before` and at most `limit` (node/web/api.ml feed; DIG-213).
+          const before = q.get('before');
+          const limit = Number(q.get('limit') ?? '50');
+          const rows = [...s.messages, ...this.notesInFeed()]
+            .filter((x) => before === null || x.created_at < before)
+            .sort((x, y) => y.created_at.localeCompare(x.created_at));
+          return ok(rows.slice(0, limit).map(item));
+        }
+      ],
       [
         'GET',
         'messages/:',

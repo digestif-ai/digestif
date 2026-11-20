@@ -1,16 +1,19 @@
 <script lang="ts">
   import { goto, invalidateAll, refreshAll } from '$app/navigation';
-  import { Stage } from '#generated/ai-digestif-digestif-node.ts';
+  import { Stage, type FeedItem } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
   import ActionMenu, { type Action } from '#lib/components/ActionMenu.svelte';
   import Button from '#lib/components/Button.svelte';
   import Empty from '#lib/components/Empty.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import FeedRow from '#lib/components/FeedRow.svelte';
+  import MoreButton from '#lib/components/MoreButton.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
+  import { feedCursor, readOlder } from '#lib/feed.ts';
   import { problemLines } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { chatBubble, editPen, pause } from '#lib/icons.ts';
+  import { More } from '#lib/more.svelte.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import { feedThreads } from '#lib/threads.ts';
   import type { PageData } from './$types';
@@ -22,10 +25,11 @@
   let { data }: Props = $props();
   const problems = $derived(problemLines(data.problems));
   const active = $derived(data.status.stage === Stage.Active);
-  // Each thread once, as its latest message; a thread of several opens on all of them (ISS-85464).
-  const threads = $derived(feedThreads(data.feed));
-
   const client = createClient();
+  // The first page, and each older one More reads after the last message shown (DIG-213).
+  const feed: More<FeedItem> = $derived(new More(data.feed, feedCursor, (page) => readOlder(client, feed.rows, page)));
+  // Each thread once, as its latest message; a thread of several opens on all of them (ISS-85464).
+  const threads = $derived(feedThreads(feed.rows));
   const submission = new Submission();
   let writing = $state(false);
 
@@ -116,9 +120,11 @@
       item={t.shown}
       count={t.rows.length}
       replies={t.rows.filter((r) => r.reply_to !== undefined).length}
-      href={t.rows.length > 1 ? href.feedThread(t.key) : href.message(t.shown.hash)}
+      href={t.rows.length > 1 ? href.feedThread(t.key, t.shown.created_at) : href.message(t.shown.hash)}
     />
   {:else}
     <Empty text="Nothing yet" />
   {/each}
 </ul>
+<ErrorBanner errors={feed.errors} />
+<MoreButton list={feed} label="More messages" />
