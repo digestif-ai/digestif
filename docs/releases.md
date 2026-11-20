@@ -762,7 +762,11 @@ the signatures go back as uploads. Every version offered, of both lines, is then
 files downloaded and their attestations checked), at most six of a line at a time, so the question
 comes after the slowest version rather than after all of them in turn. Every step's duration is appended to
 `~/.digestif/update/sign-next-timings.log`, one line per step (the run id, the step, its seconds),
-and nothing extra is printed, so a slow run can be traced to the step that was slow.
+and nothing extra is printed, so a slow run can be traced to the step that was slow. Publishing a
+relay version (Publishing a relay release) is the step `settle`, and each of its parts a step of
+its own: `settle listing`, `settle trust`, `settle manifest`, `settle signatures`,
+`settle release-edit`, `settle channel` (with `settle channel sync` and `settle channel push`) and
+`settle announce`.
 
 The key command runs only once you answer `s` (Signing a release), so a leave or a drop never runs
 it: a key command that prompts, such as `op read` asking 1Password to unlock or the Keychain asking
@@ -1086,14 +1090,20 @@ for itself; `sign --next` runs the same steps in its own process
    (`Policy.check_relay`), against the set `sign --next` signs under: the build's set advanced by
    the channel's `signers/` and this machine's node, with every revocation the channel lists
    applied. Per signer, the signature kept is the one that verifies. A signer missing exits 75
-   having published nothing; a revoked key in the set fails it.
+   having published nothing; a revoked key in the set fails it. The releases listing and the
+   channel's trust are read at once, then the manifest and every signature downloaded at once;
+   `sign --next` hands over the manifest bytes it already downloaded, used while GitHub's digest of
+   the draft's `manifest.json` is still theirs.
 2. Publish the GitHub release, never as Latest (Latest is the node line to the install script and
    to the signing line), and write `relay/<version>/manifest.json`, its exact bytes,
    `relay/<version>/manifest.sig.json`, one signature per signer, and `relay/index.json` on the
    channel in one commit, with the signer's own `gh` login. `relay/index.json` has the node index's
    shape, format `digestif-relay-feed-v0`, every published relay version in version order and the
    channel's revocations named from `relay/`. A different manifest already under the version is
-   refused.
+   refused. The commit is made in the tool's own shallow checkout of the channel branch,
+   `~/.digestif/update/<owner>-<name>-channel.checkout`, fetched and reset to the branch's tip on
+   every publish rather than cloned again (cloned once, and again when it cannot be brought to the
+   tip); `sign --next`'s signer-set commit uses the same checkout.
 3. Write the `relay_release` announcement through this machine's node for its next sync to carry,
    as a recall posts a `release_recall`; with no node here it prints the
    `digestif post --kind relay_release` line that posts it from a machine running one. An

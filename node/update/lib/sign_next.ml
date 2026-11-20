@@ -1110,13 +1110,15 @@ let render_relay ~repo s =
 
 (* What the relay line needs beyond gh: every relay's version as this machine's node reads it
    (None when no node runs here), and the three steps of relay-publish (Relay_publish.run), run when
-   the signature just uploaded completes the signer set. *)
+   the signature just uploaded completes the signer set, handed the manifest.json bytes this run
+   already downloaded so it reads them again only when the draft's differ. *)
 type relay = {
   relay_versions : unit -> relay_read list option;
-  publish : Version.t -> (unit, string) result;
+  publish : manifest:string -> Version.t -> (unit, string) result;
 }
 
-let no_relay = { relay_versions = (fun () -> None); publish = (fun _ -> Ok ()) }
+let no_relay =
+  { relay_versions = (fun () -> None); publish = (fun ~manifest:_ _ -> Ok ()) }
 
 let signed_by_words = function
   | [] -> "nobody has signed it"
@@ -1211,7 +1213,9 @@ let settle_relays ~gh ~signers ~(config : config) ~say ~(relay : relay) ~me
         (Printf.sprintf
            "Your signature completes the signer set, so %s is published now:"
            tag);
-      match relay.publish v.relay.relay_release.version with
+      match
+        relay.publish ~manifest:v.relay_bytes v.relay.relay_release.version
+      with
       | Error e ->
           Error
             (Printf.sprintf
