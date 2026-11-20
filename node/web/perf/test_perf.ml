@@ -36,6 +36,10 @@ let notes = 1100
 
 (* ISS-52609: Inbox items the circle sent over the same years, the questions answered. *)
 let inbox_items = 600
+
+(* DIG-220: approvals the circle ran over the same years, every one ended, each with its answer. A
+   page of them folds each once and writes out only the page. *)
+let approvals = 300
 let samples = 40
 
 (* Nights of this node's digests in the log: a member's node writes one a night, so this is eight
@@ -231,6 +235,35 @@ let add_items (n : Node.t) =
                      ~keys:[] ~text:"An answer." ~voice:"person")))
       done)
 
+(* [approvals] ended approvals this member started and declined, the newest first, as the index
+   holds them once the pass that ended each has run. *)
+let add_approvals (n : Node.t) =
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let now = Unix.gettimeofday () in
+  Log.transaction n.log (fun () ->
+      for i = 1 to approvals do
+        let at = now -. (float_of_int i *. 86400.) in
+        let hash = Printf.sprintf "approval-%04d" i in
+        Store.Approvals.put n.log ~hash
+          (Some
+             ( me,
+               [ me ],
+               {
+                 Approval.kind = Promotion;
+                 created_at = Time_fmt.of_unix at;
+                 member = Some me;
+                 document = None;
+                 removed_key = None;
+                 added_key = None;
+               } ));
+        Store.Approvals.put_answer n.log
+          ~hash:(Printf.sprintf "answer-%04d" i)
+          ~at:(at +. 60.)
+          (Some (hash, me, true, Approval.Decline));
+        Store.Approvals.set_ended n.log hash ~state:Declined ~at:(at +. 60.)
+          ~needed:[]
+      done)
+
 (* [digests] nights of this node's own digests and [summaries] of its summaries, the oldest first,
    behind everything the demo wrote. A digest's body is a digest's shape with a sealed mail of a
    digest's size, which nothing on a page reads; a summary's is a night's note in the agent's voice,
@@ -289,6 +322,7 @@ let node home =
   (match Demo.seed n with Ok () -> () | Error e -> failwith e);
   add_notes n;
   add_items n;
+  add_approvals n;
   aged_log n;
   Log.exec n.log "DELETE FROM config WHERE key = ?" [ Log.s Sources.k_fixed ];
   Log.exec n.log "DELETE FROM config WHERE key = ?"
@@ -425,6 +459,9 @@ let routes n cookie =
     (* ISS-86960: a word every night's summary holds, and words a few Inbox items hold. *)
     ("search", "search?q=importer");
     ("search (few)", "search?q=circle%20know");
+    (* DIG-220: the approvals page, every state and one no approval is in. *)
+    ("approvals", "approvals?limit=50");
+    ("approvals?state", "approvals?state=waiting");
   ]
   @ after "notes?cursor" "notes?limit=51" "id" (fun c ->
       "notes?limit=51&cursor=" ^ c)
@@ -518,6 +555,7 @@ let write_baseline file measured =
                   ("transcripts", `Int transcripts);
                   ("notes", `Int notes);
                   ("inbox_items", `Int inbox_items);
+                  ("approvals", `Int approvals);
                   ("samples", `Int samples);
                   ("digests", `Int digests);
                   ("summaries", `Int summaries);
