@@ -666,6 +666,35 @@ let mail_waits_for_the_relay () =
     "then dropped" 0
     (List.length (Store.mail_requests c.host.node.log))
 
+(* DIG-239: a mail request the mailer keeps refusing is kept and tried again until it is
+   Daily_digest.mail_max_age old, then dropped rather than asked again every pass. *)
+let refused_mail_expires () =
+  let c = make_circle () in
+  ready c;
+  queue c (ask "Lunch?");
+  (relay c mailing).mailer <- false;
+  let _, p = run c c.host in
+  ignore (Option.get (ok p.digest));
+  Alcotest.(check (list bool))
+    "a refusal keeps the request" [ true ]
+    (List.map (fun (s : Daily_digest.sent) -> s.kept) p.sent);
+  let sent ~now = ok (Daily_digest.send ~transport:c.net ~now c.host.node) in
+  let soon = Unix.gettimeofday () +. 3600. in
+  Alcotest.(check (list bool))
+    "a young request is kept" [ true ]
+    (List.map (fun (s : Daily_digest.sent) -> s.kept) (sent ~now:soon));
+  Alcotest.(check int)
+    "and still stored" 1
+    (List.length (Store.mail_requests c.host.node.log));
+  let later = Unix.gettimeofday () +. Daily_digest.mail_max_age +. 60. in
+  Alcotest.(check (list bool))
+    "an old one is dropped" [ false ]
+    (List.map (fun (s : Daily_digest.sent) -> s.kept) (sent ~now:later));
+  Alcotest.(check int)
+    "and gone from the store" 0
+    (List.length (Store.mail_requests c.host.node.log));
+  Alcotest.(check int) "and not asked again" 0 (List.length (sent ~now:later))
+
 (* A digest signed after an own envelope the relays later refuse for good: the next sync drops the
    refused one and re-signs the digest one seq lower (Node.drop_refused), and the kept mail request
    moves with it, so the mailing relay is asked to mail the hash it holds. ISS-45471 *)
@@ -1679,9 +1708,19 @@ let circle_relay_release_is_folded () =
 (* docs/releases.md, A relay left behind is named. *)
 module Lag = Digestif_relay_deploy.Lag
 
-let sync_and_record c (m : member) =
+(* Each record runs past the last one's re-read window, as syncs hours apart would. *)
+let lag_clock = ref (Unix.gettimeofday ())
+
+let sync_and_record ?now c (m : member) =
   let r = ok (Sync.sync ~transport:c.net m.node) in
-  Lag.record ~transport:c.net m.node r
+  let now =
+    match now with
+    | Some n -> n
+    | None ->
+        lag_clock := !lag_clock +. Lag.reread +. 1.;
+        !lag_clock
+  in
+  Lag.record ~transport:c.net ~now m.node r
 
 let lag_texts ?(is_signer = false) (m : member) ~days =
   let now = Unix.gettimeofday () +. (days *. 86400.) in
@@ -1706,6 +1745,18 @@ let relay_versions_are_recorded () =
   Alcotest.(check (option (option string)))
     "a relay this sync could not read keeps what it reported"
     (Some (Some "0.2.0"))
+    (Lag.reported c.host.node.log "https://b.test");
+  (* A version read within the re-read window is not asked for again. *)
+  (relay c "https://b.test").down <- false;
+  (relay c "https://b.test").relay_version <- Some "0.3.0";
+  let now = Unix.gettimeofday () in
+  sync_and_record ~now c c.host;
+  Alcotest.(check (option (option string)))
+    "a version read in the window is not read again" (Some (Some "0.2.0"))
+    (Lag.reported c.host.node.log "https://b.test");
+  sync_and_record ~now:(now +. Lag.reread +. 1.) c c.host;
+  Alcotest.(check (option (option string)))
+    "past it the relay is asked again" (Some (Some "0.3.0"))
     (Lag.reported c.host.node.log "https://b.test")
 
 (* The host posted a.test's relay message, so the host operates it: 2 days behind names it in the
@@ -1861,6 +1912,8 @@ let () =
             refused_digest_is_written_again;
           Alcotest.test_case "mail waits for the relay" `Quick
             mail_waits_for_the_relay;
+          Alcotest.test_case "a refused mail request expires" `Quick
+            refused_mail_expires;
           Alcotest.test_case "mail follows a re-signed digest" `Quick
             mail_follows_a_resigned_digest;
           Alcotest.test_case "an answer follows a re-signed ask" `Quick

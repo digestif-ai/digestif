@@ -1497,7 +1497,7 @@ module Repositories = struct
   let authors c =
     if scanned c && not (R.authors_proposed (log c)) then begin
       refresh c;
-      Machine_scan.propose_authors ~now:c.now (log c)
+      Machine_scan.propose_authors ~now:c.now c.node
     end;
     ok (`List (List.map author_json (R.authors (log c))))
 
@@ -2797,6 +2797,77 @@ end
    member's own: Draft, New or Read. An item is settled by its outcome (its done), and Archive
    takes it out of the Inbox. A choice closes on its picks or its default at its
    deadline, and a question with no answer after a week, by the same rules on every node. *)
+(* DIG-554, DIG-101, DIG-236: what the fold says about every key (its role, whether it is revoked,
+   the cutoff and the mail it may read), kept per key under a config entry so a pass learns WHICH
+   keys changed since the last one. Whether an envelope can be opened, and whether a follow-up
+   counts, are functions of its author key's state alone (Fold.reads_content, Fold.identity_of), so
+   a join or a revoke re-opens and re-decides only what the changed keys signed, never the whole
+   history. *)
+module Fold_keys = struct
+  type change = Unchanged | All | Keys of string list
+
+  let state (f : Fold.t) =
+    Hashtbl.fold
+      (fun key (k : Fold.key_state) acc ->
+        let role =
+          match k.role with
+          | Bodies.Identity -> "i"
+          | Device -> "d"
+          | Mail -> "m"
+        in
+        let mail =
+          match k.mail_read with
+          | None -> "-"
+          | Some h -> String.concat "," (Fold.Hashes.elements h)
+        in
+        let after =
+          match k.after_seq with None -> "-" | Some i -> string_of_int i
+        in
+        ( key,
+          Printf.sprintf "%s|%b|%s|%s" role (k.revoked_by <> None) after mail )
+        :: acc)
+      f.keys []
+    |> List.sort compare
+
+  let encode l =
+    Yojson.Safe.to_string (`Assoc (List.map (fun (k, v) -> (k, `String v)) l))
+
+  let decode s =
+    match Yojson.Safe.from_string s with
+    | `Assoc l ->
+        Some
+          (List.filter_map
+             (function k, `String v -> Some (k, v) | _ -> None)
+             l)
+    | _ -> None
+    | exception _ -> None
+
+  (* The keys whose state differs between [old] and [now], one that appeared or went included. *)
+  let diff old now =
+    let changed a b =
+      List.filter_map
+        (fun (k, v) -> if List.assoc_opt k b = Some v then None else Some k)
+        a
+    in
+    List.sort_uniq compare (changed old now @ changed now old)
+
+  (* How the fold changed since [config] was last recorded on [l]: All when nothing usable is
+     recorded (a first pass, or a store from before DIG-236), which decides everything again once. *)
+  let change (l : Log.t) ~config (f : Fold.t) =
+    let now = state f in
+    let encoded = encode now in
+    match Log.get_config l config with
+    | Some s when s = encoded -> (Unchanged, encoded)
+    | None -> (All, encoded)
+    | Some s -> (
+        match decode s with
+        | None -> (All, encoded)
+        | Some old -> (Keys (diff old now), encoded))
+
+  (* The author keys [change] narrows a forget to: None for every row. *)
+  let authors = function Keys ks -> Some ks | Unchanged | All -> None
+end
+
 module Inbox = struct
   module I = Store.Items
 
@@ -2853,33 +2924,11 @@ module Inbox = struct
   let rule_version = "4"
   let k_rule = "ui_follow_up_rule"
 
-  (* DIG-554: what the fold says about every key: its role, whether it is revoked and the cutoff.
-     A stored result is a function of the log, so it is decided again whenever this changes
-     (a revocation with a cutoff, an admission), as on a node that had it first. *)
-  let k_fold = "ui_follow_up_fold"
-
-  let fold_signature (f : Fold.t) =
-    Hashtbl.fold
-      (fun key (k : Fold.key_state) acc ->
-        let role =
-          match k.role with
-          | Bodies.Identity -> "i"
-          | Device -> "d"
-          | Mail -> "m"
-        in
-        let mail =
-          match k.mail_read with
-          | None -> "-"
-          | Some h -> String.concat "," (Fold.Hashes.elements h)
-        in
-        let after =
-          match k.after_seq with None -> "-" | Some i -> string_of_int i
-        in
-        Printf.sprintf "%s|%s|%b|%s|%s" key role (k.revoked_by <> None) after
-          mail
-        :: acc)
-      f.keys []
-    |> List.sort compare |> String.concat "\n" |> Digest.string |> Digest.to_hex
+  (* DIG-554, DIG-236: what the fold says about every key (Fold_keys), when the stored results were
+     last decided. A stored result is a function of the log, so the follow-ups signed by a key whose
+     state changed (a revocation with a cutoff, an admission) are decided again, as on a node that
+     had it first. *)
+  let k_fold = "ui_follow_up_fold_keys"
 
   (* [(item, [follow-up hash])], in order, one entry per item. *)
   let group_by_item pairs =
@@ -2897,19 +2946,17 @@ module Inbox = struct
   (* Decide, once, every follow-up whose item is in the index and whose result is not stored, and
      store it on its row. Answers the items they touch. Arrival order inside a pass makes no
      difference: the decision reads the follow-up's envelope and the fold, not the clock. When the
-     rule or the fold's reading of any key has changed since the last pass, every stored result is
-     forgotten first and decided again in this pass, so the result is the same on every node
-     whatever order the log reached it in. *)
-  let decide_follow_ups c =
+     rule has changed since the last pass every stored result is forgotten first, and when the
+     fold's reading of some keys has, every result for a follow-up those keys signed (DIG-236), and
+     decided again in this pass, so the result is the same on every node whatever order the log
+     reached it in. *)
+  let decide_follow_ups c ~(change : Fold_keys.change) =
     let l = log c in
-    let signature = fold_signature c.fold in
-    if
-      Log.get_config l k_rule <> Some rule_version
-      || Log.get_config l k_fold <> Some signature
-    then (
+    if Log.get_config l k_rule <> Some rule_version then (
       I.forget_decisions l;
-      Log.set_config l k_rule rule_version;
-      Log.set_config l k_fold signature);
+      Log.set_config l k_rule rule_version)
+    else if change <> Unchanged then
+      I.forget_decisions ?authors:(Fold_keys.authors change) l;
     let each undecided read find_one decide store =
       List.filter_map
         (fun (item, hs) ->
@@ -3201,89 +3248,103 @@ module Inbox = struct
      defined below. *)
   let sync_approvals : (ctx -> unit) ref = ref (fun _ -> ())
 
+  (* One pass: every envelope not indexed yet opened, every follow-up not decided yet decided, and,
+     when the fold's reading of some keys changed ([change]), what those keys signed opened and
+     decided again (DIG-554, DIG-101, DIG-236): an item or a follow-up that reached the log before
+     its author's admission was indexed as unreadable, and reads now as on a node that had the
+     admission first. [fold_state] is recorded once the pass has used it. *)
+  let index_pass c ~priv ~change ~fold_state =
+    let l = log c in
+    if change <> Fold_keys.Unchanged then
+      I.forget_unread ?authors:(Fold_keys.authors change) l;
+    let each kind f =
+      let pass = I.unindexed l kind in
+      let x =
+        pass.hashes
+        |> List.concat_map (fun hash ->
+            match Log.find l hash with
+            | Some r when r.signed.body <> None || r.retracted_by <> None ->
+                let body =
+                  if r.retracted_by = None then r.signed.body else None
+                in
+                f c ~priv r
+                  (identity_of c r.signed.envelope.author)
+                  r.signed.envelope.created_at body
+            | _ -> [])
+      in
+      Store.Index_mark.settle l pass;
+      x
+    in
+    (* An item indexed in this pass is not freshened by a follow-up of the same pass: it is
+       New or Read as it arrived (the follow-ups are indexed first, when its row does not
+       exist yet, as before DIG-535). *)
+    let arrived = ref [] in
+    let index_new c ~priv r author at body =
+      let x = index_item c ~priv r author at body in
+      arrived := List.map fst x @ !arrived;
+      x
+    in
+    let indexed =
+      each "item" index_new
+      @ each "item_answer" index_answer
+      @ each "item_close" index_close
+      @ each "decision" index_pick
+    in
+    (* DIG-554: a follow-up indexed before its item is decided once the item is here. *)
+    let touched =
+      indexed @ List.map (fun i -> (i, None)) (decide_follow_ups c ~change)
+    in
+    let follow_ups_of h =
+      List.filter_map (fun (i, e) -> if i = h then e else None) touched
+    in
+    let me = self_identity c in
+    List.sort_uniq compare (List.map fst touched)
+    |> List.iter (fun h ->
+        Option.iter
+          (fun r ->
+            (* DIG-535: only a counted follow-up by someone else is new activity; DIG-87: a late
+               answer is not one. *)
+            let counted = function
+              | `Answer e ->
+                  List.exists
+                    (fun (a : I.answer) ->
+                      a.a_hash = e && Some a.a_author <> me)
+                    (counted_answers c r)
+              | `Pick e ->
+                  List.exists
+                    (fun (p : I.pick) -> p.p_hash = e && Some p.p_author <> me)
+                    (picks c r)
+            in
+            if
+              (not (List.mem h !arrived))
+              && List.exists counted (follow_ups_of h)
+            then I.freshen l h ~me;
+            I.set_in_time l h
+              (List.map (fun (a : I.answer) -> a.a_hash) (counted_answers c r));
+            refresh c r;
+            settle_from_decisions c r)
+          (I.by_hash l ~now:c.now h));
+    I.clock_close l ~now:c.now;
+    if change <> Fold_keys.Unchanged then Log.set_config l k_fold fold_state
+
   let index_now c =
     !sync_approvals c;
     match encryption c with
     | None -> ()
     | Some enc ->
         let l = log c in
-        let priv = enc.secret in
-        (* DIG-554, DIG-101: an item or a follow-up that reached the log before its author's
-           admission was indexed as unreadable. When the fold's reading of the keys changes it is
-           opened again, so it reads as on a node that had the admission first. *)
-        if Log.get_config l k_fold <> Some (fold_signature c.fold) then
-          I.forget_unread l;
-        let each kind f =
-          let pass = I.unindexed l kind in
-          let x =
-            pass.hashes
-            |> List.concat_map (fun hash ->
-                match Log.find l hash with
-                | Some r when r.signed.body <> None || r.retracted_by <> None ->
-                    let body =
-                      if r.retracted_by = None then r.signed.body else None
-                    in
-                    f c ~priv r
-                      (identity_of c r.signed.envelope.author)
-                      r.signed.envelope.created_at body
-                | _ -> [])
-          in
-          Store.Index_mark.settle l pass;
-          x
+        let change, fold_state = Fold_keys.change l ~config:k_fold c.fold in
+        (* DIG-236: re-opening and re-deciding what a join or a revoke changed is the run loop's
+           (keep_up) and a write's, never a GET's: a page still indexes what is new, read with the
+           fold as it stands, and leaves the change unrecorded for the next of those passes, so it
+           reads what it opened before at most one pass behind, as when the lock is busy
+           (ISS-78820). *)
+        let change =
+          match change with
+          | Keys _ when not c.upkeep_waits -> Fold_keys.Unchanged
+          | change -> change
         in
-        (* An item indexed in this pass is not freshened by a follow-up of the same pass: it is
-           New or Read as it arrived (the follow-ups are indexed first, when its row does not
-           exist yet, as before DIG-535). *)
-        let arrived = ref [] in
-        let index_new c ~priv r author at body =
-          let x = index_item c ~priv r author at body in
-          arrived := List.map fst x @ !arrived;
-          x
-        in
-        let indexed =
-          each "item" index_new
-          @ each "item_answer" index_answer
-          @ each "item_close" index_close
-          @ each "decision" index_pick
-        in
-        (* DIG-554: a follow-up indexed before its item is decided once the item is here. *)
-        let touched =
-          indexed @ List.map (fun i -> (i, None)) (decide_follow_ups c)
-        in
-        let follow_ups_of h =
-          List.filter_map (fun (i, e) -> if i = h then e else None) touched
-        in
-        let me = self_identity c in
-        List.sort_uniq compare (List.map fst touched)
-        |> List.iter (fun h ->
-            Option.iter
-              (fun r ->
-                (* DIG-535: only a counted follow-up by someone else is new activity; DIG-87: a late
-                   answer is not one. *)
-                let counted = function
-                  | `Answer e ->
-                      List.exists
-                        (fun (a : I.answer) ->
-                          a.a_hash = e && Some a.a_author <> me)
-                        (counted_answers c r)
-                  | `Pick e ->
-                      List.exists
-                        (fun (p : I.pick) ->
-                          p.p_hash = e && Some p.p_author <> me)
-                        (picks c r)
-                in
-                if
-                  (not (List.mem h !arrived))
-                  && List.exists counted (follow_ups_of h)
-                then I.freshen l h ~me;
-                I.set_in_time l h
-                  (List.map
-                     (fun (a : I.answer) -> a.a_hash)
-                     (counted_answers c r));
-                refresh c r;
-                settle_from_decisions c r)
-              (I.by_hash l ~now:c.now h));
-        I.clock_close l ~now:c.now
+        index_pass c ~priv:enc.secret ~change ~fold_state
 
   let index c = upkeep c (fun () -> index_now c)
 
@@ -6197,9 +6258,9 @@ module Approvals = struct
      the set it ended with, rebuilt from the keys it needed, since a set change it made is then the
      set this node holds. A promotion or a replacement needed the old set and the key that signed
      first; everything else needed the old set alone. *)
-  let judged_by c (a : A.row) answers =
+  let judged_by ~set (a : A.row) answers =
     match a.ended with
-    | None -> current c
+    | None -> set
     | Some (_, _, needed) ->
         let added =
           match a.request.kind with
@@ -6212,7 +6273,7 @@ module Approvals = struct
                 answers
           | Invite | Removal -> None
         in
-        let named = current c in
+        let named = set in
         List.filter_map
           (fun k ->
             if Some k = added then None
@@ -6225,35 +6286,49 @@ module Approvals = struct
                 | None -> { Approval.name = k; key = k }))
           needed
 
-  let progress c (a : A.row) =
+  (* What every approval of one request is judged against: the signer set and the halt, each read
+     from the update state once per request rather than once per approval (DIG-220). *)
+  type judge = {
+    set : Approval.signer list;
+    halt : Digestif_update.Release.signer list;
+  }
+
+  let judge c = { set = current c; halt = halted c }
+
+  let progress_by (j : judge) c (a : A.row) =
     let answers = answers c a in
     let p =
       Approval.fold a.request ~readers:a.readers
-        ~current:(judged_by c a answers) ~first_author:(first_author a)
-        ~now:c.now answers
+        ~current:(judged_by ~set:j.set a answers)
+        ~first_author:(first_author a) ~now:c.now answers
     in
     match a.ended with
     | Some (state, at, needed) -> { p with state; ended_at = Some at; needed }
     | None
       when p.state = Waiting
-           && Digestif_update.Signer_halt.ends ~halted:(halted c) a.request.kind
-      ->
+           && Digestif_update.Signer_halt.ends ~halted:j.halt a.request.kind ->
         { p with state = Halted; ended_at = Some c.now }
     | None -> p
 
+  let progress c a = progress_by (judge c) c a
   let all c = A.page (log c) ~limit:1000
+
+  (* Every approval beside its progress, each folded once. *)
+  let progressed (j : judge) c =
+    List.map (fun a -> (a, progress_by j c a)) (all c)
 
   (* Who holds each release key: the member whose node handed this circle a signature by it that
      counted, else the one member whose card bears the name the signer set gives the key. A key two
-     cards could claim, or none, has no holder. *)
-  let holders c =
+     cards could claim, or none, has no holder. [holders_of] takes every approval's progress already
+     folded, so a request that reads them all folds each once. *)
+  let holders_of c (all : (A.row * Approval.progress) list) =
     let learned =
       List.concat_map
-        (fun a ->
+        (fun (_, (p : Approval.progress)) ->
           List.map
             (fun (x : Approval.counted) -> (x.c_key, x.c_author))
-            (progress c a).counted)
-        (all c)
+            p.counted)
+        all
     in
     let named name =
       match
@@ -6273,6 +6348,8 @@ module Approvals = struct
       match List.assoc_opt s.key learned with
       | Some id -> Some id
       | None -> named s.name
+
+  let holders c = holders_of c (progressed (judge c) c)
 
   (* Every key of the set beside the member who holds it, when one is known. *)
   let admins c =
@@ -6320,9 +6397,8 @@ module Approvals = struct
     | Removal | Replacement -> a.request.removed_key
     | _ -> None
 
-  let to_json c (a : A.row) (p : Approval.progress) : Yojson.Safe.t =
-    let holder = holders c in
-    let set = current c in
+  let to_json_by ~holder ~set c (a : A.row) (p : Approval.progress) :
+      Yojson.Safe.t =
     let signer_of key =
       match List.find_opt (fun (s : Approval.signer) -> s.key = key) set with
       | Some s -> holder s
@@ -6402,11 +6478,13 @@ module Approvals = struct
       @ opt "document" (Option.map B64url.encode p.document)
       @ opt "item" a.item)
 
+  let to_json c a p = to_json_by ~holder:(holders c) ~set:(current c) c a p
+
   (* ---- the index and what follows from it ---- *)
 
-  (* DIG-101: the fold's reading of the keys when this index last opened what it could; its own
-     key, since Approvals.sync also runs without the Inbox's pass. *)
-  let k_fold = "ui_approvals_fold"
+  (* DIG-101: the fold's reading of the keys when this index last opened what it could (Fold_keys);
+     its own key, since Approvals.sync also runs without the Inbox's pass. *)
+  let k_fold = "ui_approvals_fold_keys"
 
   let index_now c =
     match encryption c with
@@ -6415,12 +6493,12 @@ module Approvals = struct
         let l = log c in
         let priv = enc.secret in
         (* DIG-101: an approval or an answer signed by a key the fold did not know yet was kept as
-           unreadable; opened again once the fold's reading changes, as on a node that had the
-           admission first. *)
-        let signature = Inbox.fold_signature c.fold in
-        if Log.get_config l k_fold <> Some signature then (
-          A.forget_unread l;
-          Log.set_config l k_fold signature);
+           unreadable; opened again once that key's reading changes, as on a node that had the
+           admission first. Only what a changed key signed is opened again (DIG-236). *)
+        let change, fold_state = Fold_keys.change l ~config:k_fold c.fold in
+        if change <> Unchanged then (
+          A.forget_unread ?authors:(Fold_keys.authors change) l;
+          Log.set_config l k_fold fold_state);
         let each kind f =
           let pass = A.unindexed l kind in
           List.iter
@@ -6536,18 +6614,34 @@ module Approvals = struct
           | Error _ -> ())
     | _ -> ()
 
+  (* An approval that ended has nothing left to do on this node once its item is settled, which the
+     pass that ended it did, and its effect taken: only a signed one whose effect this node owes
+     and has not taken yet is read again (DIG-220). *)
+  let open_ c (a : A.row) =
+    match a.ended with
+    | None -> true
+    | Some (Signed, _, _) when a.effected_at = None -> (
+        match a.request.kind with
+        | Invite -> self_identity c = Some a.author
+        | Promotion | Removal | Replacement ->
+            List.exists
+              (fun (_, _, own, _, _) -> own)
+              (A.answers (log c) a.hash))
+    | Some _ -> false
+
   let sync_now c =
     index_now c;
+    let j = judge c in
     List.iter
       (fun (a : A.row) ->
-        let p = progress c a in
+        let p = progress_by j c a in
         (match (a.ended, p.ended_at) with
         | None, Some at when p.state <> Waiting ->
             A.set_ended (log c) a.hash ~state:p.state ~at ~needed:p.needed
         | _ -> ());
         file_item c a p;
         take_effect c a p)
-      (all c)
+      (List.filter (open_ c) (A.unsettled (log c)))
 
   let sync c = upkeep c (fun () -> sync_now c)
   let found c id = Option.map (fun a -> (a, progress c a)) (A.find (log c) id)
@@ -6586,15 +6680,17 @@ module Approvals = struct
             let limit =
               Option.value (Option.bind v int_of_string_opt) ~default:50
             in
-            all c
-            |> List.filter_map (fun a ->
-                let p = progress c a in
-                if
-                  wanted = []
-                  || List.mem (Approval.state_to_string p.state) wanted
-                then Some (to_json c a p)
-                else None)
+            (* DIG-220: every approval folded once, the page cut to [limit] before any is written
+               out, and the holders and the set read once for the whole page. *)
+            let j = judge c in
+            let all = progressed j c in
+            let holder = holders_of c all in
+            all
+            |> List.filter (fun (_, (p : Approval.progress)) ->
+                wanted = []
+                || List.mem (Approval.state_to_string p.state) wanted)
             |> List.filteri (fun i _ -> i < limit)
+            |> List.map (fun (a, p) -> to_json_by ~holder ~set:j.set c a p)
             |> fun l -> ok (`List l))
 
   (* "Priya Raman <priya@raman.dev>": the name and the address. *)

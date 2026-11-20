@@ -3,6 +3,8 @@ export const LINES = {
   divergent: "Divergent histories across two relays merge to the same fold and the same feed.",
   gap: "A relay missing a range: the node detects the gap by `seq` and backfills from the other relay.",
   duplicate: "Duplicate appends are idempotent; a fork is refused and surfaced.",
+  verification:
+    "Verification: an envelope a relay serves whose signature does not verify, whose body does not match its `body_hash`, or whose `author` did not sign it, is an `invalid_envelope` fault on the node, never folded or shown.",
   sequence: "`seq` regression is refused for chained keys and allowed for mail keys.",
   revocation:
     "Revocation: appends from a revoked device are refused, and so is a revoke whose `after_seq` or `mail_read` is missing or names a key it does not stop; a node reads a revoked device's envelopes up to `after_seq` and a revoked mail key's that `mail_read` lists, and no others, whatever their `created_at`.",

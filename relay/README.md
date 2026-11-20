@@ -179,7 +179,9 @@ A relay that already holds earlier runs is as good a target as a fresh one (conf
 
 The first request of any kind, even an unsigned `GET /v0/circle` that answers 401, writes the
 database's `circle` row from the Worker's `CIRCLE_ROOT`, and the Worker refuses a database whose row
-names another root: every route answers `500 misconfigured`. So a relay first deployed on the
+names another root: every route answers `500 misconfigured`. An isolate checks the row once and
+then trusts it for reads; every append reads it again, so a row re-rooted under a running isolate
+refuses that isolate's writes. So a relay first deployed on the
 conformance test circle and then redeployed with a real `ROOT_HASH` on the same database serves
 nothing until that row goes.
 

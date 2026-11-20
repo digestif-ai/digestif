@@ -4,13 +4,25 @@
 
 import { execFile } from "node:child_process";
 
-function run(args: string[]): Promise<{ code: number; stdout: string }> {
+function run(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    execFile("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
-      if (error && typeof error.code !== "number") return resolve({ code: 1, stdout: "" });
-      resolve({ code: error ? (error.code as number) : 0, stdout });
+    execFile("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error && typeof error.code !== "number") return resolve({ code: 1, stdout: "", stderr: error.message });
+      resolve({ code: error ? (error.code as number) : 0, stdout, stderr });
     });
   });
+}
+
+/**
+ * A repository git could not read: its commits are unknown, not none, so the source fails and does
+ * not move rather than reading as a window with nothing in it. DIG-239
+ */
+export class GitFailed extends Error {
+  readonly repo: string;
+  constructor(repo: string, detail: string) {
+    super(`git could not read ${repo}${detail === "" ? "" : `: ${detail}`}`);
+    this.repo = repo;
+  }
 }
 
 export interface Commit {
@@ -66,23 +78,24 @@ function parse(stdout: string): Commit[] {
 /**
  * The default branch's commits after a point, oldest first. With `sha` still on the branch, the
  * commits after it; a sha rebased away falls back to committer time after `since`, leaving out the
- * sha itself. Without either, every commit (the caller bounds it with `since`).
+ * sha itself. Without either, every commit (the caller bounds it with `since`). A `git log` that
+ * fails throws GitFailed.
  */
 export async function commitsAfter(repo: string, from: { since?: number; sha?: string }): Promise<Commit[]> {
   const ref = await defaultRef(repo);
   if (ref === undefined) return [];
   const bySha = from.sha !== undefined && (await isAncestor(repo, from.sha, ref));
   const range = bySha ? [ref, `^${from.sha}`] : [ref, ...(from.since === undefined ? [] : [`--since=@${Math.floor(from.since / 1000)}`])];
-  const { code, stdout } = await run(["-C", repo, "log", "--reverse", `--format=%H${FIELD}%ct${FIELD}%ae${FIELD}%P${FIELD}%B${RECORD}`, ...range]);
-  if (code !== 0) return [];
+  const { code, stdout, stderr } = await run(["-C", repo, "log", "--reverse", `--format=%H${FIELD}%ct${FIELD}%ae${FIELD}%P${FIELD}%B${RECORD}`, ...range]);
+  if (code !== 0) throw new GitFailed(repo, stderr.trim().split("\n")[0] ?? "");
   // --since keeps a commit at the second of the point; it was read.
   return parse(stdout).filter((c) => c.sha !== from.sha && (bySha || from.since === undefined || c.at > from.since));
 }
 
-/** The commits of every clone of one repository, each once, oldest first. */
+/** The commits of every clone of one repository, each once, oldest first. The clones are read at once. */
 export async function repositoryCommits(paths: string[], from: { since?: number; sha?: string }): Promise<Commit[]> {
   const bySha = new Map<string, Commit>();
-  for (const p of paths) for (const c of await commitsAfter(p, from)) if (!bySha.has(c.sha)) bySha.set(c.sha, c);
+  for (const cs of await Promise.all(paths.map((p) => commitsAfter(p, from)))) for (const c of cs) if (!bySha.has(c.sha)) bySha.set(c.sha, c);
   return [...bySha.values()].sort((a, b) => a.at - b.at);
 }
 

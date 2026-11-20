@@ -54,7 +54,8 @@ node conformance/bin/digestif-conformance.ts relay --url https://relay-1.example
 ```
 
 Output is TAP; the exit status is 1 when any case fails. `--case` takes an id, an id prefix
-(`relay.bootstrap`) or a glob (`relay.*.refused`). With one `--url`, the cases needing two relays are
+(`relay.bootstrap`) or a glob (`relay.*.refused`); one that matches no case exits 2 before any case
+runs, so a mistyped case never passes by selecting nothing. With one `--url`, the cases needing two relays are
 skipped.
 
 Every case invites its own members through a dinner of its own, so a relay that already holds
@@ -72,7 +73,7 @@ node conformance/bin/digestif-conformance.ts node --node "digestif conformance"
 The node cases start three local fake relays per case, all rooted in a fresh circle: two checked
 relays that play honest relays which each saw part of the history, and one unchecked relay that plays
 a relay which accepted what it should not have (a join on a spent invite, a retract by the wrong
-identity). The suite writes the history, runs the node's sync, and checks what the node concluded.
+identity, an envelope whose signature or `body_hash` does not verify). The suite writes the history, runs the node's sync, and checks what the node concluded.
 Without `--node` it runs the reference node.
 
 ### The node adapter contract
@@ -93,7 +94,10 @@ reads everything. The object:
   "epoch": 2,
   "keys": [ { "key": "ed25519:...", "role": "identity | device | mail", "identity": "ed25519:...", "revoked": false } ],
   "feed": [ "sha256:<envelope hash>" ],
-  "faults": [ { "kind": "fork", "author": "ed25519:...", "seq": 3, "hashes": [ "sha256:...", "sha256:..." ] } ],
+  "faults": [
+    { "kind": "fork", "author": "ed25519:...", "seq": 3, "hashes": [ "sha256:...", "sha256:..." ] },
+    { "kind": "invalid_envelope", "author": "ed25519:...", "seq": 4, "hashes": [ "sha256:..." ] }
+  ],
   "gaps": [ { "author": "ed25519:...", "missing": [ 2 ] } ]
 }
 ```
@@ -101,7 +105,10 @@ reads everything. The object:
 - `epoch` and `keys` are the node's admission fold over every relay it read.
 - `feed` is the content a person would see: every admitted content envelope except retracts, the
   targets of valid retracts, and both sides of a fork, ordered by `created_at` then hash.
-- `faults` names every chained author holding two envelopes at one `seq`.
+- `faults` names every chained author holding two envelopes at one `seq` (`fork`, both hashes), and
+  every envelope a relay served whose signature or `body_hash` does not verify (`invalid_envelope`,
+  its one hash, at the `author` and `seq` it claims), once however many relays served it. An invalid
+  envelope is never folded and never in `feed`.
 - `gaps` names, per device key, the `seq` numbers below its highest that no relay served. Mail keys
   are chainless and never have gaps.
 
@@ -127,6 +134,7 @@ something; a new case lands with the break that fails it.
 | Divergent histories | `relay.divergent.same-fold` (2 relays) | `node.divergent.same-fold-and-feed` |
 | A relay missing a range | `relay.gap.missing-range-accepted` | `node.gap.backfilled-from-other-relay`, `node.gap.reported-when-unfilled` |
 | Duplicates and forks | `relay.duplicate.idempotent`, `relay.fork.refused` | `node.duplicate.deduped`, `node.fork.surfaced` |
+| Verification | | `node.verify.bad-signature`, `node.verify.bad-body-hash`, `node.verify.forged-author` |
 | `seq` regression | `relay.seq.chained-regression-refused`, `relay.seq.mail-regression-allowed` | `node.seq.mail-gaps-allowed` |
 | Revocation | `relay.revocation.device-refused`, `relay.revocation.identity-refused`, `relay.revocation.cutoff-required` | `node.revocation.ignored-from-revoke-forward`, `node.revocation.mail-read-by-listed-hashes` |
 | Clock drift | `relay.clock.skew-inside-window`, `relay.clock.skew-outside-window`, `relay.clock.replayed-nonce` | |

@@ -3,7 +3,7 @@
 import { parseArgs } from "node:util";
 import { DEFAULT_CIRCLE_PATH, TestCircle } from "../src/circle.ts";
 import { FakeRelay } from "../src/fake-relay.ts";
-import type { Outcome } from "../src/harness.ts";
+import { unmatchedPatterns, type Outcome } from "../src/harness.ts";
 import { REFERENCE_NODE } from "../src/node-runner.ts";
 import { runNodeSuite, runRelaySuite } from "../src/suites.ts";
 import { nodeCases } from "../src/cases/node.ts";
@@ -28,8 +28,8 @@ const USAGE = `digestif-conformance <command>
   list
       Print every case id and the protocol line it covers.
 
---case takes an id, an id prefix (relay.clock) or a glob (relay.*.refused). The default circle is
-fixtures/test-circle.json.`;
+--case takes an id, an id prefix (relay.clock) or a glob (relay.*.refused); one that matches no case
+of the command's suites exits 2 before anything runs. The default circle is fixtures/test-circle.json.`;
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -56,6 +56,18 @@ function exitWith(outcomes: Outcome[]): never {
 
 const only = values.case;
 const [command, sub] = positionals;
+
+/** Exits 2 naming every --case pattern that matches none of `cases`, so a mistyped one cannot pass. */
+function requireMatches(cases: Array<{ id: string }>): void {
+  const unmatched = unmatchedPatterns(cases, only);
+  if (unmatched.length === 0) return;
+  console.error(`--case ${unmatched.map((p) => JSON.stringify(p)).join(", ")} matches no case; \`list\` prints every case id`);
+  process.exit(2);
+}
+
+if (command === "relay") requireMatches(relayCases);
+else if (command === "node") requireMatches(nodeCases);
+else if (command === "self-test") requireMatches([...relayCases, ...nodeCases]);
 switch (command) {
   case "relay": {
     if (!values.url?.length) throw new Error("relay needs --url");

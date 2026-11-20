@@ -102,6 +102,11 @@ let call n cookie ?(meth = "GET") ?body path =
   in
   (r.status, if r.body = "" then `Null else Yojson.Safe.from_string r.body)
 
+(* DIG-236: the run loop's pass after a sync (Api.keep_up), which re-opens and re-decides what a join
+   or a revoke changed; a page's GET leaves that to it. *)
+let keep_up n =
+  match Api.keep_up n with Ok () -> () | Error e -> Alcotest.fail e
+
 let member name = function
   | `Assoc f -> (
       match List.assoc_opt name f with Some v -> v | None -> `Null)
@@ -6516,6 +6521,66 @@ let author_proposal () =
     ]
     [ f.f_id; f.f_name; f.f_org_id; f.f_org_name ]
 
+(* DIG-237: a git that never answers (a clone on a mount that hangs) is killed at the proposal's
+   deadline and counts nothing, and the read that asks for the proposal waits at most its own bound,
+   answering from the store while the proposal is still being read. *)
+let author_proposal_bounded () =
+  let module R = Store.Repositories in
+  let bin = tmpdir () in
+  let git = Filename.concat bin "git" in
+  Out_channel.with_open_bin git (fun oc ->
+      output_string oc "#!/bin/sh\nexec sleep 60\n");
+  Unix.chmod git 0o755;
+  let n = fresh () in
+  let repo = tmpdir () in
+  R.apply_scan n.log ~at:"2026-01-01T00:00:00Z" [ found ~path:repo "hung" ];
+  let path = Sys.getenv "PATH" in
+  Unix.putenv "PATH" (bin ^ ":" ^ path);
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "PATH" path)
+    (fun () ->
+      let t = Unix.gettimeofday () in
+      let proposals =
+        Machine_scan.author_proposal ~global:None ~budget:1.
+          ~now:(Unix.gettimeofday ()) n.log
+      in
+      let took = Unix.gettimeofday () -. t in
+      Alcotest.(check (list (triple string (option string) string)))
+        "a git that never answers counts nothing" [] proposals;
+      Alcotest.(check bool)
+        (Printf.sprintf "within the deadline (%.1fs)" took)
+        true (took < 10.))
+
+let author_proposal_off_request () =
+  let module R = Store.Repositories in
+  let n = fresh () in
+  let proposal ~now:_ _ =
+    Thread.delay 0.5;
+    [ ("me@example.com", Some "Me", "yours") ]
+  in
+  let t = Unix.gettimeofday () in
+  Machine_scan.propose_authors ~wait:0.05 ~proposal ~now:t n;
+  let took = Unix.gettimeofday () -. t in
+  Alcotest.(check bool)
+    (Printf.sprintf "the read answers at its bound (%.2fs)" took)
+    true (took < 0.4);
+  Alcotest.(check bool)
+    "not proposed while it is read" false (R.authors_proposed n.log);
+  let until = Unix.gettimeofday () +. 10. in
+  while (not (R.authors_proposed n.log)) && Unix.gettimeofday () < until do
+    Thread.delay 0.02
+  done;
+  Alcotest.(check (list string))
+    "stored once read" [ "me@example.com" ]
+    (List.map (fun (a : R.author) -> a.email) (R.authors n.log));
+  let asked = ref false in
+  Machine_scan.propose_authors
+    ~proposal:(fun ~now:_ _ ->
+      asked := true;
+      [])
+    ~now:t n;
+  Alcotest.(check bool) "and never read again" false !asked
+
 let repositories_api () =
   let n = demo () in
   let c = session n in
@@ -9123,11 +9188,87 @@ let inbox_follow_up_revoke_after_decision () =
           ~mail_read:[]));
   ignore (call "items");
   Alcotest.(check (list (option bool)))
+    "2: a page leaves the revoke to the run loop" [ Some true; Some true ]
+    (stored_answers n h);
+  keep_up n;
+  Alcotest.(check (list (option bool)))
     "2: the one past the cutoff is decided again" [ Some true; Some false ]
     (stored_answers n h);
   Alcotest.(check int)
     "3: and the item lists one answer" 1
     (List.length (list (member "answers" (snd (call ("items/" ^ h))))))
+
+(* DIG-236: a change of the fold names only the keys it changed, and what is forgotten for it is
+   only what those keys signed: a revoke undecides that key's follow-ups and no one else's, and a
+   join drops that key's unreadable rows and no one else's. *)
+let inbox_fold_change_is_narrowed () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let quinn2 = second_device n quinn in
+  let l = n.Node.log in
+  let h = peer_item n pia (question "Answered twice") in
+  let answer p =
+    ignore
+      (peer_write n p "item_answer"
+         (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+            ~voice:"person"))
+  in
+  answer quinn;
+  answer quinn2;
+  let stranger () =
+    {
+      quinn with
+      p_identity = Crypto.generate_signing_key ();
+      p_device = Crypto.generate_signing_key ();
+      p_seq = 1;
+      p_prev = None;
+    }
+  in
+  let s1 = stranger () and s2 = stranger () in
+  ignore (peer_item n s1 (question "From a key never admitted"));
+  ignore (peer_item n s2 (question "From another"));
+  keep_up n;
+  ignore (call "items");
+  let config = "test_fold_keys" in
+  let change () = fst (Api.Fold_keys.change l ~config (Node.fold n)) in
+  let record () =
+    Log.set_config l config (snd (Api.Fold_keys.change l ~config (Node.fold n)))
+  in
+  Alcotest.(check bool) "nothing recorded reads as All" true (change () = All);
+  record ();
+  Alcotest.(check bool)
+    "recorded reads as Unchanged" true
+    (change () = Unchanged);
+  let target = Keys.public quinn2.p_device in
+  ignore
+    (peer_write n quinn "revoke"
+       (Bodies.make_revoke ~by:quinn.p_identity ~target
+          ~after_seq:[ (target, 5) ]
+          ~mail_read:[]));
+  Alcotest.(check bool)
+    "a revoke names the revoked key alone" true
+    (change () = Keys [ target ]);
+  Alcotest.(check (list (option bool)))
+    "both answers decided" [ Some true; Some true ] (stored_answers n h);
+  Store.Items.forget_decisions ~authors:[ target ] l;
+  Alcotest.(check (list (option bool)))
+    "only the revoked key's answer is undecided" [ None; Some true ]
+    (List.sort compare (stored_answers n h));
+  let unreadable () =
+    match
+      Log.rows l
+        "SELECT count(*) FROM ui_items WHERE kind IS NULL AND local = 0" []
+    with
+    | [ [| v |] ] -> Log.int v
+    | _ -> -1
+  in
+  Alcotest.(check int) "two unreadable items" 2 (unreadable ());
+  Store.Items.forget_unread ~authors:[ Keys.public s1.p_device ] l;
+  Alcotest.(check int)
+    "only the one that key signed is dropped" 1 (unreadable ())
 
 (* DIG-554: an answer from a member's new device that reaches the log before the device's
    admission is decided once the admission arrives, as on a node that had the admission first. *)
@@ -9158,7 +9299,7 @@ let inbox_follow_up_before_its_admission () =
   Alcotest.(check (list (option bool)))
     "1: nothing counts while the key is unknown" [] (stored_answers n h);
   ignore (ok (Node.import n admission));
-  ignore (call "items");
+  keep_up n;
   Alcotest.(check (list (option bool)))
     "2: the answer counts once the admission is here" [ Some true ]
     (stored_answers n h);
@@ -9241,7 +9382,7 @@ let item_and_approval_before_their_admission () =
   ignore (ok (Node.import n admission2));
   let item2 = peer_item n late (question "Sent after the admission") in
   let started2 = approval late in
-  ignore (call "items");
+  keep_up n;
   let status id = s "status" (snd (call ("items/" ^ id))) in
   Alcotest.(check bool) "2: the item is read" true (listed item);
   Alcotest.(check string)
@@ -9299,7 +9440,7 @@ let inbox_follow_up_own_key_revoked () =
        (Bodies.make_revoke ~by:identity ~target:mine
           ~after_seq:[ (mine, sg.envelope.seq - 1) ]
           ~mail_read:[]));
-  ignore (call "items");
+  keep_up n;
   Alcotest.(check (list (option bool)))
     "2: the revoked own key no longer counts" [ Some false ]
     (stored_answers n h)
@@ -9509,7 +9650,7 @@ let inbox_follow_up_decided_again () =
           ~target:(Keys.public pia3.p_device)
           ~after_seq:[ (Keys.public pia3.p_device, 0) ]
           ~mail_read:[]));
-  ignore (call "items");
+  keep_up n;
   (* a pick on a choice *)
   Alcotest.(check (list (option bool)))
     "2: the pick is decided again" [ Some false ] (stored_picks n choice);
@@ -9531,7 +9672,7 @@ let inbox_follow_up_decided_again () =
     [ true; false ]
     [ listed ~state:"others" asked; listed asked ];
   ignore (ok (Node.import n admission));
-  ignore (call "items");
+  keep_up n;
   Alcotest.(check (list (option bool)))
     "5: the late device's answer counts once its admission is here"
     [ Some true ] (stored_answers n waited);
@@ -10668,6 +10809,7 @@ let follow_up_agreement () =
   List.iter (fun sg -> ignore (ok (Node.import n sg))) (List.rev !pending);
   ignore (ok (Node.import n late_admission));
   ignore (call "items");
+  keep_up n;
   List.iter write_close close_rest;
   ignore (call "items");
   List.iteri (fun i w -> if i >= half then write w) rest;
@@ -14355,6 +14497,34 @@ let search () =
   Alcotest.(check (list string))
     "a retract stays out of a refill" [] (hashes "feed" "zeppelin")
 
+(* DIG-238: the note queries a pass or a search runs read through an index, never a scan of every
+   note or an index SQLite builds for one query. *)
+let notes_query_plans () =
+  let n = demo () in
+  let plan sql params =
+    List.map
+      (fun r -> Log.text r.(3))
+      (Log.rows n.log ("EXPLAIN QUERY PLAN " ^ sql) params)
+  in
+  let holds want lines = List.exists (fun l -> contains l want) lines in
+  let search = plan Store.Search.notes_sql [ Log.s "quokka*"; Log.i 10 ] in
+  Alcotest.(check bool)
+    "the search builds no index" false (holds "AUTOMATIC" search);
+  Alcotest.(check bool)
+    "the search reads a version by its key" true
+    (holds "SEARCH v USING INDEX sqlite_autoindex_ui_note_versions_1 (id=?)"
+       search);
+  List.iter
+    (fun (name, cond) ->
+      Alcotest.(check bool)
+        (name ^ " reads through ui_notes_status")
+        true
+        (holds "USING INDEX ui_notes_status"
+           (plan (Store.Notes.handed_over_sql cond) [])))
+    [
+      ("waiting", Store.Notes.waiting_cond); ("unsent", Store.Notes.unsent_cond);
+    ]
+
 (* DIG-128: a search hit's excerpt starts a little before the first word the query matches the
    start of, on one line, cut with an ellipsis. *)
 let excerpt () =
@@ -14401,6 +14571,7 @@ let () =
             inbox_reply_is_not_a_pick;
           Alcotest.test_case "search" `Quick search;
           Alcotest.test_case "search excerpt" `Quick excerpt;
+          Alcotest.test_case "note query plans" `Quick notes_query_plans;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
           Alcotest.test_case "the Inbox: no reply to self" `Quick
@@ -14419,6 +14590,8 @@ let () =
           Alcotest.test_case
             "the Inbox: a revoke after the decision decides again" `Quick
             inbox_follow_up_revoke_after_decision;
+          Alcotest.test_case "the Inbox: a fold change is narrowed to its keys"
+            `Quick inbox_fold_change_is_narrowed;
           Alcotest.test_case "the Inbox: a follow-up before its admission"
             `Quick inbox_follow_up_before_its_admission;
           Alcotest.test_case
@@ -14565,6 +14738,10 @@ let () =
             setup_chat_repositories;
           Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;
           Alcotest.test_case "author proposal" `Quick author_proposal;
+          Alcotest.test_case "author proposal bounded" `Quick
+            author_proposal_bounded;
+          Alcotest.test_case "author proposal off the request" `Quick
+            author_proposal_off_request;
           Alcotest.test_case "repositories api" `Quick repositories_api;
           Alcotest.test_case "repositories raise no ask" `Quick
             repositories_raise_no_ask;

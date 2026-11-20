@@ -41,6 +41,12 @@ let to_json e : Yojson.Safe.t =
 
 let body_hash body = Keys.hash_of_bytes (Jcs.encode body)
 let hash e = Keys.hash_of_bytes (Jcs.encode (to_json e))
+
+(* [hash] of an envelope read from somewhere else: a string that is not UTF-8 has no canonical form,
+   which is an error to report against that envelope rather than an exception out of the reader. *)
+let hash_result e =
+  Result.map Keys.hash_of_bytes (Jcs.encode_result (to_json e))
+
 let signing_bytes e = Jcs.encode (unsigned_json e)
 
 let create ~(key : Crypto.signing_key) ~seq ?prev

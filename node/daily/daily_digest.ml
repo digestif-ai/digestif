@@ -718,31 +718,57 @@ let write ?machine (node : Node.t) ~now =
 type sent = {
   digest : string;
   result : (Relay_client.mail_status, string) result;
+  kept : bool;  (** false once the request is dropped, sent or expired *)
 }
 
+(* How long a mail request is tried before it is dropped. A digest is daily, so one this old has
+   been followed by newer ones, and a mailer that kept refusing it would otherwise be asked again
+   every pass for ever. *)
+let mail_max_age = 3. *. 86_400.
+
 (* Send every kept mail request whose digest the mailing relay already holds. A request is dropped
-   on sent or already_sent and kept on anything else, to be sent again on a later pass. *)
-let send ?(transport = Relay_client.curl) (node : Node.t) =
+   on sent or already_sent and kept on anything else, to be sent again on a later pass, until it is
+   [mail_max_age] old: then a failure, or a digest the relay still does not hold, drops it. *)
+let send ?(transport = Relay_client.curl) ?now (node : Node.t) =
   Store.ensure node.log;
+  let now = match now with Some t -> t | None -> Unix.gettimeofday () in
   match Node.device_key node with
   | Error e -> Error e
   | Ok key ->
       Ok
         (List.filter_map
            (fun (r : Store.mail_request) ->
-             if not (Log.held_by node.log ~relay:r.relay r.digest) then None
+             let expired =
+               match Time_fmt.to_unix r.created_at with
+               | Some t -> now -. t >= mail_max_age
+               | None -> false
+             in
+             let give_up m =
+               Store.drop_mail_request node.log r.digest;
+               Some
+                 {
+                   digest = r.digest;
+                   result =
+                     Error
+                       (Printf.sprintf "dropped after %.0f days: %s"
+                          (mail_max_age /. 86_400.) m);
+                   kept = false;
+                 }
+             in
+             if not (Log.held_by node.log ~relay:r.relay r.digest) then
+               if expired then give_up "the mailing relay never held the digest"
+               else None
              else
-               let result =
-                 match
-                   Relay_client.mail transport ~base:r.relay ~key r.request
-                 with
-                 | Ok status ->
-                     Store.drop_mail_request node.log r.digest;
-                     Ok status
-                 | Error e ->
-                     let m = Relay_client.error_to_string e in
+               match
+                 Relay_client.mail transport ~base:r.relay ~key r.request
+               with
+               | Ok status ->
+                   Store.drop_mail_request node.log r.digest;
+                   Some { digest = r.digest; result = Ok status; kept = false }
+               | Error e ->
+                   let m = Relay_client.error_to_string e in
+                   if expired then give_up m
+                   else (
                      Store.mail_request_failed node.log r.digest m;
-                     Error m
-               in
-               Some { digest = r.digest; result })
+                     Some { digest = r.digest; result = Error m; kept = true }))
            (Store.mail_requests node.log))

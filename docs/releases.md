@@ -85,9 +85,12 @@ Inbox item showing the one command to run:
 
     digestif-update approve <id>
 
-It reads the release key the way `sign --next` does (Where the key comes from), into memory only,
-prints what it signs (the guest and the email, or the new signer set), asks once, and hands the
-signature to the local node's API, which seals it to the approval's readers. The node never holds,
+It prints what it signs (the guest and the email, or the new signer set) for the key `signer.json`'s
+`public_key` names, asks once, and only on `y` reads the release key the way `sign --next` does
+(Where the key comes from), into memory only, refusing a key that is not that `public_key`; then it
+hands the signature to the local node's API, which seals it to the approval's readers. Without a
+`public_key` in `signer.json` the key itself is the only way to know whose approvals to show, so it
+is read first. The node never holds,
 asks for or receives the secret half. With no id it lists the approvals waiting on this key. A
 promoted member makes their key first, with `digestif-update keygen` into `~/Downloads` and the
 steps of Where the key comes from, and their `approve` is the approval's first signature, which
@@ -742,8 +745,7 @@ every signer has signed is named and left to the rollout. For the newest version
 - the manifest's notes as signed, and every archive's sha256, each checked against the digest
   GitHub holds for the draft's file;
 - when the version cannot be signed, every reason why, under NOT OFFERED.
-- the new signer set, when the version replaces it, and who has already signed, with "One more
-  signature publishes it." when only one is missing.
+- who has already signed, with "One more signature publishes it." when only one is missing.
 
 Then it asks once. `s` signs every version offered: it runs the key command once, refuses a key that
 is not a release signer, signs each manifest's exact bytes, and uploads each signature as its
@@ -791,7 +793,10 @@ question, so neither `s` nor `sign --next --sign` signs it and `d` does not drop
   differs from the manifest's;
 - a file, or the manifest, has no attestation by the line's workflow on the tag at the commit
   shown, or no one run attests them all;
-- a relay migration the version adds differs from the tag's file or cannot be read there.
+- a relay migration the version adds differs from the tag's file or cannot be read there;
+- a relay migration the last published relay version listed has another sha256: an applied
+  migration never runs again, so the edit would reach only a relay deployed fresh, and the change
+  goes in a new migration.
 
 The other versions offered are still signed by one answer; with none left the run fails, naming
 the versions it could not sign. Running the workflow again on the tag rebuilds and re-attests the
@@ -1048,9 +1053,11 @@ before it asks:
   limited to the pathspecs `ci/relay-release-paths` holds at the tag. A tag without that file shows
   every commit and says so;
 - the notes as signed;
-- **the full text of every migration the version adds** over the last published relay version,
-  read from the tag and checked against the manifest's sha256, since a migration is the one part
-  of a relay release a rollback does not undo;
+- **the full text of every migration the version adds or changes** over the last published relay
+  version (a name it lacked, or the same name with another sha256, flagged CHANGED), read from the
+  tag and checked against the manifest's sha256, since a migration is the one part of a relay
+  release a rollback does not undo, and every migration that version listed and this one does not,
+  flagged REMOVED;
 - the bundle's sha256, checked against the digest GitHub holds for the draft's file, and, when the
   version cannot be signed, every reason why (a migration that differs from the tag's file is one);
 - `compatible_with`, and every relay's `relay_version` as this machine's node last read it (what
@@ -1074,7 +1081,10 @@ for itself; `sign --next` runs the same steps in its own process
 (`node/update/lib/relay_publish.ml`). Three steps:
 
 1. Download the draft's manifest and every signature and check them as a node does
-   (`Policy.check_relay`). A signer missing exits 75 having published nothing.
+   (`Policy.check_relay`), against the set `sign --next` signs under: the build's set advanced by
+   the channel's `signers/` and this machine's node, with every revocation the channel lists
+   applied. Per signer, the signature kept is the one that verifies. A signer missing exits 75
+   having published nothing; a revoked key in the set fails it.
 2. Publish the GitHub release, never as Latest (Latest is the node line to the install script and
    to the signing line), and write `relay/<version>/manifest.json`, its exact bytes,
    `relay/<version>/manifest.sig.json`, one signature per signer, and `relay/index.json` on the

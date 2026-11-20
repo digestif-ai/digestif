@@ -478,11 +478,65 @@ let refresh_report_if_stale ?discover ~now (log : Log.t) =
 let refresh_if_stale ?discover ~now (log : Log.t) =
   Option.is_some (refresh_report_if_stale ?discover ~now log)
 
+(* DIG-237: how long one proposal may spend asking git for the clones' committers, and how long the
+   read that started it waits for it. Each clone's log is a process, and a clone on a mount that
+   hangs never answers, so the logs run concurrently under one deadline, each killed once it passes;
+   a clone not asked by then counts nothing. *)
+let author_budget = 30.
+let author_wait = 2.
+
+(* The proposal from the clones the store lists. *)
+let author_proposal ?global ?(budget = author_budget) ~now (log : Log.t) =
+  let until = Unix.gettimeofday () +. budget in
+  Repo_scan.propose_authors ?global ~now
+    ~committers_of:(fun repos ->
+      concurrently ~until
+        (fun r ->
+          let timeout = Float.max 1. (until -. Unix.gettimeofday ()) in
+          Repo_scan.committers ~timeout ~now r)
+        repos
+      |> List.map (Option.value ~default:[]))
+    (List.map Sources.untilde (Store.Repositories.clone_paths log))
+
+(* At most one proposal at a time in this process. *)
+let proposing = Atomic.make false
+
 (* The scan's commit authors enter the member's list once, the first time it is read (the
-   Repositories page or the setup chat); a node whose sources were set by hand proposes none. *)
-let propose_authors ~now (log : Log.t) =
+   Repositories page or the setup chat); a node whose sources were set by hand proposes none. The
+   proposal is read on a thread with a connection to the log of its own and stored once read, which
+   is its cache: the read that started it waits at most [wait] seconds and answers from the store,
+   so a git that hangs holds no request (DIG-237). [proposal] is what is proposed, for tests. *)
+let propose_authors ?(wait = author_wait)
+    ?(proposal = author_proposal ?global:None ?budget:None) ~now (node : Node.t)
+    =
   let module R = Store.Repositories in
-  if (not (fixed log)) && not (R.authors_proposed log) then
-    R.propose_authors log
-      (Repo_scan.propose_authors ~now
-         (List.map Sources.untilde (R.clone_paths log)))
+  if
+    (not (fixed node.log))
+    && (not (R.authors_proposed node.log))
+    && Atomic.compare_and_set proposing false true
+  then begin
+    let finished = Atomic.make false in
+    ignore
+      (Thread.create
+         (fun () ->
+           Fun.protect
+             ~finally:(fun () ->
+               Atomic.set finished true;
+               Atomic.set proposing false)
+             (fun () ->
+               try
+                 let log = Log.reopen (Node.log_path node.dir) in
+                 Fun.protect
+                   ~finally:(fun () -> Log.close log)
+                   (fun () ->
+                     if not (R.authors_proposed log) then
+                       R.propose_authors log (proposal ~now log))
+               with e ->
+                 Printf.eprintf "%s commit authors: %s\n%!" (Time_fmt.now ())
+                   (Printexc.to_string e)))
+         ());
+    let until = Unix.gettimeofday () +. wait in
+    while (not (Atomic.get finished)) && Unix.gettimeofday () < until do
+      Thread.delay 0.02
+    done
+  end

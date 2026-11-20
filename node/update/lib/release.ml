@@ -402,6 +402,21 @@ let valid_signers ~domain bytes sigs =
       else acc)
     [] sigs
 
+(* The signatures of [sigs] that verify over [bytes], the first that verifies per key, each by a key
+   [wanted] answers true for: what a signature file carries for those keys. An invalid signature by a
+   key never shadows a valid one by the same key listed after it. *)
+let verified_signatures ~domain ~wanted bytes sigs =
+  let msg = signed_bytes ~domain bytes in
+  List.fold_left
+    (fun acc s ->
+      if
+        List.exists (fun k -> k.by = s.by) acc
+        || (not (wanted s.by))
+        || not (Keys.verify ~pub:s.by ~signature:s.signature msg)
+      then acc
+      else acc @ [ s ])
+    [] sigs
+
 (* Add (or replace) [secret]'s signature over [bytes] in [sigs]. *)
 let add_signature ~domain ~secret bytes sigs =
   let by = Keys.public secret in

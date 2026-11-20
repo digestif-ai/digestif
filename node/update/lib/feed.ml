@@ -77,6 +77,14 @@ let curl ~limit url =
       "--location";
       "--proto";
       "=https";
+      (* A release download may take minutes on a slow link, so the whole fetch gets ten; a channel
+         that never connects, or a transfer that stalls, ends long before that. *)
+      "--connect-timeout";
+      "30";
+      "--speed-limit";
+      "1024";
+      "--speed-time";
+      "60";
       "--max-time";
       "600";
       "--max-filesize";
