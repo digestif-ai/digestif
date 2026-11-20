@@ -374,7 +374,7 @@ export class Fold {
     const guestError = envelope.kind === "circle" && body["guests"] === undefined ? null : this.recordGuests(input.hash, body);
     if (guestError !== null) return guestError;
     this.rootFolded = true;
-    // A circle that names its own admins is judged by them, never by the release signers.
+    // A circle is judged by its own admins, never by the release signers.
     if (admins !== null && this.signerSet !== undefined) this.signerSet = new SignerSet(admins);
     this.dinners.set(input.hash, host);
     this.dinnerAuthors.set(input.hash, envelope.author);
@@ -564,12 +564,11 @@ export function circleName(body: { [key: string]: Json }): string | undefined {
 
 /**
  * The keys a `circle` body's `admins` names (docs/protocol.md, circle): the circle's own signer set.
- * null when the body names none; undefined when `admins` is not a non-empty list of `{ name, key }`
- * with an ed25519 key, none twice.
+ * undefined when `admins` is absent or not a non-empty list of `{ name, key }` with an ed25519 key,
+ * none twice: every circle root names its admins, so none is ever judged by the release signers.
  */
-export function circleAdmins(body: { [key: string]: Json }): string[] | null | undefined {
+export function circleAdmins(body: { [key: string]: Json }): string[] | undefined {
   const admins = body["admins"];
-  if (admins === undefined) return null;
   if (!Array.isArray(admins) || admins.length === 0) return undefined;
   const keys: string[] = [];
   for (const a of admins) {

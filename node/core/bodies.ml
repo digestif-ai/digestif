@@ -132,10 +132,11 @@ let parse_dinner j =
   Ok { host; date; label; guests; relays }
 
 (* circle: the root of a circle founded on its own (protocol.md, circle). It names the circle and
-   its founder, its [host], and may list first guests exactly as a dinner does. It has no date: a
-   dinner is an event inside a circle, never what makes one. *)
+   its founder, its [host], and may list first guests exactly as a dinner does, and names the
+   circle's own [admins], who judge its later admissions. It has no date: a dinner is an event
+   inside a circle, never what makes one. *)
 
-let circle_json ?(admins = []) ~host ~name ~guests ~relays () : Yojson.Safe.t =
+let circle_json ~admins ~host ~name ~guests ~relays () : Yojson.Safe.t =
   match dinner_json { host; date = ""; label = name; guests; relays } with
   | `Assoc fields ->
       `Assoc
@@ -144,25 +145,21 @@ let circle_json ?(admins = []) ~host ~name ~guests ~relays () : Yojson.Safe.t =
              | "dinner", _ -> ("circle", `Assoc [ ("name", `String name) ])
              | f -> f)
            fields
-        @
-        match admins with
-        | [] -> []
-        | l ->
-            [
-              ( "admins",
-                `List
-                  (List.map
-                     (fun (s : Approval.signer) ->
-                       `Assoc
-                         [ ("name", `String s.name); ("key", `String s.key) ])
-                     l) );
-            ])
+        @ [
+            ( "admins",
+              `List
+                (List.map
+                   (fun (s : Approval.signer) ->
+                     `Assoc [ ("name", `String s.name); ("key", `String s.key) ])
+                   admins) );
+          ])
   | j -> j
 
 (* A circle root's [admins] (protocol.md, circle): the circle's own signer set, which judges its
-   later admissions in place of the release signers. None when the root names none, a dinner root
-   included: that circle's admissions are judged by the release signer set. Each admin has a name
-   and an ed25519 key, at least one, none twice. *)
+   later admissions in place of the release signers. Every circle root names them, so no circle
+   founded on its own is ever judged by the release signers; a root without them is malformed.
+   None for a dinner root, whose circle's admissions are judged by the release signer set. Each
+   admin has a name and an ed25519 key, at least one, none twice. DIG-277 *)
 let circle_admins ~kind j : (Approval.signer list option, string) result =
   match (kind, get "admins" j) with
   | "circle", Some (`List (_ :: _ as l)) ->
@@ -182,6 +179,7 @@ let circle_admins ~kind j : (Approval.signer list option, string) result =
       then Error "the admins name a key twice"
       else Ok (Some admins)
   | "circle", Some _ -> Error "admins is a non-empty list"
+  | "circle", None -> Error "a circle root names its admins"
   | _ -> Ok None
 
 (* The envelope that lists invites, read as one shape whatever its kind: a dinner as parse_dinner

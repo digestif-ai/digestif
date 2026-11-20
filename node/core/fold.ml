@@ -463,8 +463,8 @@ let on_signer_set t entry = t.signer_sets <- entry :: t.signer_sets
 
 (* The admins the circle root names (protocol.md, circle): the circle's own signer set, which a
    node judges its approvals and admissions by (Digestif_update.Circle_admins), changed by the
-   circle's signer_set messages alone. None for a root that names none, a dinner root included,
-   whose circle is judged by the release signer set. *)
+   circle's signer_set messages alone. None for a dinner root, whose circle is judged by the
+   release signer set: every circle root names its admins (Bodies.circle_admins). *)
 let root_admins t = t.root_admins
 
 (* Every signer_set the fold applied, in fold order. *)

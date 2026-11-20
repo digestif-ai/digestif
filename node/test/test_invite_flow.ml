@@ -16,6 +16,15 @@ let tmpdir () =
 let new_node () = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ())
 let urls = [ "https://a.test"; "https://b.test" ]
 
+(* The founder's admin key every circle root names (protocol.md, circle). *)
+let admins =
+  [
+    {
+      Approval.name = "Founder";
+      key = Keys.public (Crypto.generate_signing_key ());
+    };
+  ]
+
 let guests =
   [
     { Dinner.name = "Roman Cherkasov"; email = "roman@example.com" };
@@ -29,7 +38,7 @@ let host_circle () =
   ignore (ok (Node.init host ~phrase:host_phrase));
   let inv =
     ok
-      (Invite_node.found host ~name:"AI Dinner 2" ~relays:urls
+      (Invite_node.found host ~admins ~name:"AI Dinner 2" ~relays:urls
          ~message:"  Great talking with you.\n" guests)
   in
   Alcotest.(check (option string))
@@ -192,11 +201,39 @@ let found_alone () =
   let host_identity = Option.get (Log.get_config host.log Node.k_identity) in
   Alcotest.(check bool)
     "a blank name is refused" true
-    (Result.is_error (Invite_node.found host ~name:"  " ~relays:urls []));
+    (Result.is_error
+       (Invite_node.found host ~admins ~name:"  " ~relays:urls []));
+  Alcotest.(check bool)
+    "a circle without admins is refused" true
+    (Result.is_error
+       (Invite_node.found host ~admins:[] ~name:"No admins" ~relays:urls []));
   Alcotest.(check (option string))
     "a refused founding leaves no root" None (Node.root host);
+  (* DIG-277: a circle root that names no admins is malformed, so no circle founded on its own is
+     ever judged by the release signers. *)
+  (let n = new_node () in
+   ignore (ok (Node.init n ~phrase:(Phrase.generate ())));
+   let identity = Option.get (Log.get_config n.log Node.k_identity) in
+   let body =
+     match
+       Bodies.circle_json ~admins ~host:identity ~name:"Unjudged" ~guests:[]
+         ~relays:urls ()
+     with
+     | `Assoc f -> `Assoc (List.remove_assoc "admins" f)
+     | j -> j
+   in
+   let root, _ = ok (Node.write n ~kind:"circle" body) in
+   Node.set_root n root;
+   Alcotest.(check bool)
+     "a circle root without admins is refused by the fold" true
+     (List.mem_assoc root (Node.fold n).rejected);
+   Alcotest.(check bool)
+     "and admits nobody" false
+     (Hashtbl.mem (Node.fold n).keys identity));
   let inv =
-    ok (Invite_node.found host ~name:"Auto dealership roll-up" ~relays:urls [])
+    ok
+      (Invite_node.found host ~admins ~name:"Auto dealership roll-up"
+         ~relays:urls [])
   in
   let row = Option.get (Log.find host.log inv.dinner_hash) in
   Alcotest.(check string)
@@ -232,13 +269,14 @@ let found_alone () =
     (Approved_invite.circle_label host);
   Alcotest.(check bool)
     "a node holds one circle: founding a second is refused" true
-    (Result.is_error (Invite_node.found host ~name:"Another" ~relays:urls []));
+    (Result.is_error
+       (Invite_node.found host ~admins ~name:"Another" ~relays:urls []));
   (* Any circle envelope but the root names another circle, and the fold refuses it. *)
   let stray, _ =
     ok
       (Node.write host ~kind:"circle"
-         (Bodies.circle_json ~host:host_identity ~name:"Stray" ~guests:[]
-            ~relays:urls ()))
+         (Bodies.circle_json ~admins ~host:host_identity ~name:"Stray"
+            ~guests:[] ~relays:urls ()))
   in
   Alcotest.(check bool)
     "a circle envelope that is not the root is refused" true
@@ -1219,7 +1257,8 @@ let circles_under_one_parent () =
   let node = Node.open_ ~keystore:(Keystore.memory ()) fresh in
   ignore (ok (Node.init node ~phrase:(Phrase.generate ())));
   let inv =
-    ok (Invite_node.found node ~name:"Luxury Car Roll Up" ~relays:urls [])
+    ok
+      (Invite_node.found node ~admins ~name:"Luxury Car Roll Up" ~relays:urls [])
   in
   Node.close node;
   Alcotest.(check string) "the id names it now" fresh (ok (Circles.dir "auto"));
@@ -1259,7 +1298,9 @@ let circles_under_one_parent () =
   Alcotest.(check bool)
     "founding a second circle names the command for its own node" true
     (let n = Node.open_ ~keystore:(Keystore.memory ()) fresh in
-     let r = Invite_node.found n ~name:"Second Circle" ~relays:urls [] in
+     let r =
+       Invite_node.found n ~admins ~name:"Second Circle" ~relays:urls []
+     in
      Node.close n;
      match r with
      | Error m -> Astring_contains.contains m "--circle second-circle init"
