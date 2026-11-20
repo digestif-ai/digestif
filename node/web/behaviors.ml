@@ -348,7 +348,9 @@ let context ?log ?(edits = `Null) ?drafts ?revise ~hook ~dir ~digestif ~api
                     `Assoc
                       [
                         ( "Cookie",
-                          `String (Server.cookie_name ^ "=" ^ a.session) );
+                          `String
+                            (Local_session.cookie_name_of (Some a.url)
+                            ^ "=" ^ a.session) );
                         ("Digestif-Local", `String "1");
                       ] );
                 ] );

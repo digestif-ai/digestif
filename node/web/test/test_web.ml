@@ -112,6 +112,35 @@ let list = function `List l -> l | _ -> []
 
 (* who may call *)
 
+(* DIG-275: a second node on the machine answers on 127.0.0.1 at a port of its own, and a browser
+   keeps cookies by host, not port. Its launch sets a cookie named for its port, its API reads only
+   that one, so neither node's launch overwrites the other's session. *)
+let second_node_cookie () =
+  let n = demo () in
+  Log.set_config n.Node.log Api.k_ui_url "http://127.0.0.1:7421";
+  let c = session n in
+  Alcotest.(check string)
+    "the cookie names the port" "digestif_session_7421"
+    (String.sub c 0 (String.index c '='));
+  let token =
+    let i = String.index c '=' in
+    String.sub c (i + 1) (String.length c - i - 1)
+  in
+  let status cookie =
+    (Server.handler n
+       (request
+          ~headers:[ ("digestif-local", "1"); ("cookie", cookie) ]
+          "/api/v0/status"))
+      .status
+  in
+  Alcotest.(check int) "its own cookie" 200 (status c);
+  Alcotest.(check int)
+    "beside the standard node's cookie" 200
+    (status ("digestif_session=other; " ^ c));
+  Alcotest.(check int)
+    "the standard name opens nothing here" 401
+    (status ("digestif_session=" ^ token))
+
 let access () =
   let n = demo () in
   let c = session n in
@@ -2885,9 +2914,8 @@ let behavior_spawn () =
     Yojson.Safe.Util.(api |> member "headers" |> member "Cookie" |> to_string)
   in
   let token =
-    String.sub cookie
-      (String.length Server.cookie_name + 1)
-      (String.length cookie - String.length Server.cookie_name - 1)
+    let i = String.index cookie '=' in
+    String.sub cookie (i + 1) (String.length cookie - i - 1)
   in
   Alcotest.(check bool)
     "the session ends with the behavior" false
@@ -7413,7 +7441,7 @@ let serving n f =
       let launched = raw_get port ("/launch?token=" ^ token) in
       Alcotest.(check bool) "launch" true (contains launched "303 See Other");
       let cookie =
-        let i = index_of launched "digestif_session=" in
+        let i = index_of launched "digestif_session_" in
         let rest = String.sub launched i (String.length launched - i) in
         String.sub rest 0 (String.index rest ';')
       in
@@ -13337,6 +13365,7 @@ let inbox_practice_credits () =
    fixes. *)
 let inbox_notice_page () =
   let n = demo () in
+  let call_as = call in
   let c = session n in
   let call = call n c in
   let me = Option.get (Log.get_config n.log Node.k_identity) in
@@ -13356,6 +13385,9 @@ let inbox_notice_page () =
     "no address before the node names its own" true
     (member "address" (item older) = `Null);
   Log.set_config n.log Api.k_ui_url "http://127.0.0.1:7070";
+  (* The node at 7070 reads its own cookie (DIG-275), so the browser opens it again. *)
+  let call = call_as n (session n) in
+  let item id = snd (call ("items/" ^ enc id)) in
   Alcotest.(check string)
     "the address carries the node's own port" "http://127.0.0.1:7070/feed"
     (s "address" (item older));
@@ -14384,6 +14416,7 @@ let () =
       ( "server",
         [
           Alcotest.test_case "access" `Quick access;
+          Alcotest.test_case "second node cookie" `Quick second_node_cookie;
           Alcotest.test_case "signers and the halt" `Quick signers_and_the_halt;
           Alcotest.test_case "deny layer" `Quick deny;
           Alcotest.test_case "deny list for the phone" `Quick deny_share;

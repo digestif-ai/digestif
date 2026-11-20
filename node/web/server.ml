@@ -15,6 +15,11 @@ open Digestif_core
 
 let cookie_name = Local_session.cookie_name
 
+(* This node's cookie, named for the port Server.start recorded (Local_session.cookie_name_of), so
+   a second node on the machine sets and reads its own rather than overwriting the first's. DIG-275 *)
+let node_cookie (node : Node.t) =
+  Local_session.cookie_name_of (Log.get_config node.log Api.k_ui_url)
+
 let security_headers =
   [
     ("X-Content-Type-Options", "nosniff");
@@ -107,7 +112,7 @@ let launch (node : Node.t) (req : Http.request) =
             ( "Set-Cookie",
               Printf.sprintf
                 "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict"
-                cookie_name session session_max_age );
+                (node_cookie node) session session_max_age );
           ]
         "Opening Digestif."
   | _ ->
@@ -160,7 +165,7 @@ let api ?reset ?(on_request = fun () -> ()) ~on_write (node : Node.t)
       if Http.header req "digestif-local" <> Some "1" then
         api_error 403 "local_header" "The Digestif-Local header is required."
       else
-        match List.assoc_opt cookie_name (cookies req) with
+        match List.assoc_opt (node_cookie node) (cookies req) with
         | Some s when Store.session_valid node.log s -> (
             match segments req.path with
             | "api" :: "v0" :: [ "_reset" ] when req.meth = "POST" -> (

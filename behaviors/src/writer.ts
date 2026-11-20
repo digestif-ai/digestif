@@ -524,6 +524,23 @@ export interface ApiAccess {
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
+/** The standard node's UI port (node/core/service.ml standard_ui_port). */
+const STANDARD_UI_PORT = 7420;
+
+/**
+ * The session cookie's name at the node answering on `base`: `digestif_session` on the standard
+ * port, `digestif_session_<port>` on any other, so two nodes on one machine keep two cookies. The
+ * mirror of Local_session.cookie_name_of (node/core/local_session.ml). DIG-275
+ */
+export function sessionCookieName(base: URL): string {
+  const port = base.port === "" ? NaN : Number(base.port);
+  return Number.isNaN(port) || port === STANDARD_UI_PORT ? "digestif_session" : `digestif_session_${port}`;
+}
+
+function sessionHeaders(base: URL, session: string): Record<string, string> {
+  return { cookie: `${sessionCookieName(base)}=${session}`, "digestif-local": "1" };
+}
+
 /** What the node serves a run: the brief, Rules, Learnings and the deny list. */
 export interface NodeContext {
   brief: string;
@@ -546,7 +563,7 @@ export async function fetchContext(access: NodeAccess | ApiAccess | null): Promi
   if (base.protocol !== "http:" || !LOOPBACK.has(base.hostname)) {
     throw new Error(`the node's API must be its loopback address (http://127.0.0.1:<port>), not ${base.origin}`);
   }
-  const headers = given ? access.headers : { cookie: `digestif_session=${access.session}`, "digestif-local": "1" };
+  const headers = given ? access.headers : sessionHeaders(base, access.session);
   const json = async (path: string): Promise<unknown> => {
     const res = await fetch(new URL(`/api/v0/${path}`, base), { headers, signal: AbortSignal.timeout(5_000) });
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
@@ -576,7 +593,7 @@ export function nodeApi(access: NodeAccess | ApiAccess): { base: URL; headers: R
   if (base.protocol !== "http:" || !LOOPBACK.has(base.hostname)) {
     throw new Error(`the node's API must be its loopback address (http://127.0.0.1:<port>), not ${base.origin}`);
   }
-  return { base, headers: given ? access.headers : { cookie: `digestif_session=${access.session}`, "digestif-local": "1" } };
+  return { base, headers: given ? access.headers : sessionHeaders(base, access.session) };
 }
 
 /**
