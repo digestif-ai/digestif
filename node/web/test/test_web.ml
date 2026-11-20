@@ -11143,17 +11143,32 @@ let inbox_suggestion () =
   Alcotest.(check bool)
     "open while Pia judges" false
     (member "closed" row = `Bool true);
-  ignore
-    (peer_write n pia "summary"
-       (Content.summary_body ~text:"Short too." ~voice:"agent"
-          ~prompt:(Suggestions.prompt_id pias_prompt)
-          ~suggestion:theirs ()));
+  (* DIG-221: Pia's pick is indexed as her summary arrives: held first without its body, it picks
+     nothing; once its body arrives it decides the round; retracted, the round is open again. *)
+  let sg, pias_pick =
+    peer_sign n pia "summary"
+      (Content.summary_body ~text:"Short too." ~voice:"agent"
+         ~prompt:(Suggestions.prompt_id pias_prompt)
+         ~suggestion:theirs ())
+  in
+  ignore (ok (Node.import n { sg with body = None }));
+  let _, sg_row = call ("suggestions/" ^ theirs) in
+  Alcotest.(check string)
+    "a summary without its body picks nothing" "judging" (s "status" sg_row);
+  ignore (ok (Node.import n sg));
   let _, row = call ("items/" ^ theirs) in
   Alcotest.(check (pair bool string))
     "the round adopts it and closes the choice" (true, "closed")
     (member "closed" row = `Bool true, s "done" row);
-  let _, sg = call ("suggestions/" ^ theirs) in
-  Alcotest.(check string) "adopted" "adopted" (s "status" sg)
+  let _, sg_row = call ("suggestions/" ^ theirs) in
+  Alcotest.(check string) "adopted" "adopted" (s "status" sg_row);
+  let retract =
+    peer_write n pia "retract" (Bodies.make_retract ~target:pias_pick)
+  in
+  Log.drop_body n.log ~hash:pias_pick ~retracted_by:retract;
+  let _, sg_row = call ("suggestions/" ^ theirs) in
+  Alcotest.(check string)
+    "a retracted pick leaves the round open" "judging" (s "status" sg_row)
 
 (* ISS-52834: an Inbox read on another request's thread that lands between a send's sign and its
    stamp indexes the member's new envelope as a row of its own. on_write fires inside that window,

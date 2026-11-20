@@ -2495,6 +2495,124 @@ end
    agent's reading run did with it. Answers, closes and picks are indexed beside it, one row per
    envelope. An envelope this node cannot read (sealed to others, malformed, of an unknown kind)
    keeps a row with no kind, so it is opened once. *)
+(* DIG-221: the picks the circle's summaries make on prompt suggestions (Suggestions), indexed as
+   the summaries arrive, so reading a suggestion's rounds never scans the summary bodies of the log.
+
+   A summary judged a suggestion when its body names one with the prompt that wrote it
+   ([pick_of]). Each pass walks only the envelopes past the mark, by the local order index,
+   and keeps a pick's row; a summary held without its body yet is kept with no suggestion until its
+   body is restored (Log.insert, Body_restored) or it is retracted. A pick whose summary is retracted
+   later stays here and is left out when it is read. *)
+module Suggestion_picks = struct
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_suggestion_picks (
+  hash TEXT PRIMARY KEY,
+  signer TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  suggestion TEXT,
+  prompt TEXT
+);
+CREATE INDEX IF NOT EXISTS ui_suggestion_picks_bodyless ON ui_suggestion_picks (hash) WHERE suggestion IS NULL;
+CREATE INDEX IF NOT EXISTS ui_suggestion_picks_order ON ui_suggestion_picks (created_at, hash) WHERE suggestion IS NOT NULL;
+|}
+
+  (* The highest local order every summary up to has been indexed. *)
+  let k_mark = "ui_suggestion_picks_mark"
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+
+  (* The suggestion a summary body judged and the id of the prompt that wrote it. *)
+  let pick_of body =
+    match Yojson.Safe.from_string body with
+    | b -> (
+        match (Content.str_field "suggestion" b, Content.str_field "prompt" b) with
+        | Some s, Some p -> Some (s, p)
+        | _ -> None)
+    | exception _ -> None
+
+  let put (log : Log.t) ~hash ~signer ~at pick =
+    Log.exec log
+      "INSERT INTO ui_suggestion_picks (hash, signer, created_at, suggestion, \
+       prompt) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hash) DO UPDATE SET \
+       suggestion = excluded.suggestion, prompt = excluded.prompt"
+      [
+        Log.s hash;
+        Log.s signer;
+        Log.s at;
+        Log.opt (Option.map fst pick);
+        Log.opt (Option.map snd pick);
+      ]
+
+  let mark (log : Log.t) =
+    Option.value (Option.bind (config log k_mark) int_of_string_opt) ~default:0
+
+  let top (log : Log.t) =
+    match Log.rows log "SELECT MAX(local_order) FROM envelopes" [] with
+    | [ [| v |] ] -> Log.int v
+    | _ -> 0
+
+  let settled_sql =
+    "FROM ui_suggestion_picks p JOIN envelopes e ON e.hash = p.hash WHERE \
+     p.suggestion IS NULL AND (e.body IS NOT NULL OR e.retracted_by IS NOT \
+     NULL)"
+
+  (* Whether a pass has anything to do, read without a write: an envelope past the mark, or a
+     bodyless summary whose body arrived or that was retracted. *)
+  let behind (log : Log.t) =
+    top log > mark log
+    || Log.rows log ("SELECT 1 " ^ settled_sql ^ " LIMIT 1") [] <> []
+
+  (* Index every summary that arrived since the last pass, and settle the bodyless ones whose body
+     has since arrived or that were retracted. Run inside a transaction (Api.upkeep). *)
+  let index (log : Log.t) =
+    let mark = mark log and top = top log in
+    if top > mark then begin
+      Log.rows log
+        "SELECT hash, author, created_at, body FROM envelopes INDEXED BY \
+         envelopes_local_order WHERE local_order > ? AND local_order <= ? AND \
+         kind = 'summary' AND retracted_by IS NULL AND (body IS NULL OR \
+         instr(body, '\"suggestion\":') > 0)"
+        [ Log.i mark; Log.i top ]
+      |> List.iter (function
+        | [| hash; signer; at; body |] -> (
+            let put = put log ~hash:(Log.text hash) ~signer:(Log.text signer)
+                ~at:(Log.text at) in
+            match Log.text_opt body with
+            | None -> put None
+            | Some b -> (
+                match pick_of b with Some p -> put (Some p) | None -> ()))
+        | _ -> ());
+      set_config log k_mark (string_of_int top)
+    end;
+    Log.rows log ("SELECT p.hash, e.body " ^ settled_sql) []
+    |> List.iter (function
+      | [| hash; body |] -> (
+          match Option.bind (Log.text_opt body) pick_of with
+          | Some (s, p) ->
+              Log.exec log
+                "UPDATE ui_suggestion_picks SET suggestion = ?, prompt = ? \
+                 WHERE hash = ?"
+                [ Log.s s; Log.s p; hash ]
+          | None ->
+              Log.exec log "DELETE FROM ui_suggestion_picks WHERE hash = ?"
+                [ hash ])
+      | _ -> ())
+
+  (* Every pick of a summary still standing, oldest first: (suggestion, signing key, signed at,
+     prompt id). *)
+  let picks (log : Log.t) =
+    Log.rows log
+      "SELECT p.suggestion, p.signer, p.created_at, p.prompt FROM \
+       ui_suggestion_picks p JOIN envelopes e ON e.hash = p.hash WHERE \
+       p.suggestion IS NOT NULL AND e.retracted_by IS NULL ORDER BY \
+       p.created_at, p.hash"
+      []
+    |> List.filter_map (function
+      | [| s; signer; at; p |] ->
+          Some (Log.text s, Log.text signer, Log.text at, Log.text p)
+      | _ -> None)
+end
+
 module Items = struct
   let schema =
     {|
@@ -4032,6 +4150,7 @@ let init (log : Log.t) =
   Stages.init log;
   Pause.init log;
   Items.init log;
+  Suggestion_picks.init log;
   Approvals.init log;
   Reviews.init log;
   Reviews.init_drafts log;

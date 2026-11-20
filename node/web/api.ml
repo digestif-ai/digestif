@@ -4259,6 +4259,8 @@ module Prompts = struct
   let all c =
     Inbox.index c;
     let l = log c in
+    if Store.Suggestion_picks.behind l then
+      upkeep c (fun () -> Store.Suggestion_picks.index l);
     let judged = S.read l ~identity_of:(identity_of c) in
     let settle =
       List.filter_map
@@ -4338,8 +4340,8 @@ module Prompts = struct
            match acc with Some a when a.l_at >= l.l_at -> acc | _ -> Some l)
          None
 
-  let summary_json c ~me (j : S.judged) : Yojson.Safe.t =
-    let running = S.running (all c) ~me in
+  let summary_json c ~me ~(running : S.judged option) (j : S.judged) :
+      Yojson.Safe.t =
     `Assoc
       [
         ("hash", str j.s.hash);
@@ -4468,10 +4470,11 @@ module Prompts = struct
         in
         let page = match after with None -> newest | Some _ -> drop newest in
         let me = me c in
+        let running = S.running judged ~me in
         ok
           (`List
              (List.filteri (fun i _ -> i < limit) page
-             |> List.map (summary_json c ~me)))
+             |> List.map (summary_json c ~me ~running)))
 
   let get c hash =
     let judged = all c in

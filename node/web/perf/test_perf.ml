@@ -375,9 +375,42 @@ let enc s =
          | c -> Printf.sprintf "%%%02X" (Char.code c))
        (List.of_seq (String.to_seq s)))
 
+(* DIG-221: a prompt suggestion still being judged, which every status, Inbox and search read
+   folds, so those pages are measured with one present, as a circle trying a prompt has. *)
+let suggest n cookie =
+  let body =
+    Yojson.Safe.to_string
+      (`Assoc
+         [
+           ("text", `String "Shorter, please. {{always_on_rules}}");
+           ("change", `String "Shorter");
+           ("judges", `List []);
+         ])
+  in
+  let r =
+    Server.handler n
+      {
+        (request
+           ~headers:
+             [
+               ("cookie", cookie);
+               ("digestif-local", "1");
+               ("content-type", "application/json");
+             ]
+           "/api/v0/suggestions")
+        with
+        meth = "POST";
+        body;
+      }
+  in
+  if r.status <> 201 && r.status <> 200 then
+    failwith
+      (Printf.sprintf "POST suggestions answered %d: %s" r.status r.body)
+
 (* Every GET the UI reads, by the name the baseline keys it on, and the path it is called at. A
    route that takes an id is called with one the list route hands back. *)
 let routes n cookie =
+  suggest n cookie;
   let org = Option.get (first_of n cookie "organizations" "id") in
   (* A page after the first: the cursor is the 50th row of [list], the last a screen shows. *)
   let after name list key path =
@@ -451,6 +484,9 @@ let routes n cookie =
   @ with_id "notes/:id/versions" "notes" "id" (fun i ->
       "notes/" ^ i ^ "/versions")
   @ with_id "items/:id" "items?limit=1" "id" (fun i -> "items/" ^ i)
+  @ [ ("suggestions", "suggestions?limit=50"); ("note_prompt", "note_prompt") ]
+  @ with_id "suggestions/:hash" "suggestions?limit=1" "hash" (fun h ->
+      "suggestions/" ^ h)
 
 let p95 times =
   let a = Array.of_list times in
