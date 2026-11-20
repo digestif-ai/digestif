@@ -754,13 +754,16 @@ signature in the channel's signatures format, so the two signers never write the
 drops every version offered: it deletes each draft release with every signature on it, and the tags
 stay. Anything else leaves them waiting. `sign --next --sign` answers `s` itself: it shows
 everything above, prints the question with its answer, and signs every version offered without
-reading the terminal. `--sign` goes only with `--next`.
+reading the terminal. `--sign` goes only with `--next`. Every signature is made first and then all
+are uploaded at once, each upload being a round trip to GitHub.
 
 GitHub is asked only for what git does not hold: one listing of the releases, read once for the
-whole run, then every waiting draft's `manifest.json` downloaded at once, while the clone fetches;
-the signatures go back as uploads. Every version offered, of both lines, is then shown at once (its
-files downloaded and their attestations checked), at most six of a line at a time, so the question
-comes after the slowest version rather than after all of them in turn. Every step's duration is appended to
+whole run, then every waiting draft's `manifest.json` downloaded at once, while the clone fetches
+and, when a version has not verified on an earlier run, the Sigstore trusted root is read once
+(`gh attestation trusted-root`); the signatures go back as uploads. No archive is downloaded. Every
+version offered, of both lines, is then shown at once (its manifest's attestation checked),
+at most six of a line at a time, so the question comes after the slowest version rather than after
+all of them in turn. Every step's duration is appended to
 `~/.digestif/update/sign-next-timings.log`, one line per step (the run id, the step, its seconds),
 and nothing extra is printed, so a slow run can be traced to the step that was slow.
 
@@ -780,12 +783,20 @@ before the draft is written. An attestation is a Sigstore certificate GitHub iss
 naming the workflow, the ref, the commit and the run; a repository writer cannot make one for a
 file the workflow did not build on that tag.
 
-Before it shows a version, `sign --next` downloads every file the manifest names from the draft,
-checks each against the manifest's sha256, and runs `gh attestation verify` on each and on the
-manifest itself, requiring the signer workflow to be the line's workflow, the source ref the tag,
-the source commit the one it shows, and a GitHub-hosted runner; it reads the certificate gh
-answers back and checks the same fields again. The version's `built` line is the one run that
-attests every file. A tag moved after the build therefore shows a commit no attestation names, and
+Each workflow attests every file of the draft, the manifest among them, in one statement listing
+every file's sha256. Before it shows a version, `sign --next` checks the sha256 GitHub holds for each
+file the manifest names against the manifest's, and runs `gh attestation verify` on the manifest's
+own bytes, against the trusted root it read once for the run (`--custom-trusted-root`), requiring
+the signer workflow to be the line's workflow, the source ref the tag, the source commit the one it
+shows, and a GitHub-hosted runner; it reads the certificate gh answers back and checks the same
+fields again, and requires every file's sha256, the manifest's included, to be named by an
+attestation that passed. The version's `built` line is the one run that attests every file. A file
+is never downloaded for this: a draft's file whose bytes differ from the manifest's has another
+digest on GitHub, and no attestation names it. What verified is remembered in
+`~/.digestif/update/attested.json` (the tag, the manifest's sha256, the workflow, the commit and the
+attestations that passed, the newest 200 kept), so a later run that reads the same manifest of the
+same tag at the same commit takes that answer without asking gh again; a manifest replaced on the
+draft has another sha256 and a moved tag another commit, and either is verified again. A tag moved after the build therefore shows a commit no attestation names, and
 the version is not offered. This needs a `gh` whose `attestation verify` takes `--source-digest`.
 
 A version is **not offered**, shown with every reason under NOT OFFERED and left out of the
