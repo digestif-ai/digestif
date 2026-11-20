@@ -21,7 +21,10 @@ let judge ~(relay_errors : string option list) ~channel_reachable =
 let settle (log : Digestif_core.Log.t) verdict =
   let module P = Store.Problems in
   match verdict with
-  | Reached_every_relay -> P.resolve log ~job:"sync" ()
+  | Reached_every_relay ->
+      (* The relays' own problem, sourceless; a source's (the join watcher's invites.json) is
+         closed by that source reading. *)
+      P.resolve log ~job:"sync" ~source:"" ()
   | Offline -> ()
   | Relay_unreachable ->
       ignore (P.report log ~job:"sync" ~kind:"relay_unreachable" ())

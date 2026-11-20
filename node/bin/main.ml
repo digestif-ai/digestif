@@ -340,12 +340,33 @@ let report_promotions = function
         filed
   | Error e -> Printf.printf "promotion\tthe invite ledger was not read: %s\n" e
 
+(* What the join watcher could not do is the sync job's problem under the source invites.json,
+   never relay_unreachable: the relays were reached, and Sync_health's verdict on them leaves this
+   source alone. A sync whose watcher had nothing to report closes it. DIG-224 *)
+let watch_source = "invites.json"
+
+let record_watch_problems n problems =
+  let module P = Digestif_web.Store.Problems in
+  let module I = Digestif_invite.Invite_node in
+  Digestif_web.Store.init n.Node.log;
+  match problems with
+  | [] -> P.resolve n.log ~job:"sync" ~source:watch_source ()
+  | _ ->
+      let detail =
+        String.concat "; " (List.map I.watch_problem_to_string problems)
+      in
+      Printf.eprintf "%s sync: joins: %s\n%!" (Time_fmt.now ()) detail;
+      ignore
+        (P.report n.log ~job:"sync" ~kind:"failed" ~source:watch_source ~detail
+           ())
+
 (* A sync that runs the join watcher over the joins it stores, reporting what it made of them, then
    files the promotion of every admin invitee whose join folded. *)
 let watch_joins n =
   match Digestif_invite.Invite_node.sync n with
-  | Ok (r, seen) ->
+  | Ok (r, seen, problems) ->
       report_joins seen;
+      record_watch_problems n problems;
       report_promotions (Digestif_invite.Approved_invite.file_promotions n);
       Ok r
   | Error e -> Error e
