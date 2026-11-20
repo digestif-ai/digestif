@@ -3370,6 +3370,37 @@ let setup =
       setup_guard;
     ]
 
+(* The adapter's faults: every fork, and every envelope a relay served that did not verify, once per
+   hash. Sync records the latter as an invalid_envelope fault whose detail is "<relay> <hash> <reason>",
+   one per relay that served it. *)
+let conformance_faults log =
+  let fault kind author seq hashes =
+    `Assoc
+      [
+        ("kind", `String kind);
+        ("author", `String author);
+        ("seq", `Int seq);
+        ("hashes", `List (List.map (fun h -> `String h) hashes));
+      ]
+  in
+  let forks =
+    List.map
+      (fun (f : View.fork) -> fault "fork" f.author f.seq f.hashes)
+      (View.forks log)
+  in
+  let invalid =
+    List.filter_map
+      (fun (f : Log.fault) ->
+        match String.split_on_char ' ' f.detail with
+        | _relay :: hash :: _ -> Some (hash, (f.author, f.seq))
+        | _ -> None)
+      (Log.open_faults_of_kind log "invalid_envelope")
+    |> List.sort_uniq (fun (a, _) (b, _) -> compare a b)
+    |> List.map (fun (hash, (author, seq)) ->
+        fault "invalid_envelope" author seq [ hash ])
+  in
+  forks @ invalid
+
 (* The conformance suite's node adapter (conformance/README.md, The node adapter contract): a throwaway node
    with the given device seed syncs the given relays and prints what it folded and read. *)
 let conformance_sync =
@@ -3390,7 +3421,7 @@ let conformance_sync =
   in
   cmd "sync"
     "Sync a throwaway node holding the given device seed and print its fold, \
-     feed, forks and gaps as JSON."
+     feed, faults and gaps as JSON."
     Term.(
       const (fun home seed_file relays root ->
           let seed =
@@ -3452,20 +3483,7 @@ let conformance_sync =
                         (List.map
                            (fun (row : Log.row) -> `String row.hash)
                            (View.feed n.log fold)) );
-                    ( "faults",
-                      `List
-                        (List.map
-                           (fun (f : View.fork) ->
-                             `Assoc
-                               [
-                                 ("kind", `String "fork");
-                                 ("author", `String f.author);
-                                 ("seq", `Int f.seq);
-                                 ( "hashes",
-                                   `List
-                                     (List.map (fun h -> `String h) f.hashes) );
-                               ])
-                           (View.forks n.log)) );
+                    ("faults", `List (conformance_faults n.log));
                     ( "gaps",
                       `List
                         (List.map

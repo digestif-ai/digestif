@@ -31,7 +31,9 @@ derived values:
 | envelope hash | `sha256(JCS(envelope with signature))`, the id nodes dedupe by and `prev` names |
 
 A relay verifies `signature` and `body_hash` on append. A body it later drops (a retract) leaves the
-envelope verifiable. Envelopes from one chained author form a chain by `seq` and `prev`; two
+envelope verifiable. A node verifies both again on every envelope a relay serves, since a relay may
+skip its check or forge an envelope, and records one that fails as an `invalid_envelope` fault that it
+never folds or shows. Envelopes from one chained author form a chain by `seq` and `prev`; two
 envelopes with one author and `seq` and different hashes are a **fork**, refused by a relay that
 already holds the first and surfaced by nodes as a fault, never silently resolved.
 
@@ -1161,6 +1163,9 @@ The repo's conformance suite runs these against any relay and any node:
 - Divergent histories across two relays merge to the same fold and the same feed.
 - A relay missing a range: the node detects the gap by `seq` and backfills from the other relay.
 - Duplicate appends are idempotent; a fork is refused and surfaced.
+- Verification: an envelope a relay serves whose signature does not verify, whose body does not
+  match its `body_hash`, or whose `author` did not sign it, is an `invalid_envelope` fault on the
+  node, never folded or shown.
 - `seq` regression is refused for chained keys and allowed for mail keys.
 - Revocation: appends from a revoked device are refused, and so is a revoke whose `after_seq` or
   `mail_read` is missing or names a key it does not stop; a node reads a revoked device's envelopes

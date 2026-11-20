@@ -3,9 +3,11 @@
 // second half is what makes a pass against Roman's Worker or the OCaml node worth something.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { TestCircle } from "../src/circle.ts";
 import { FakeRelay, type RelayBreak } from "../src/fake-relay.ts";
-import type { Outcome } from "../src/harness.ts";
+import { unmatchedPatterns, type Outcome } from "../src/harness.ts";
 import { REFERENCE_NODE } from "../src/node-runner.ts";
 import type { NodeBreak } from "../src/reference-node.ts";
 import { runNodeSuite, runRelaySuite } from "../src/suites.ts";
@@ -116,6 +118,9 @@ const nodeBreaks: Array<[NodeBreak, string]> = [
   ["gap", "node.gap.reported-when-unfilled"],
   ["dedupe", "node.duplicate.deduped"],
   ["fork", "node.fork.surfaced"],
+  ["verify", "node.verify.bad-signature"],
+  ["verify", "node.verify.bad-body-hash"],
+  ["verify", "node.verify.forged-author"],
   ["mail", "node.seq.mail-gaps-allowed"],
   ["revocation", "node.revocation.ignored-from-revoke-forward"],
   ["cutoff", "node.revocation.ignored-from-revoke-forward"],
@@ -142,4 +147,24 @@ test("every case has a break that fails it, or is a positive control", () => {
   const controls = new Set(["relay.circle.root", "relay.divergent.same-fold", "relay.gap.missing-range-accepted", "relay.clock.skew-inside-window", "relay.bootstrap.valid-join", "relay.bootstrap.unknown-invite-refused", "relay.bootstrap-read.open-invite"]);
   const uncovered = [...relayCases, ...nodeCases].map((c) => c.id).filter((id) => !broken.has(id) && !controls.has(id));
   assert.deepEqual(uncovered, []);
+});
+
+test("a --case pattern is unmatched only when it selects no case", () => {
+  const cases = [...relayCases, ...nodeCases];
+  assert.deepEqual(unmatchedPatterns(cases, undefined), []);
+  assert.deepEqual(unmatchedPatterns(cases, ["relay.clock", "relay.*.refused", "node.verify.forged-author"]), []);
+  assert.deepEqual(unmatchedPatterns(cases, ["relay.clock", "relay.clok", "node.verify.forged"]), ["relay.clok", "node.verify.forged"]);
+});
+
+test("the runner exits 2 on a --case that matches nothing, before running anything", async () => {
+  const runner = new URL("../bin/digestif-conformance.ts", import.meta.url).pathname;
+  for (const args of [["node", "--case", "node.fork.surfaced", "--case", "node.frok"], ["relay", "--url", "http://127.0.0.1:9", "--case", "relay.clok"], ["self-test", "--case", "nothing.here"]]) {
+    const error = await promisify(execFile)(process.execPath, [runner, ...args]).then(
+      () => undefined,
+      (e: { code?: number; stdout?: string; stderr?: string }) => e,
+    );
+    assert.equal(error?.code, 2, `${args.join(" ")} exits 2`);
+    assert.match(error?.stderr ?? "", /matches no case/);
+    assert.equal(error?.stdout, "", `${args.join(" ")} runs no case`);
+  }
 });

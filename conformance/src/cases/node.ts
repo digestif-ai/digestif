@@ -1,8 +1,9 @@
 // Node cases: each builds relay histories on fresh local fake relays, runs the node's sync through
 // the adapter contract, and checks what the node concluded. Two checked relays play honest relays
 // that saw different subsets; an unchecked one plays a relay that accepted what it should not have.
-import { namedItemBody, pickBody, retractBody } from "../bodies.ts";
-import { envelopeHash, signEnvelope } from "../envelope.ts";
+import { namedItemBody, pickBody, retractBody, summaryBody } from "../bodies.ts";
+import { isoTime, jcs } from "../encoding.ts";
+import { envelopeHash, signEnvelope, unsignedPart, type Author, type SignedEnvelope } from "../envelope.ts";
 import { accepted, check, equal, type Case } from "../harness.ts";
 import { Signer } from "../keys.ts";
 import type { NodeRunner } from "../node-runner.ts";
@@ -26,6 +27,31 @@ function sync(context: NodeContext, relays: string[]): Promise<NodeState> {
 
 function key(state: NodeState, k: string) {
   return state.keys.find((s) => s.key === k);
+}
+
+/**
+ * A member's valid note on relays A and the unchecked relay, then `bad`, made from what the member's
+ * device would sign next, on the unchecked relay alone, which serves it unverified. The node reads the
+ * valid note, records `bad` as an invalid_envelope fault at the author and seq it claims, and neither
+ * folds nor shows it. A node that skips verification shows it as the member's next note.
+ */
+async function servedUnverified(context: NodeContext, name: string, bad: (next: SignedEnvelope) => SignedEnvelope): Promise<void> {
+  const { world, a, hostile } = context;
+  const [m] = await world.members([name], [a, hostile]);
+  const device: Author = m!.device;
+  const valid = await world.post(device, `${name}: valid`, [a, hostile]);
+  const signed = bad(device.peek("summary", summaryBody(`${name}: as signed (${world.tag})`), await world.epoch(a)));
+  const hash = envelopeHash(signed.envelope);
+  await world.publish([hostile], device, signed);
+  const state = await sync(context, [hostile, a]);
+  check(state.feed.includes(envelopeHash(valid.envelope)), "the member's valid note is in the feed");
+  check(!state.feed.includes(hash), `the envelope that does not verify (${hash}) is not in the feed`);
+  equal(
+    state.faults.filter((f) => f.author === device.key),
+    [{ kind: "invalid_envelope", author: device.key, seq: signed.envelope.seq, hashes: [hash] }],
+    "faults for the member's device",
+  );
+  equal(state.gaps.filter((g) => g.author === device.key), [], "gaps for the member's device");
 }
 
 export const nodeCases: Case<NodeContext>[] = [
@@ -122,6 +148,37 @@ export const nodeCases: Case<NodeContext>[] = [
       const hashes = [envelopeHash(first.envelope), envelopeHash(second.envelope)].sort();
       equal(state.faults.filter((f) => f.author === m!.device.key), [{ kind: "fork", author: m!.device.key, seq: 1, hashes }], "faults for the member's device");
       check(!hashes.every((h) => state.feed.includes(h)), "the node does not show both sides of the fork as ordinary notes");
+    },
+  },
+  {
+    id: "node.verify.bad-signature",
+    covers: LINES.verification,
+    title: "An envelope whose signature does not verify, served by a relay that skipped its check, is a fault and is not used",
+    async run(context) {
+      await servedUnverified(context, "bad signature", (next) => ({
+        ...next,
+        envelope: { ...next.envelope, created_at: isoTime(new Date(Date.parse(next.envelope.created_at) + 1000)) },
+      }));
+    },
+  },
+  {
+    id: "node.verify.bad-body-hash",
+    covers: LINES.verification,
+    title: "An envelope served with a body that does not match its body_hash is a fault and is not used",
+    async run(context) {
+      await servedUnverified(context, "bad body hash", (next) => ({ envelope: next.envelope, body: summaryBody(`bad body hash: tampered (${context.world.tag})`) }));
+    },
+  },
+  {
+    id: "node.verify.forged-author",
+    covers: LINES.verification,
+    title: "An envelope naming an admitted member's device as author but signed by another key is a fault and is not used",
+    async run(context) {
+      const forger = Signer.random();
+      await servedUnverified(context, "forged author", (next) => {
+        const unsigned = unsignedPart(next.envelope);
+        return { envelope: { ...unsigned, signature: forger.sign(jcs(unsigned)) }, ...(next.body === undefined ? {} : { body: next.body }) };
+      });
     },
   },
   {
