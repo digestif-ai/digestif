@@ -1,6 +1,7 @@
 // POST /v0/mail, docs/protocol.md "Mailer routes": open the mail request and the digest with the
 // relay's sealing key, render the email with every option's link URL in it, send it through
-// Resend, and remember the digest hash so a repeat mails nothing. The request, the secrets and
+// Resend under the digest's idempotency key, and remember the digest hash once Resend accepted it
+// so a repeat mails nothing. The request, the secrets and
 // the plaintext are read, used and dropped: nothing here writes them anywhere.
 import { isoTime, type Json } from "../../conformance/src/encoding.ts";
 import { linkUrl, openSealed, type Sealed } from "../../node/mail/webcrypto/mail.mjs";
@@ -129,34 +130,73 @@ export async function mail(relay: Relay, mailer: Mailer, request: Request, url: 
   const base = mailer.url ?? url.origin;
   const email = renderEmail(plaintext, (id) => linkUrl(base, id, secrets.get(id) ?? ""));
 
-  // The claim goes in before the send, with the link index: a lost race finds the row and mails
-  // nothing. The batch is one transaction.
+  // A lease on the digest goes in before the send, with the link index; mailed_digests is written
+  // only once Resend has accepted the mail. A request that finds a live lease mails nothing and is
+  // told to come back (the node keeps its request on anything but sent and already_sent). A lease
+  // whose Worker died mid-send expires, and the next request takes it over and sends again under
+  // the same Resend idempotency key, so a mail that did go is not sent twice.
   const db = relay.db;
   const now = isoTime(relay.now);
+  const holder = crypto.randomUUID();
+  const until = isoTime(new Date(relay.now.getTime() + MAIL_LEASE_MS));
   const [claim] = await db.batch([
-    db.prepare("INSERT OR IGNORE INTO mailed_digests (digest, sent_at) VALUES (?, ?)").bind(digest.hash, now),
+    db
+      .prepare(
+        "INSERT INTO mail_claims (digest, holder, claimed_until) SELECT ?1, ?2, ?3 " +
+          "WHERE NOT EXISTS (SELECT 1 FROM mailed_digests WHERE digest = ?1) " +
+          "ON CONFLICT (digest) DO UPDATE SET holder = excluded.holder, claimed_until = excluded.claimed_until " +
+          "WHERE mail_claims.claimed_until <= ?4",
+      )
+      .bind(digest.hash, holder, until, now),
     ...links.map((link) => db.prepare("INSERT OR IGNORE INTO links (id, digest, ask, expires_at) VALUES (?, ?, ?, ?)").bind(link.id, digest.hash, link.ask, link.expires_at)),
   ]);
-  if (claim === undefined || claim.meta.changes === 0) return json(200, { status: "already_sent", digest: digest.hash });
+  if (claim === undefined || claim.meta.changes === 0) {
+    const sent = await db.prepare("SELECT 1 AS held FROM mailed_digests WHERE digest = ?").bind(digest.hash).first();
+    if (sent !== null) return json(200, { status: "already_sent", digest: digest.hash });
+    throw new Refusal(503, "mail_failed", `a send of digest ${digest.hash} is in flight; try again later`);
+  }
 
-  const failure = await send(mailer, plaintext.to, email);
+  const failure = await send(mailer, plaintext.to, email, digest.hash);
   if (failure !== undefined) {
+    // Only this request's own lease is dropped, and the link index with it unless another request
+    // has since taken the lease or recorded the digest mailed.
     await db.batch([
-      db.prepare("DELETE FROM mailed_digests WHERE digest = ?").bind(digest.hash),
-      db.prepare("DELETE FROM links WHERE digest = ?").bind(digest.hash),
+      db.prepare("DELETE FROM mail_claims WHERE digest = ? AND holder = ?").bind(digest.hash, holder),
+      db
+        .prepare(
+          "DELETE FROM links WHERE digest = ? AND NOT EXISTS (SELECT 1 FROM mail_claims WHERE digest = ?) " +
+            "AND NOT EXISTS (SELECT 1 FROM mailed_digests WHERE digest = ?)",
+        )
+        .bind(digest.hash, digest.hash, digest.hash),
     ]);
     throw new Refusal(502, "mail_failed", failure);
   }
+  await db.batch([
+    db.prepare("INSERT OR IGNORE INTO mailed_digests (digest, sent_at) VALUES (?, ?)").bind(digest.hash, isoTime(new Date())),
+    db.prepare("DELETE FROM mail_claims WHERE digest = ?").bind(digest.hash),
+  ]);
   return json(202, { status: "sent", digest: digest.hash });
 }
 
+/** How long a send holds its lease on a digest: far longer than one call to Resend takes. */
+export const MAIL_LEASE_MS = 2 * 60 * 1000;
+
+/** The Resend idempotency key of a digest's mail: a retry under it is answered, not sent again. */
+export function mailIdempotencyKey(digest: string): string {
+  return `digestif-mail/${digest}`;
+}
+
 /** One POST to Resend; the failure as text, or undefined when the mail was accepted. */
-async function send(mailer: Mailer, to: string, email: Email): Promise<string | undefined> {
+async function send(mailer: Mailer, to: string, email: Email, digest: string): Promise<string | undefined> {
   let response: Response;
   try {
     response = await fetch(RESEND_URL, {
       method: "POST",
-      headers: { authorization: `Bearer ${mailer.resendKey}`, "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${mailer.resendKey}`,
+        "content-type": "application/json",
+        "idempotency-key": mailIdempotencyKey(digest),
+      },
       body: JSON.stringify({ from: mailer.from, to: [to], subject: email.subject, text: email.text, html: email.html }),
     });
   } catch (error) {

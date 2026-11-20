@@ -343,11 +343,17 @@ log unfoldable for the relay and every node. The protocol fixes retracts for con
 relay's reading until it says otherwise.
 
 **The mailer stores nothing it was told.** `POST /v0/mail` opens the request and the digest with
-the sealing key, renders the email with every option's link URL in it, and writes two things to D1
-before calling Resend: the digest hash in `mailed_digests` (the `already_sent` claim; a lost race
-finds the row and mails nothing) and each link's id, the item it answers (column `ask`) and expiry in `links`, so the link routes
-can find the sealed answer in the digest body the log already holds. A send Resend refuses drops
-both so a retry mails (`502 mail_failed`). No column anywhere holds the request, a secret, the
+the sealing key, renders the email with every option's link URL in it, and before calling Resend
+takes a two-minute lease on the digest in `mail_claims` (a request that finds a live lease mails
+nothing and answers `503 mail_failed`, which the node retries on a later pass) and writes each link's
+id, the item it answers (column `ask`) and expiry in `links`, so the link routes can find the sealed
+answer in the digest body the log already holds. The digest hash goes in `mailed_digests` (the
+`already_sent` record) only once Resend has accepted the mail. A Worker that dies between the two
+leaves a lease that expires, so the next request mails the digest rather than answering
+`already_sent` for mail that never went; every send carries the Resend idempotency key
+`digestif-mail/<digest hash>`, so a retry after a send that did go is answered by Resend and not
+mailed twice. A send Resend refuses drops the request's own lease and the link index so a retry
+mails (`502 mail_failed`). No column anywhere holds the request, a secret, the
 address, the subject or a line of the plaintext; `test/mailer.test.ts` dumps every table after a
 send and looks for each. The link pages all answer `200 text/html` as the spec lists, and `GET`
 checks the link in this order: unknown, the secret, used, expired, so a page says no more about a
