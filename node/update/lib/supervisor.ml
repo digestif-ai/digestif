@@ -71,6 +71,11 @@ let promote dir (t : Trial.t) =
            t.version ~now:(Unix.gettimeofday ()))
   | Error _ -> ());
   Trial.clear dir;
+  (* Only now is an older release no longer the way back: delete the ones nothing needs. *)
+  ignore
+    (Prune.run
+       ~also:(Option.to_list (Prune.running ~dir))
+       ~dir ~kept:t.release ~previous:t.previous ());
   report dir [ "Updated Digestif to " ^ Version.to_string t.version ^ "." ];
   Healthy t.version
 

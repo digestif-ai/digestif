@@ -1879,6 +1879,52 @@ let test_healthy_is_kept () =
     [ "Updated Digestif to 0.2.0." ]
     (Report.take (Schedule.report_path node))
 
+(* A complete release on disk, as staging leaves one. *)
+let release_on_disk node ver =
+  let root = Layout.release_dir node ver in
+  write (Layout.binary_in root) (script ver);
+  write (Layout.marker_in root)
+    (Layout.marker_json ~version:(v ver) ~source:"test")
+
+let releases_on_disk node =
+  List.sort compare (Array.to_list (Sys.readdir (Layout.releases_dir node)))
+
+(* A kept switch deletes what nothing needs: older releases than the one it came from, and a
+   deletion cut short earlier. It keeps current and good, the way back, a newer release already
+   staged, and everything that is not a complete release. DIG-216 *)
+let test_kept_switch_prunes_old_releases () =
+  let node = switched_node () in
+  List.iter (release_on_disk node) [ "0.0.8"; "0.0.9"; "0.3.0" ];
+  write (Filename.concat (Layout.release_dir node ".staging-0.4.0") "x") "x";
+  write (Filename.concat (Layout.release_dir node "junk") "x") "x";
+  write
+    (Layout.binary_in (Layout.release_dir node ".pruning-0.0.7"))
+    (script "0.0.7");
+  let sim = new_sim () in
+  let outcome =
+    trial_outcome (sim_ops ~healthy_at:(Some (3, "0.2.0")) node sim) node
+  in
+  Alcotest.(check bool) "healthy" true (outcome = Supervisor.Healthy (v "0.2.0"));
+  Alcotest.(check (list string))
+    "kept"
+    [ ".staging-0.4.0"; "0.1.0"; "0.2.0"; "0.3.0"; "junk" ]
+    (releases_on_disk node);
+  Alcotest.(check string) "current runs" "0.2.0" (current node)
+
+(* A rollback deletes nothing: every older release is still a way back. *)
+let test_rollback_prunes_nothing () =
+  let node = switched_node () in
+  release_on_disk node "0.0.9";
+  let sim = new_sim () in
+  let outcome = trial_outcome (sim_ops ~exit_at:(Some 2) node sim) node in
+  Alcotest.(check bool)
+    "rolled back" true
+    (match outcome with Supervisor.Rolled_back _ -> true | _ -> false);
+  Alcotest.(check (list string))
+    "all still there"
+    [ "0.0.9"; "0.1.0"; "0.2.0" ]
+    (releases_on_disk node)
+
 let test_unhealthy_times_out () =
   let node = switched_node () in
   let sim = new_sim () in
@@ -6051,6 +6097,9 @@ let () =
           t "awake clock" test_awake_clock;
           t "crash on start rolls back" test_crash_on_start_rolls_back;
           t "healthy is kept" test_healthy_is_kept;
+          t "a kept switch prunes old releases"
+            test_kept_switch_prunes_old_releases;
+          t "a rollback prunes nothing" test_rollback_prunes_nothing;
           t "unhealthy times out" test_unhealthy_times_out;
           t "sleep does not roll back" test_sleep_does_not_roll_back;
           t "trial starts are bounded" test_trial_starts_are_bounded;
