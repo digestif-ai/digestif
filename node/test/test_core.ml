@@ -1948,6 +1948,69 @@ let log_transaction_nests () =
     "a transaction after them opens again" (Some "1") (Log.get_config t "after");
   Log.close t
 
+(* A circle-state envelope signed by a key the circle never admitted: stored, it moves the circle
+   generation, and the fold rejects it. *)
+let stranger_relay url =
+  let key = Crypto.generate_signing_key () in
+  let sg =
+    Envelope.create ~key ~seq:1 ~epoch:0 ~kind:"relay"
+      (Bodies.make_relay ~url ~mailer:false ())
+  in
+  (Envelope.hash sg.envelope, sg)
+
+let folded (f : Fold.t) hash =
+  List.mem hash f.applied
+  || List.mem_assoc hash f.rejected
+  || List.mem_assoc hash f.waiting
+
+(* DIG-209: the fold is computed once per circle generation and shared until a circle-state
+   envelope is stored, rewritten or removed, by this connection or any other; content leaves it. *)
+let fold_cached_per_generation () =
+  let c = make_circle () in
+  let f1 = Node.fold c.host in
+  Alcotest.(check bool)
+    "a second read shares the fold" true
+    (Node.fold c.host == f1);
+  ignore (ok (Node.write c.host ~kind:"summary" (summary "content")));
+  Alcotest.(check bool) "content leaves it" true (Node.fold c.host == f1);
+  let card, _ =
+    ok (Node.write c.host ~kind:"card" (`Assoc [ ("name", `String "Host") ]))
+  in
+  let f2 = Node.fold c.host in
+  Alcotest.(check bool)
+    "an own circle write refolds" true
+    (f2 != f1 && folded f2 card);
+  let other = Log.reopen (Node.log_path c.host.dir) in
+  let h, sg = stranger_relay "https://c.test" in
+  ignore (Log.insert other ~hash:h sg);
+  let f3 = Node.fold c.host in
+  Alcotest.(check bool)
+    "another connection's write refolds" true
+    (f3 != f2 && folded f3 h);
+  Log.delete other h;
+  Log.close other;
+  Alcotest.(check bool) "a removal refolds" false (folded (Node.fold c.host) h)
+
+(* DIG-209: a fold read inside a transaction that rolls back is not kept, so a later write that
+   reaches the same generation count is folded afresh. *)
+let fold_not_kept_from_a_rollback () =
+  let c = make_circle () in
+  let rolled, rsg = stranger_relay "https://c.test" in
+  (try
+     Log.transaction c.host.log (fun () ->
+         ignore (Log.insert c.host.log ~hash:rolled rsg);
+         Alcotest.(check bool)
+           "the transaction folds its own write" true
+           (folded (Node.fold c.host) rolled);
+         failwith "roll back")
+   with Failure _ -> ());
+  let kept, ksg = stranger_relay "https://d.test" in
+  ignore (Log.insert c.host.log ~hash:kept ksg);
+  let f = Node.fold c.host in
+  Alcotest.(check bool)
+    "the committed write folds, the rolled-back one does not" true
+    (folded f kept && not (folded f rolled))
+
 (* One connection, several threads at once: the daemon's UI thread and its main thread each reach a
    log, and the binding lets them run inside SQLite together. Each thread writes and reads its own
    rows; the process's exit says whether the connection survived it, since a connection corrupted by
@@ -2146,6 +2209,10 @@ let () =
           Alcotest.test_case "an own seq is signed once" `Quick own_seq_unique;
           Alcotest.test_case "one connection, many threads" `Quick
             log_one_connection_many_threads;
+          Alcotest.test_case "the fold is kept per circle generation" `Quick
+            fold_cached_per_generation;
+          Alcotest.test_case "a rolled-back fold is not kept" `Quick
+            fold_not_kept_from_a_rollback;
         ] );
       ( "proc",
         [
