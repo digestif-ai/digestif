@@ -1,0 +1,12 @@
+{
+  "format": "digestif-feed-v0",
+  "releases": [
+    {
+      "version": "0.1.139",
+      "manifest": "0.1.139/manifest.json",
+      "signatures": "0.1.139/manifest.sig.json"
+    }
+  ],
+  "revocations": [],
+  "signers": []
+}

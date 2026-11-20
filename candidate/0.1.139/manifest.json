@@ -1,0 +1,26 @@
+{
+  "format": "digestif-release-v1",
+  "version": "0.1.139",
+  "published_at": "2026-11-20T10:36:20.000Z",
+  "notes": "v0.1.139",
+  "artifacts": [
+    {
+      "platform": "darwin-arm64",
+      "url": "https://github.com/digestif-ai/digestif/releases/download/v0.1.139/digestif-darwin-arm64.tar.gz",
+      "sha256": "sha256:b1913d02727b43b693f7a4a451ebde4b5a9c3ab19baba36654d73271620d891a",
+      "size": 46123708
+    },
+    {
+      "platform": "linux-x86_64",
+      "url": "https://github.com/digestif-ai/digestif/releases/download/v0.1.139/digestif-linux-x86_64.tar.gz",
+      "sha256": "sha256:0460f168659c054c22b070d03f86760d4e002bbab30167892c3b36679e6eec9a",
+      "size": 58441458
+    },
+    {
+      "platform": "linux-arm64",
+      "url": "https://github.com/digestif-ai/digestif/releases/download/v0.1.139/digestif-linux-arm64.tar.gz",
+      "sha256": "sha256:f866cc26611aa6358f2e29146327ecde8c0acf9d2ace36ec51ef4b1c786ee3e2",
+      "size": 57293198
+    }
+  ]
+}
