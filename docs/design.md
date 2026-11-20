@@ -294,7 +294,7 @@ other thing the run takes from the circle: one line, in the agent's own words, o
 agent should work, which it saw working for another member's agent (how it answers, what it
 drafts, what it remembers). While the member turned adopting on (setup's Inbox step, or Settings,
 Inbox agent), the node adds it to their practices, kept beside their prompt, and tells them in a
-`practice` notice; otherwise the node offers it as a choice of Adopt or Not now, Not now a week
+`practice` notice, one per message however many lines the run took from it; otherwise the node offers it as a choice of Adopt or Not now, Not now a week
 after the run, and Adopt adds it the same way. Either way its author gets the same `credit` a filed
 idea gets, its `adopted` saying `as_how_agent_works` and its title the line: the reading run writes
 and checks it as it does a filed idea's, and the node holds it beside the line and sends it only

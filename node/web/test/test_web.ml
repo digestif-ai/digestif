@@ -13581,6 +13581,24 @@ let inbox_practice_credits () =
         "adopted into how the agent works" "as_how_agent_works" (s "adopted" cr)
   | l -> Alcotest.failf "one credit, not %d" (List.length l));
   Alcotest.(check int) "one credit held" (before + 1) (List.length (credits ()));
+  (* DIG-309: and one notice to the member, counting them, each line in its detail. *)
+  (match
+     List.filter (fun i -> s "subject" i = "practice") (list (member "items" r))
+   with
+  | [ nt ] ->
+      let _, nt = call ("items/" ^ s "id" nt) in
+      Alcotest.(check string)
+        "one notice counting them" "Adopted 3 of Pia Gale's practices"
+        (s "title" nt);
+      Alcotest.(check string)
+        "each line in the notice"
+        "- Lead with the answer.\n\
+         - Name who asked.\n\
+         - Close with the next step.\n\
+         Your Inbox agent works these ways from its next run. Settings, Inbox \
+         agent lists them, where you remove them."
+        (s "detail" nt)
+  | l -> Alcotest.failf "one practice notice, not %d" (List.length l));
   (* One line past the brief: the one credit is a draft. *)
   let r =
     run
