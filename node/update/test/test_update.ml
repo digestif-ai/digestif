@@ -4460,7 +4460,11 @@ let run_two ?(older_signed_by = []) ?newest_archive ?(on_archive = ignore)
            release "v0.1.9" true [ asset 19 "manifest.json" ];
          ])
   in
+  (* Signatures upload at once ({!Sign_next.upload_signed}), so the fake records each under a lock
+     and the uploads are answered newest first, the order the listing holds, never the order the
+     threads happened to reach the fake in. *)
   let uploaded = ref [] and asked = ref 0 and keys = ref 0 in
+  let uploads = Mutex.create () in
   let gh =
     with_attest @@ fun args ->
     match args with
@@ -4476,7 +4480,7 @@ let run_two ?(older_signed_by = []) ?newest_archive ?(on_archive = ignore)
         on_archive "0.2.2";
         Ok (binary_bytes "0.2.2")
     | [ "release"; "upload"; tag; _; "--repo"; "o/r"; "--clobber" ] ->
-        uploaded := !uploaded @ [ tag ];
+        Mutex.protect uploads (fun () -> uploaded := !uploaded @ [ tag ]);
         Ok ""
     | [ "release"; "delete"; "v0.1.9"; "--repo"; "o/r"; "--yes" ] -> Ok ""
     | _ -> Error ("unexpected gh " ^ String.concat " " args)
@@ -4507,7 +4511,18 @@ let run_two ?(older_signed_by = []) ?newest_archive ?(on_archive = ignore)
       ~listed:(listing gh) ()
   in
   (match result with Ok () -> () | Error e -> Alcotest.fail e);
-  (!uploaded, !asked, !keys, Buffer.contents said)
+  let newest_first = [ "v0.2.2"; "v0.2.1"; "v0.2.0"; "v0.1.9" ] in
+  let rank tag =
+    let rec go i = function
+      | [] -> i
+      | t :: rest -> if t = tag then i else go (i + 1) rest
+    in
+    go 0 newest_first
+  in
+  ( List.stable_sort (fun a b -> compare (rank a) (rank b)) !uploaded,
+    !asked,
+    !keys,
+    Buffer.contents said )
 
 (* The node line offers its newest draft, and an older one only when one more signature completes
    it (ISS-52997). *)
@@ -4898,7 +4913,7 @@ let run_relays_result ?public_key ~published ~patches ~signed_by ~key answer =
          (release published false :: List.map (fun n -> release n true) patches))
   in
   let uploaded = ref [] and deleted = ref [] and published_ = ref [] in
-  let asked = ref 0 in
+  let asked = ref 0 and lock = Mutex.create () in
   let gh =
     with_attest @@ fun args ->
     match args with
@@ -4907,10 +4922,10 @@ let run_relays_result ?public_key ~published ~patches ~signed_by ~key answer =
         Ok (doc (int_of_string (Filename.basename a) - 1000))
     | [ "api"; "-H"; _; a ] when contains ~sub:"releases/assets/2" a -> Ok "1"
     | [ "release"; "upload"; t; _; "--repo"; "o/r"; "--clobber" ] ->
-        uploaded := !uploaded @ [ t ];
+        Mutex.protect lock (fun () -> uploaded := !uploaded @ [ t ]);
         Ok ""
     | [ "release"; "delete"; t; "--repo"; "o/r"; "--yes" ] ->
-        deleted := !deleted @ [ t ];
+        Mutex.protect lock (fun () -> deleted := !deleted @ [ t ]);
         Ok ""
     | _ -> Error ("unexpected gh " ^ String.concat " " args)
   in
