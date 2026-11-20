@@ -1179,7 +1179,7 @@ The repo's conformance suite runs these against any relay and any node:
   signature verifies, and refused when it does not.
 - Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one,
   or a request signed by any other key, is not answered.
-- Epoch: a newcomer fetches every circle-state envelope and no content from before their join.
+- Epoch: a newcomer fetches every circle-state envelope and no content from before their join, and their node reports no gap for that content.
 - Release revocation: a relay serves it to every reader, a newcomer included, without checking its
   release signatures; a node records the key as revoked when a current release signer signed it and
   ignores it otherwise.

@@ -95,6 +95,22 @@ export const nodeCases: Case<NodeContext>[] = [
     },
   },
   {
+    id: "node.gap.none-before-join",
+    covers: LINES.epoch,
+    title: "Content written before a member joined leaves no gap in that member's state",
+    async run(context) {
+      const { world, a, b } = context;
+      const [writer] = await world.members(["writes before the join"], [a, b]);
+      const before = await world.post(writer!.device, "before the newcomer", [a, b]);
+      const [newcomer] = await world.members(["joins after the write"], [a, b]);
+      const after = await world.post(writer!.device, "after the newcomer", [a, b]);
+      const state = await context.node.sync(newcomer!.device.signer, [a, b]);
+      check(!state.feed.includes(envelopeHash(before.envelope)), "the newcomer's feed does not hold the note written before they joined");
+      check(state.feed.includes(envelopeHash(after.envelope)), "the newcomer's feed holds the note written after they joined");
+      equal(state.gaps.filter((g) => g.author === writer!.device.key), [], "gaps for the writer's device, read by the newcomer");
+    },
+  },
+  {
     id: "node.duplicate.deduped",
     covers: LINES.duplicate,
     title: "An envelope served by two relays appears once",
