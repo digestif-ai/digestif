@@ -106,26 +106,45 @@
     }
   }
 
+  // A search or a status covers every organization, not only the pages shown so far: it walks the
+  // rest in, a page at a time, until none is left or a newer search starts. DIG-239
+  let reloads = 0;
+  async function walkRest(asked: number): Promise<void> {
+    while (filtered && moreOrganizations && asked === reloads) {
+      if (!(await handleMoreOrganizations())) break;
+    }
+  }
+
   async function reloadAll(): Promise<void> {
+    const asked = ++reloads;
     loadErrors = [];
     await Promise.all(organizations.map((o) => loadOrg(o.id, [])));
+    await walkRest(asked);
   }
 
   let loadingOrganizations = $state(false);
-  async function handleMoreOrganizations(): Promise<void> {
+  let organizationsPage: Promise<boolean> | undefined;
+  // One page of organizations at a time, whether More organizations or a search asked for it.
+  // Answers whether the page arrived.
+  function handleMoreOrganizations(): Promise<boolean> {
+    organizationsPage ??= moreOrganizationsPage().finally(() => (organizationsPage = undefined));
+    return organizationsPage;
+  }
+  async function moreOrganizationsPage(): Promise<boolean> {
     const last = organizations[organizations.length - 1];
     loadingOrganizations = true;
     try {
       const response = await client.organizations({ limit: ORGANIZATION_PAGE + 1, cursor: last?.id });
       if (isApiError(response)) {
         loadErrors = response.errors;
-        return;
+        return false;
       }
       const next = response.data.slice(0, ORGANIZATION_PAGE);
       await Promise.all(next.map((o) => loadOrg(o.id, [])));
       if (q.trim() === '') for (const o of next) judge(o, pages[o.id]);
       organizations = [...organizations, ...next];
       moreOrganizations = response.data.length > ORGANIZATION_PAGE;
+      return true;
     } finally {
       loadingOrganizations = false;
     }
@@ -142,7 +161,11 @@
     if (isApiError(response)) loadErrors = [...loadErrors, ...response.errors];
     else counts = response.data;
   }
-  onMount(() => void loadCounts());
+  onMount(() => {
+    void loadCounts();
+    // A page opened under a status chip searches every organization too.
+    void walkRest(reloads);
+  });
 
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   function handleSearch(): void {
@@ -241,6 +264,7 @@
     added = [];
     seen = new Map();
     fresh = new Set();
+    reloads++;
     q = '';
     status = data.status;
     organizations = data.organizations;

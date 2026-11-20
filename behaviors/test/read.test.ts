@@ -6,7 +6,7 @@ import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test as nodeTest, type TestContext } from "node:test";
-import { buildReadPrompt, emptyState, loadConfig, loadState, localDay, parseReadContext, readStateDir, runRead, saveState, sentence } from "../src/read.ts";
+import { buildReadPrompt, emptyState, loadConfig, loadState, localDay, parseReadContext, READ_RETRY_DELAYS_MS, readStateDir, runRead, saveState, sentence } from "../src/read.ts";
 import { CHECK_FIRST, INBOX_PROMPT_FILE, QUOTE_MAX, TAKEN_MAX, parseFiled, parseRun } from "../src/inbox.ts";
 import { ALWAYS_ON_FILE } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
@@ -457,11 +457,21 @@ test("near-identical notes: same author, same text after whitespace folding, wit
   ]);
 });
 
-test("over budget: the item is dropped, reported once a day, and resolved when a day starts under budget", async () => {
+test("over budget: the item waits for a day with budget, reported once a day, and resolved when a day starts under budget", async () => {
   setConfig({ max_agent_runs: 0 });
   const ctx = () => parseReadContext(JSON.stringify(context()));
   assert.equal(await runRead({ ctx: ctx(), log: () => {} }), 0);
   assert.deepEqual(seenHashes(), ["sha256:1", "sha256:2", "sha256:3", "sha256:6"], "decided, and kept out of the model's input");
+  assert.deepEqual(
+    state().pending.map((p: { hash: string; reads: number }) => [p.hash, p.reads]),
+    [
+      ["sha256:1", 0],
+      ["sha256:2", 0],
+      ["sha256:3", 0],
+      ["sha256:6", 0],
+    ],
+    "deferred, not dropped (DIG-239)",
+  );
   assert.deepEqual(state().recent, []);
   assert.deepEqual(nodeCalls(), ["problem report --job read_circle --kind out_of_budget"]);
   feed.unshift(item(7));
@@ -478,6 +488,10 @@ test("over budget: the item is dropped, reported once a day, and resolved when a
   assert.equal(state().out_of_budget.open, false);
   assert.deepEqual(seenHashes().slice(-1), ["sha256:8"]);
   assert.equal(nodeCalls().length, 2);
+  assert.ok(
+    !state().pending.some((p: { reads: number }) => p.reads === 0),
+    "the deferred messages are read on the day with budget",
+  );
 });
 
 test("an outbound counter at its limit is over budget too, and an open problem closes on a quiet feed", async () => {
@@ -875,7 +889,9 @@ test("an idea filed in a run the node did not record is not filed again when the
   assert.equal(filingRuns().length, 1);
   nodeRecords = true;
   inbox = [inboxItem(1)];
-  assert.equal(await go(), 0);
+  // Read again once the failed batch's wait is over.
+  const later = new Date(Date.now() + READ_RETRY_DELAYS_MS[0]!);
+  assert.equal(await runRead({ ctx: parseReadContext(JSON.stringify(context())), now: later, log: () => {} }), 0);
   assert.equal(filingRuns().length, 1, "the ledger answers the second time");
   const credit = posted.at(-1)!.items.find((i) => i["subject"] === "credit")!;
   assert.equal(credit["title"], "Ada is adopting your idea: Back off retries");
@@ -932,17 +948,25 @@ test("every answer and credit the run would send passes the brief, the deny laye
   assert.equal(credit["send"], true, "a credit is sent past the same guards");
 });
 
-test("a failed run leaves its batch unreviewed and reads it again with the next sync's, at most three times", async () => {
+test("a failed run leaves its batch unreviewed and reads it again with a later sync's, spaced out, at most three times", async () => {
+  const t0 = Date.parse("2026-11-05T12:00:00Z");
+  const at = (ms: number) => runRead({ ctx: parseReadContext(JSON.stringify(context())), now: new Date(t0 + ms), log: () => {} });
   feed = [item(1)];
   setAnswer("not json");
-  assert.equal(await go(), 0);
+  assert.equal(await at(0), 0);
   assert.equal(posted.length, 0, "nothing is recorded");
-  assert.deepEqual(state().pending, [{ hash: "sha256:1", type: "note", created_at: "2026-11-01T00:00:01Z", reads: 1 }]);
+  assert.deepEqual(state().pending, [
+    { hash: "sha256:1", type: "note", created_at: "2026-11-01T00:00:01Z", reads: 1, after: new Date(t0 + READ_RETRY_DELAYS_MS[0]!).toISOString() },
+  ]);
   assert.deepEqual(nodeCalls(), [`problem report --job read_circle --kind model_unavailable --detail ${NOT_JSON}`]);
-  // The next sync carries a new item and reads the note again with it.
+  // A sync before the delay is over leaves the failed note waiting (DIG-239).
+  assert.equal(await at(5 * 60_000), 0);
+  assert.equal(inboxRuns().length, 1, "no run before the delay");
+  assert.equal(state().pending.length, 1);
+  // A sync after it carries a new item and reads the note again with it.
   inbox = [inboxItem(1)];
   messages = { "sha256:1": { voice: "agent", text: "NOTE AGAIN" } };
-  assert.equal(await go(), 0);
+  assert.equal(await at(READ_RETRY_DELAYS_MS[0]!), 0);
   assert.deepEqual(
     batchOf(inboxRuns()[1]!).map((m) => m.hash),
     ["sha256:1", "sha256:i1"],
@@ -957,14 +981,15 @@ test("a failed run leaves its batch unreviewed and reads it again with the next 
   // A node that does not record the run fails it the same way.
   setAnswer({ reviews: [] });
   nodeRecords = false;
-  assert.equal(await go(), 0);
+  const third = READ_RETRY_DELAYS_MS[0]! + READ_RETRY_DELAYS_MS[1]!;
+  assert.equal(await at(third), 0);
   assert.deepEqual(
     state().pending.map((p: { hash: string; reads: number }) => [p.hash, p.reads]),
     [["sha256:i1", 2]],
     "read three times, the note is left unreviewed",
   );
   nodeRecords = true;
-  assert.equal(await go(), 0);
+  assert.equal(await at(third + READ_RETRY_DELAYS_MS[1]!), 0);
   assert.deepEqual(state().pending, []);
   assert.deepEqual(posted.at(-1)!.reviews.map((r) => r.hash), ["sha256:i1"]);
 });

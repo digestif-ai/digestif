@@ -666,6 +666,35 @@ let mail_waits_for_the_relay () =
     "then dropped" 0
     (List.length (Store.mail_requests c.host.node.log))
 
+(* DIG-239: a mail request the mailer keeps refusing is kept and tried again until it is
+   Daily_digest.mail_max_age old, then dropped rather than asked again every pass. *)
+let refused_mail_expires () =
+  let c = make_circle () in
+  ready c;
+  queue c (ask "Lunch?");
+  (relay c mailing).mailer <- false;
+  let _, p = run c c.host in
+  ignore (Option.get (ok p.digest));
+  Alcotest.(check (list bool))
+    "a refusal keeps the request" [ true ]
+    (List.map (fun (s : Daily_digest.sent) -> s.kept) p.sent);
+  let sent ~now = ok (Daily_digest.send ~transport:c.net ~now c.host.node) in
+  let soon = Unix.gettimeofday () +. 3600. in
+  Alcotest.(check (list bool))
+    "a young request is kept" [ true ]
+    (List.map (fun (s : Daily_digest.sent) -> s.kept) (sent ~now:soon));
+  Alcotest.(check int)
+    "and still stored" 1
+    (List.length (Store.mail_requests c.host.node.log));
+  let later = Unix.gettimeofday () +. Daily_digest.mail_max_age +. 60. in
+  Alcotest.(check (list bool))
+    "an old one is dropped" [ false ]
+    (List.map (fun (s : Daily_digest.sent) -> s.kept) (sent ~now:later));
+  Alcotest.(check int)
+    "and gone from the store" 0
+    (List.length (Store.mail_requests c.host.node.log));
+  Alcotest.(check int) "and not asked again" 0 (List.length (sent ~now:later))
+
 (* A digest signed after an own envelope the relays later refuse for good: the next sync drops the
    refused one and re-signs the digest one seq lower (Node.drop_refused), and the kept mail request
    moves with it, so the mailing relay is asked to mail the hash it holds. ISS-45471 *)
@@ -1861,6 +1890,8 @@ let () =
             refused_digest_is_written_again;
           Alcotest.test_case "mail waits for the relay" `Quick
             mail_waits_for_the_relay;
+          Alcotest.test_case "a refused mail request expires" `Quick
+            refused_mail_expires;
           Alcotest.test_case "mail follows a re-signed digest" `Quick
             mail_follows_a_resigned_digest;
           Alcotest.test_case "an answer follows a re-signed ask" `Quick

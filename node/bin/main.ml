@@ -1615,7 +1615,7 @@ let report_daily (p : Daily.report) =
         (match s.result with
         | Ok Sent -> "sent"
         | Ok Already_sent -> "already sent"
-        | Error e -> "kept: " ^ e))
+        | Error e -> if s.kept then "kept: " ^ e else e))
     p.sent
 
 let digest_email =
@@ -2521,15 +2521,16 @@ let run =
           (* Sleep in short steps and compare wall clocks: a jump means the machine slept, so sync
              now and look for a release. *)
           let last = ref (Unix.gettimeofday ()) in
-          let tick = ref !last in
           while not !stop do
+            (* Measured across the sleep alone: a long pass or update check before it is not a
+               wake. *)
+            let slept_at = Unix.gettimeofday () in
             (try Unix.sleepf 5.0 with Unix.Unix_error (Unix.EINTR, _, _) -> ());
             (* What decides a pass reads the store too, and the reap and the update check can
                fail the same way. *)
             guarded "loop" @@ fun () ->
             let now = Unix.gettimeofday () in
-            let woke = now -. !tick >= wake_threshold in
-            tick := now;
+            let woke = now -. slept_at >= wake_threshold in
             if
               (not !stop)
               && (woke

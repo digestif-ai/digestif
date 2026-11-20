@@ -297,8 +297,8 @@ are code, never the prompt: an answer within the brief and Rules goes out in the
 through the deny layer and both checks, and only while the member is Active; anything past them is
 a draft for the member; an intro and a share past the Rules are drafts the member sends; and no run
 picks a choice or sends a draft. Every message the run read carries Reviewed and a review line
-saying what the agent did. A run that fails leaves its batch to be read again with the next sync's,
-at most three times, and the node puts one `inbox_agent_failed` notice in the member's Inbox for
+saying what the agent did. A run that fails leaves its batch to be read again with a later sync's,
+30 minutes and then 2 hours later, at most three times, and the node puts one `inbox_agent_failed` notice in the member's Inbox for
 the streak: "Your Inbox agent's last run failed.", the error in the member's words, and Settings,
 Inbox agent, Log as its page, where the run's log reads on the member's own machine. It is local,
 since its words carry the error; a later failure of the same streak rewords it in place, and the
@@ -486,7 +486,8 @@ questions forever. Defaults, all per node and adjustable:
 | Agent runs per day for incoming traffic | 30 |
 
 Incoming messages are filtered and deduplicated in code before any run. Over budget, the node
-stays silent and the digest says so. The relay has its own caps (protocol.md).
+stays silent and the digest says so; what arrived over budget is read on the next day with budget
+left. The relay has its own caps (protocol.md).
 
 ## Who can read what
 

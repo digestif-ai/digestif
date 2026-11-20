@@ -7,7 +7,7 @@
 
 import { homedir } from "node:os";
 import { commandLines, type CommandResult } from "./command.ts";
-import { isBookkeeping, messageLine, repositoryCommits, type Commit } from "./git.ts";
+import { GitFailed, isBookkeeping, messageLine, repositoryCommits, type Commit } from "./git.ts";
 import {
   authorKey,
   dateTimeWithOffset,
@@ -269,6 +269,7 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
         // source past it names the repository it spent it in.
         let last: string | undefined;
         let stopped: string | undefined;
+        let gitFailed: GitFailed | undefined;
         for (const r of list) {
           if (last !== undefined && reading.spent()) {
             stopped = last;
@@ -277,10 +278,23 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
           const rpaths = r.paths.map((p) => untilde(p, home));
           last = rpaths[0] ?? r.name;
           reading.onProgress?.({ file: last, bytes: 0, elapsedMs: 0 });
-          got.push(await gitItems(r, s.authors, o, rpaths));
+          try {
+            got.push(await gitItems(r, s.authors, o, rpaths));
+          } catch (e) {
+            if (!(e instanceof GitFailed)) throw e;
+            gitFailed = e;
+            break;
+          }
         }
         if (stopped !== undefined) {
           abandon(s.label, stopped);
+          break;
+        }
+        // A repository git could not read fails the source as a whole, like one past its share: it
+        // does not move, so the next note reads the window this one missed.
+        if (gitFailed !== undefined) {
+          failures.push(`${s.label}: ${gitFailed.message}`);
+          failedSources.push(s.label);
           break;
         }
         for (const g of got) {
