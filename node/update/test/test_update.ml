@@ -4338,8 +4338,10 @@ let draft tag d signed =
   }
 
 (* Two node versions waiting at once, v0.2.2 and v0.2.1, against a fake gh (digestif#265);
-   [older_signed_by] signed v0.2.1. *)
-let run_two ?(older_signed_by = []) ?newest_archive answers =
+   [older_signed_by] signed v0.2.1; [on_archive] is told each version whose archive is downloaded,
+   before it is answered. *)
+let run_two ?(older_signed_by = []) ?newest_archive ?(on_archive = ignore)
+    answers =
   let asset id name = `Assoc [ ("id", `Int id); ("name", `String name) ] in
   let release tag draft assets =
     `Assoc
@@ -4377,8 +4379,10 @@ let run_two ?(older_signed_by = []) ?newest_archive answers =
     | [ "api"; "-H"; _; "repos/o/r/releases/assets/22" ] ->
         Ok (manifest_json "0.2.2")
     | [ "api"; "-H"; _; "repos/o/r/releases/assets/25" ] ->
+        on_archive "0.2.1";
         Ok (binary_bytes "0.2.1")
     | [ "api"; "-H"; _; "repos/o/r/releases/assets/26" ] ->
+        on_archive "0.2.2";
         Ok (binary_bytes "0.2.2")
     | [ "release"; "upload"; tag; _; "--repo"; "o/r"; "--clobber" ] ->
         uploaded := !uploaded @ [ tag ];
@@ -4458,6 +4462,32 @@ let test_sign_next_offers_newest_and_completable () =
   Alcotest.(check (list string)) "anything else signs nothing" [] uploaded;
   Alcotest.(check int) "still one question" 1 asked;
   Alcotest.(check int) "and never reads the key" 0 keys
+
+(* THE VERSIONS OFFERED ARE SHOWN AT ONCE (DIG-304): each version's archive download waits until
+   the other's has started, so the two could only both be shown by being shown together; both are
+   shown and signed as before. *)
+let test_sign_next_shows_at_once () =
+  let m = Mutex.create () and started = ref [] in
+  let together = ref true in
+  let on_archive v =
+    Mutex.protect m (fun () -> started := v :: !started);
+    let deadline = Unix.gettimeofday () +. 10. in
+    while
+      Mutex.protect m (fun () -> List.length !started) < 2
+      && Unix.gettimeofday () < deadline
+    do
+      Thread.yield ()
+    done;
+    if Mutex.protect m (fun () -> List.length !started) < 2 then
+      together := false
+  in
+  let uploaded, asked, _, _ =
+    run_two ~older_signed_by:[ roman ] ~on_archive [ "s" ]
+  in
+  Alcotest.(check bool) "both versions were shown at once" true !together;
+  Alcotest.(check (list string))
+    "both signed, newest first" [ "v0.2.2"; "v0.2.1" ] uploaded;
+  Alcotest.(check int) "asked once" 1 asked
 
 (* A VERSION NOTHING TIES TO ITS BUILD IS NEVER SIGNED (DIG-244): a draft whose archive differs from
    its manifest, is missing, has no digest, or is not attested by release.yml on the tag at the
@@ -5465,6 +5495,29 @@ let test_parallel_map () =
            (fun x -> if x = 2 then failwith "two" else x)
            [ 1; 2; 3 ]))
 
+(* Calls made at most [limit] at once: never more in flight than the limit, the limit reached, every
+   call made, the answers in the order asked, and an exception raised again. *)
+let test_parallel_map_limit () =
+  let m = Mutex.create () and running = ref 0 and peak = ref 0 in
+  let call x =
+    Mutex.protect m (fun () ->
+        incr running;
+        peak := max !peak !running);
+    Thread.delay 0.05;
+    Mutex.protect m (fun () -> decr running);
+    x * 10
+  in
+  Alcotest.(check (list int))
+    "every call answered, in order" [ 10; 20; 30; 40; 50 ]
+    (Parallel.map_limit ~limit:2 call [ 1; 2; 3; 4; 5 ]);
+  Alcotest.(check int) "never more than the limit at once" 2 !peak;
+  Alcotest.check_raises "an exception is raised again" (Failure "three")
+    (fun () ->
+      ignore
+        (Parallel.map_limit ~limit:2
+           (fun x -> if x = 3 then failwith "three" else x)
+           [ 1; 2; 3; 4 ]))
+
 (* A partial clone an earlier digestif-update made (--filter=blob:none) is cloned again in full,
    once, so no file read fetches from GitHub (DIG-148). *)
 let test_partial_clone_recloned () =
@@ -6408,6 +6461,9 @@ let () =
           t "GitHub only for releases" test_sign_next_github_only_for_releases;
           t "the timing log" test_sign_next_timing_log;
           t "calls made at once" test_parallel_map;
+          t "calls made at most a limit at once" test_parallel_map_limit;
+          t "the versions offered are shown at once"
+            test_sign_next_shows_at_once;
           t "a partial clone is cloned again in full"
             test_partial_clone_recloned;
           t "out of date in a node" test_out_of_date_in_a_node;

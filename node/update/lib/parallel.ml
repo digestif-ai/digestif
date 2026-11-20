@@ -29,6 +29,39 @@ let map f xs =
           | None -> assert false)
         started
 
+(* [map] with at most [limit] calls in flight: each of [limit] threads takes the next call not yet
+   started until none is left, so the run takes about the slowest call while the calls fit under
+   [limit], and a long list never starts all of its calls at once. The answers come back in the
+   order asked, and an exception a call raised is raised again once every call has finished. *)
+let map_limit ~limit f xs =
+  let n = List.length xs in
+  if limit >= n then map f xs
+  else
+    let todo = Array.of_list xs in
+    let slots = Array.make n None in
+    let next = ref 0 and m = Mutex.create () in
+    let rec work () =
+      match
+        Mutex.protect m (fun () ->
+            let i = !next in
+            if i < n then (
+              next := i + 1;
+              Some i)
+            else None)
+      with
+      | None -> ()
+      | Some i ->
+          slots.(i) <-
+            Some (match f todo.(i) with v -> Ok v | exception e -> Error e);
+          work ()
+    in
+    ignore (map work (List.init (max 1 limit) (fun _ -> ())));
+    Array.to_list slots
+    |> List.map (function
+      | Some (Ok v) -> v
+      | Some (Error e) -> raise e
+      | None -> assert false)
+
 (* Two calls of different types at once. *)
 let both f g =
   let a = ref None in

@@ -7,7 +7,7 @@
    (a tag's commit, commit titles, a file at a tag) is read from the tool's own clone of the
    repository through [git] ({!sync_clone}); GitHub is asked only for what git does not hold: the
    release listing, each draft's manifest.json and the signatures beside it, and those downloads
-   are made at once ({!Parallel}). The key is read only once the signer answers s, from the command
+   are made at once ({!Parallel}), as is every version's show ({!shows_at_once}). The key is read only once the signer answers s, from the command
    they named in ~/.config/digestif/signer.json or at a hidden prompt, into memory only; a key that
    cannot be read ends the run there, nothing signed ({!check_key}), and a d or a leave never reads
    it. It uploads the signature as one asset of the draft, named for the key, so two signers never
@@ -1244,6 +1244,11 @@ let once read_key =
         (match k with Ok _ -> kept := Some k | Error _ -> ());
         k
 
+(* How many versions of one line are shown at once: each node version holds its archives (about
+   160 MB) in memory while their attestations are checked, so a long backlog is shown in waves of
+   this many rather than all at once. *)
+let shows_at_once = 6
+
 let rec collect f = function
   | [] -> Ok []
   | x :: rest ->
@@ -1408,17 +1413,41 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
       let* () =
         if node_drafts = [] && relay_offered = [] then Ok () else synced
       in
-      let* nodes =
-        collect
-          (fun ((r : draft), m) ->
-            time ("show " ^ r.tag) (fun () ->
-                let* node, node_bytes =
-                  show ~gh ~git ~clone ~tmp ~signers ~repo
-                    ~releases:node_releases r m
-                in
-                Ok { node; node_bytes }))
-          node_drafts
+      (* Every version is shown at once ({!shows_at_once}), both lines together, so the time to
+         the question is the slowest show rather than their sum. *)
+      let downloaded r =
+        let* b = bytes_of r in
+        relay_manifest_of r b
       in
+      let node_shown, relay_shown =
+        Parallel.both
+          (fun () ->
+            Parallel.map_limit ~limit:shows_at_once
+              (fun ((r : draft), m) ->
+                time ("show " ^ r.tag) (fun () ->
+                    let* node, node_bytes =
+                      show ~gh ~git ~clone ~tmp ~signers ~repo
+                        ~releases:node_releases r m
+                    in
+                    Ok { node; node_bytes }))
+              node_drafts)
+          (fun () ->
+            let relays_read =
+              if relay_offered = [] then None
+              else time "relay-versions" relay.relay_versions
+            in
+            Parallel.map_limit ~limit:shows_at_once
+              (fun (r : draft) ->
+                time ("show " ^ r.tag) (fun () ->
+                    let* relay, relay_bytes =
+                      show_relay ~gh ~git ~clone ~tmp ~signers ~repo
+                        ~relays:relays_read ~releases:relay_releases ~downloaded
+                        r
+                    in
+                    Ok { relay; relay_bytes }))
+              relay_offered)
+      in
+      let* nodes = collect Fun.id node_shown in
       let done_, nodes = List.partition (fun v -> v.node.remaining = 0) nodes in
       List.iter
         (fun v ->
@@ -1427,25 +1456,7 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
                "%s has every signature; the fleet's rollout publishes it."
                v.node.release.tag))
         done_;
-      let relays_read =
-        if relay_offered = [] then None
-        else time "relay-versions" relay.relay_versions
-      in
-      let downloaded r =
-        let* b = bytes_of r in
-        relay_manifest_of r b
-      in
-      let* relays =
-        collect
-          (fun (r : draft) ->
-            time ("show " ^ r.tag) (fun () ->
-                let* relay, relay_bytes =
-                  show_relay ~gh ~git ~clone ~tmp ~signers ~repo
-                    ~relays:relays_read ~releases:relay_releases ~downloaded r
-                in
-                Ok { relay; relay_bytes }))
-          relay_offered
-      in
+      let* relays = collect Fun.id relay_shown in
       show_all ~say ~repo ~nodes ~relays ~skipped:(node_skipped <> []);
       (* Only a version whose files its build attested is signed or dropped by the answer. *)
       let nodes, node_refused =

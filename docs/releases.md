@@ -758,7 +758,9 @@ reading the terminal. `--sign` goes only with `--next`.
 
 GitHub is asked only for what git does not hold: one listing of the releases, read once for the
 whole run, then every waiting draft's `manifest.json` downloaded at once, while the clone fetches;
-the signatures go back as uploads. Every step's duration is appended to
+the signatures go back as uploads. Every version offered, of both lines, is then shown at once (its
+files downloaded and their attestations checked), at most six of a line at a time, so the question
+comes after the slowest version rather than after all of them in turn. Every step's duration is appended to
 `~/.digestif/update/sign-next-timings.log`, one line per step (the run id, the step, its seconds),
 and nothing extra is printed, so a slow run can be traced to the step that was slow.
 
