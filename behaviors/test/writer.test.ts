@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { AwakeClock, holdAwake, SLEEP_GAP_MS } from "../src/awake.ts";
-import { agentOf, ALWAYS_ON_RULES, buildSystemPrompt, CODEX_CATALOG_NO_TOOLS, CODEX_TOOL_FEATURES, codexCatalog, codexResult, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
+import { agentOf, ALWAYS_ON_RULES, buildSystemPrompt, CODEX_CATALOG_NO_TOOLS, CODEX_FILING_FEATURES, CODEX_TOOL_FEATURES, codexArgs, codexCatalog, FILING_TOOLS, codexResult, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
 import { noLoopback } from "./loopback.ts";
 import { assertGone } from "./processes.ts";
 
@@ -245,6 +245,16 @@ test("the prompt fills the brief and the rules, and the conservative rules alway
   const p = buildSystemPrompt("A={{always_on_rules}} B={{brief}} D={{default_rules}} R={{rules}}", "", "");
   assert.equal(p, `A=${ALWAYS_ON_RULES} B=(none) D=${DEFAULT_RULES} R=(none)`);
   assert.deepEqual(harnessArgs("sys", 1).slice(0, 2), ["-p", "--tools"]);
+});
+
+test("the filing run's one tool is the shell, with no MCP server, under the member's own permissions (DIG-215)", () => {
+  const claude = harnessArgs("sys", 1, true);
+  assert.deepEqual(claude.slice(0, 4), ["-p", "--tools", FILING_TOOLS, "--strict-mcp-config"]);
+  assert.equal(FILING_TOOLS, "Bash");
+  const codex = codexArgs("sys", "/c.json", true);
+  for (const f of CODEX_TOOL_FEATURES) assert.equal(codex.includes(`features.${f}=false`), !CODEX_FILING_FEATURES.includes(f), f);
+  for (const v of ["agents.enabled=false", "mcp_servers={}", 'web_search="disabled"', "tools.experimental_request_user_input={enabled=false}", 'model_catalog_json="/c.json"']) assert.ok(codex.includes(v), v);
+  assert.ok(!codex.includes("--sandbox"), "the member's own sandbox and approvals");
 });
 
 function cli(input: string, args: string[], env: Record<string, string> = {}) {

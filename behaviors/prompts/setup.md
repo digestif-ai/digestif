@@ -97,7 +97,8 @@ the program by its absolute path and arguments that file nothing (a list or view
 answers that it worked, or the error: show the error and ask again how they file.
 
 Draft their Inbox prompt as the `prompt` from `setup found` with a line saying where and how to
-file work (the exact command, repository or file) only when they named one. Show it, and save it
+file work (the exact command, and the tracker's address: its URL, or its owner/repo on GitHub) only
+when they named one. A filing counts only when its link is on a tracker the prompt names that way. Show it, and save it
 with `setup inbox --text` once they confirm, adding `--adopt-practices` when they chose to adopt
 automatically: that is a setting, never a line in the prompt, and the node adopts each practice
 then, telling them on the Inbox. Someone who only chose to adopt automatically saves the `prompt`
