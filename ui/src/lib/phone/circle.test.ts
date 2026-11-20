@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { b64url, importEncryptionKey, jcs, keyTextEd25519, keyTextX25519, openSealed, seal, signEnvelope, type Json } from '#lib/mail.ts';
-import { denyLayer, items, itemClosed, itemDone, type PhoneItem } from './circle.ts';
+import { denyLayer, items, itemClosed, itemDone, pausedSince, view, type PhoneItem } from './circle.ts';
+import { extend } from './log.ts';
 import type { Enrollment } from './keystore.ts';
 import { answerBody, CIRCLE_ANSWER_ON_MACHINE, itemAnswerBody } from './phone.ts';
 import type { Stored } from './relay.ts';
@@ -694,5 +695,47 @@ describe('a revoked key is read by its cutoff (DIG-92)', () => {
     // Ada did not host the dinner that admitted Bo.
     await revoke(log, ada, ada.identityPair.privateKey, { target: bo.identity.text, by: ada.identity, after_seq: {}, mail_read: {} });
     expect((await said(e, log)).answers.map((a) => a.text)).toEqual(['Still here']);
+  });
+});
+
+describe('the phone verifies the log once and keeps it', () => {
+  it('reads one fold of the verified log as items, pausedSince and denyLayer each read it', async () => {
+    const { me, ada, log, e } = await circle();
+    await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Once?', detail: '' } });
+    await log.write(me, 'summary', { stage: 'paused', status: 'paused' });
+    const { log: held } = await extend([], log.all);
+    const v = await view(
+      e,
+      held.filter((h) => h.verified).map((h) => h.stored)
+    );
+    expect(v.items).toEqual(await items(e, log.all));
+    expect(v.pausedSince).toEqual(await pausedSince(e, log.all));
+    expect(v.deny).toEqual(await denyLayer(e, log.all));
+  });
+
+  it('marks what verifies, takes an envelope once, and extends a held log to what one read of the whole would hold', async () => {
+    const { ada, log } = await circle();
+    await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'A', detail: '' } });
+    const first = await extend([], log.all);
+    expect(first.log.every((h) => h.verified)).toBe(true);
+    expect(first.changed).toHaveLength(log.all.length);
+    await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'B', detail: '' } });
+    const forged = { ...log.all.at(-1)!, relay_id: log.all.length + 1, hash: 'sha256:00', body: { to: 'circle' } };
+    const next = await extend(first.log, [...log.all.slice(-1), log.all[0]!, forged]);
+    expect(next.changed.map((h) => h.stored.relay_id)).toEqual([log.all.length, forged.relay_id]);
+    expect(next.log.map((h) => h.verified)).toEqual([...log.all.map(() => true), false]);
+    expect(next.log.slice(0, -1)).toEqual((await extend([], log.all)).log);
+  });
+
+  it('drops the body of a held envelope a verified retract names, as the relay does', async () => {
+    const { ada, log } = await circle();
+    const target = await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Gone', detail: '' } });
+    const first = await extend([], log.all);
+    await log.write(ada, 'retract', { target });
+    const next = await extend(first.log, log.all.slice(-1));
+    const emptied = next.log.find((h) => h.stored.hash === target);
+    expect(emptied?.verified).toBe(false);
+    expect(emptied?.stored.body).toBeUndefined();
+    expect(next.changed.map((h) => h.stored.hash)).toEqual([log.all.at(-1)?.hash, target]);
   });
 });

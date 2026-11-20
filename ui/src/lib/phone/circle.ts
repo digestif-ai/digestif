@@ -122,23 +122,27 @@ type Obj = Record<string, Json | undefined>;
 const obj = (j: Json | undefined): Obj | undefined => (j !== null && typeof j === 'object' && !Array.isArray(j) ? (j as Obj) : undefined);
 const str = (j: Json | undefined): string | undefined => (typeof j === 'string' ? j : undefined);
 
+/** Whether [s] carries a body that verifies as the envelope its hash names: the member's word, not the relay's. */
+export async function verifies(s: Stored): Promise<boolean> {
+  if (s.body === undefined) return false;
+  try {
+    return (await verifyEnvelope({ envelope: s.envelope, body: s.body })) === s.hash;
+  } catch {
+    // a relay served something that does not verify: not the member's word
+    return false;
+  }
+}
+
 async function verified(envelopes: Stored[]): Promise<Stored[]> {
   const out: Stored[] = [];
-  for (const s of envelopes) {
-    if (s.body === undefined) continue;
-    try {
-      if ((await verifyEnvelope({ envelope: s.envelope, body: s.body })) === s.hash) out.push(s);
-    } catch {
-      // a relay served something that does not verify: not the member's word
-    }
-  }
+  for (const s of envelopes) if (await verifies(s)) out.push(s);
   return out;
 }
 
-/** The phone's device envelope, once the laptop has appended it, and the enrollment it carries. */
+/** The phone's device envelope among [envelopes], already verified, once the laptop has appended it, and the enrollment it carries. */
 export async function findEnrollment(keys: PhoneKeys, envelopes: Stored[]): Promise<Enrollment | undefined> {
   const me = keyTextEd25519(keys.ed25519);
-  for (const s of await verified(envelopes)) {
+  for (const s of envelopes) {
     const b = obj(s.body);
     if (s.envelope.kind !== 'device' || b === undefined || str(b['key']) !== me || b['enrollment'] === undefined) continue;
     try {
@@ -580,7 +584,10 @@ async function closes(
  */
 export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> {
   const envelopes = await verified(all);
-  const keys = await identities(envelopes);
+  return inbox(e, envelopes, await identities(envelopes));
+}
+
+async function inbox(e: Enrollment, envelopes: Stored[], keys: Keys): Promise<PhoneItem[]> {
   const card = cards(keys, envelopes);
   const out: PhoneItem[] = [];
   for (const s of envelopes) {
@@ -637,7 +644,11 @@ export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> 
  */
 export async function pausedSince(e: Enrollment, all: Stored[]): Promise<string | undefined> {
   const envelopes = await verified(all);
-  const mine = by(await identities(envelopes), e.identity);
+  return paused(e, envelopes, await identities(envelopes));
+}
+
+function paused(e: Enrollment, envelopes: Stored[], keys: Keys): string | undefined {
+  const mine = by(keys, e.identity);
   const summaries = envelopes
     .filter((s) => s.envelope.kind === 'summary' && mine(s))
     .sort((a, b) => b.envelope.created_at.localeCompare(a.envelope.created_at));
@@ -660,7 +671,10 @@ export interface DenyLayer {
  */
 export async function denyLayer(e: Enrollment, all: Stored[]): Promise<DenyLayer | undefined> {
   const envelopes = await verified(all);
-  const keys = await identities(envelopes);
+  return deny(e, envelopes, await identities(envelopes));
+}
+
+async function deny(e: Enrollment, envelopes: Stored[], keys: Keys): Promise<DenyLayer | undefined> {
   const mine = by(keys, e.identity);
   const lists = envelopes
     .filter((s) => s.envelope.kind === 'deny_list' && mine(s))
@@ -677,6 +691,24 @@ export async function denyLayer(e: Enrollment, all: Stored[]): Promise<DenyLayer
     return { entries, allowed };
   }
   return undefined;
+}
+
+/** Everything the phone shows, read from [envelopes] the phone has already verified, with one admission fold. */
+export interface PhoneView {
+  items: PhoneItem[];
+  pausedSince?: string;
+  deny?: DenyLayer;
+}
+
+export async function view(e: Enrollment, envelopes: Stored[]): Promise<PhoneView> {
+  const keys = await identities(envelopes);
+  const since = paused(e, envelopes, keys);
+  const layer = await deny(e, envelopes, keys);
+  return {
+    items: await inbox(e, envelopes, keys),
+    ...(since === undefined ? {} : { pausedSince: since }),
+    ...(layer === undefined ? {} : { deny: layer })
+  };
 }
 
 /** Where the phone's own chain ends: the next seq and the hash before it. */
