@@ -90,6 +90,8 @@ beforeEach(async () => {
       `let a = check ? '{"remove": []}' : filing ? '{"filed": null}' : '{"reviews": []}';\n` +
       `try { a = fs.readFileSync(check ? ${JSON.stringify(checkFile)} : filing ? ${JSON.stringify(fileAnswerFile)} : ${JSON.stringify(answerFile)}, "utf8"); } catch {}\n` +
       `if (check) { const c = JSON.parse(a); if (typeof c.if === "string") a = stdin.includes(c.if) ? JSON.stringify({ remove: c.remove }) : '{"remove": []}'; }\n` +
+      // A filing answer of {"byTitle": {...}} answers each filing run by the title its work holds.
+      `if (filing) { try { const m = JSON.parse(a); if (m.byTitle) { a = '{"filed": null}'; for (const [t, v] of Object.entries(m.byTitle)) if (stdin.includes(t)) a = JSON.stringify(v); } } catch {} }\n` +
       `if (a === "!signedout") { console.error("Not logged in · Please run /login"); process.exit(1); }\n` +
       `console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: a }));\n`,
     { mode: 0o755 },
@@ -899,23 +901,166 @@ test("a filing run that finds the idea already there is a work notice titled Alr
   assert.deepEqual(JSON.parse(readFileSync(join(readStateDir(data), "filed.json"), "utf8")), { "sha256:1 0": { existing: "ISS-96977" } }, "read again, it is not looked for twice");
 });
 
-test("two filings from one message: each outcome is its own work notice and its own part of the review line", async () => {
+test("several filings from one message: each is its own part of the review line, and all are one work notice listing every outcome (DIG-306)", async () => {
   feed = [item(1)];
   setAnswer({
-    reviews: [{ ref: "m1", review: "Drafted a reply to his two questions" }],
+    reviews: [{ ref: "m1", review: "Drafted a reply to his questions" }],
     filings: [
       { ref: "m1", title: "Treat rate limits as a wait", body: "x", credit_within_brief: false },
       { ref: "m1", title: "Test the read ceiling", body: "y", credit_within_brief: false },
+      { ref: "m1", title: "Cache the feed", body: "z", credit_within_brief: false },
     ],
   });
-  writeFileSync(fileAnswerFile, '{"filed": "ISS-96977"}');
+  writeFileSync(fileAnswerFile, JSON.stringify({ byTitle: { "rate limits": { filed: "ISS-96977" }, "read ceiling": { filed: null, existing: "ISS-96978" }, "Cache the feed": { filed: "done" } } }));
   assert.equal(await go(), 0);
   assert.deepEqual(posted[0]!.reviews, [
-    { hash: "sha256:1", review: "Drafted a reply to his two questions; Filed Ed's idea: Treat rate limits as a wait (ISS-96977); Filed Ed's idea: Test the read ceiling (ISS-96977)" },
+    {
+      hash: "sha256:1",
+      review: "Drafted a reply to his questions; Filed Ed's idea: Treat rate limits as a wait (ISS-96977); Already filed Ed's idea: Test the read ceiling (ISS-96978); Could not file Ed's idea: Cache the feed",
+    },
   ]);
   assert.deepEqual(
-    posted[0]!.items.filter((i) => i["subject"] === "work").map((i) => i["title"]),
-    ["Filed Ed's idea: Treat rate limits as a wait", "Filed Ed's idea: Test the read ceiling"],
+    posted[0]!.items.filter((i) => i["subject"] === "work"),
+    [
+      {
+        subject: "work",
+        title: "Filed 1 of Ed's 3 ideas",
+        detail: [
+          `Ed had them, in their note: ${url}/feed/sha256%3A1.`,
+          "- Filed Treat rate limits as a wait, as ISS-96977.",
+          "- Already filed Test the read ceiling, as ISS-96978.",
+          "- Could not file Cache the feed: it named no URL, owner/repo#n or key.",
+        ].join("\n"),
+        about: "sha256:1",
+        circle: false,
+        members: [],
+      },
+    ],
+    "one notice to the member, never a counted row of them",
+  );
+  assert.equal(posted[0]!.items.filter((i) => i["subject"] === "credit").length, 1, "the one idea filed has its credit");
+});
+
+test("a run adopting three ideas from one message sends its author one credit naming all three with their links, and the member one work notice (DIG-306)", async () => {
+  feed = [item(1)];
+  const quote = "retries, rate limits and the read ceiling";
+  setAnswer({
+    reviews: [],
+    filings: [
+      { ref: "m1", title: "Back off retries", body: "x", credit_within_brief: true, quote, taken: "Your point that the loader retries in a tight loop." },
+      { ref: "m1", title: "Treat rate limits as a wait.", body: "y", credit_within_brief: true, quote },
+      { ref: "m1", title: "Test the read ceiling", body: "z", credit_within_brief: true, quote },
+    ],
+  });
+  writeFileSync(
+    fileAnswerFile,
+    JSON.stringify({ byTitle: { "Back off": { filed: "acme/digestif#12" }, "rate limits": { filed: "acme/digestif#13" }, "read ceiling": { filed: "https://github.com/acme/digestif/issues/14" } } }),
+  );
+  assert.equal(await go(), 0);
+  const items = posted[0]!.items;
+  assert.deepEqual(
+    items.map((i) => [i["subject"], i["title"]]),
+    [
+      ["work", "Filed 3 of Ed's ideas"],
+      ["credit", "Ada is adopting 3 of your ideas"],
+    ],
+  );
+  assert.equal(
+    items[0]!["detail"],
+    [
+      `Ed had them, in their note: ${url}/feed/sha256%3A1.`,
+      "- Filed Back off retries, as acme/digestif#12.",
+      "- Filed Treat rate limits as a wait, as acme/digestif#13.",
+      "- Filed Test the read ceiling, as https://github.com/acme/digestif/issues/14.",
+    ].join("\n"),
+  );
+  assert.deepEqual(items[1], {
+    subject: "credit",
+    adopted: "as_work",
+    about: "sha256:1",
+    circle: false,
+    members: [OTHER],
+    quote,
+    title: "Ada is adopting 3 of your ideas",
+    detail: [
+      "From your note of 2026-11-01:",
+      "- Back off retries, filed as acme/digestif#12. Taken from it: Your point that the loader retries in a tight loop.",
+      "- Treat rate limits as a wait, filed as acme/digestif#13.",
+      "- Test the read ceiling, filed as https://github.com/acme/digestif/issues/14.",
+    ].join("\n"),
+    send: true,
+  });
+  assert.ok(
+    harnessRuns().some((r) => r.check && r.stdin.includes("Ada is adopting 3 of your ideas")),
+    "the credit that goes out is checked whole",
+  );
+});
+
+test("of several ideas from one message, the credit lists the ones whose credit passes the guards; the rest wait as one draft (DIG-306)", async () => {
+  feed = [item(1)];
+  setAnswer({
+    reviews: [],
+    filings: [
+      { ref: "m1", title: "Back off retries", body: "x", credit_within_brief: true },
+      { ref: "m1", title: "Treat rate limits as a wait", body: "y", credit_within_brief: false, taken: "Your rate limit idea." },
+      { ref: "m1", title: "Test the read ceiling", body: "z", credit_within_brief: true },
+      { ref: "m1", title: "Shard the tests", body: "w", credit_within_brief: false },
+    ],
+  });
+  writeFileSync(
+    fileAnswerFile,
+    JSON.stringify({ byTitle: { "Back off": { filed: "acme/digestif#12" }, "rate limits": { filed: "acme/digestif#13" }, "read ceiling": { filed: "acme/digestif#14" }, Shard: { filed: "acme/digestif#15" } } }),
+  );
+  assert.equal(await go(), 0);
+  const credits = posted[0]!.items.filter((i) => i["subject"] === "credit");
+  assert.deepEqual(
+    credits.map((c) => [c["title"], c["detail"], c["send"]]),
+    [
+      ["Ada is adopting 2 of your ideas", ["From your note of 2026-11-01:", "- Back off retries, filed as acme/digestif#12.", "- Test the read ceiling, filed as acme/digestif#14."].join("\n"), true],
+      [
+        "Ada is adopting 2 of your ideas",
+        ["From your note of 2026-11-01:", "- Treat rate limits as a wait, filed as acme/digestif#13. Taken from it: Your rate limit idea.", "- Shard the tests, filed as acme/digestif#15."].join("\n"),
+        false,
+      ],
+    ],
+  );
+});
+
+test("a credit naming several ideas that a check would cut whole is kept for the member as a draft (DIG-306)", async () => {
+  feed = [item(1)];
+  setAnswer({
+    reviews: [],
+    filings: [
+      { ref: "m1", title: "Back off retries", body: "x", credit_within_brief: true },
+      { ref: "m1", title: "Test the read ceiling", body: "z", credit_within_brief: true },
+    ],
+  });
+  writeFileSync(fileAnswerFile, JSON.stringify({ byTitle: { "Back off": { filed: "acme/digestif#12" }, "read ceiling": { filed: "acme/digestif#14" } } }));
+  writeFileSync(checkFile, JSON.stringify({ if: "2 of your ideas", remove: [{ text: "2 of your ideas", breaks: "rules" }] }));
+  assert.equal(await go(), 0);
+  const credits = posted[0]!.items.filter((i) => i["subject"] === "credit");
+  assert.deepEqual(credits.map((c) => [c["title"], c["send"]]), [["Ada is adopting 2 of your ideas", false]]);
+});
+
+test("ideas from two messages are a credit to each message's author, each the one-idea credit (DIG-306)", async () => {
+  feed = [item(2), item(1)];
+  setAnswer({
+    reviews: [],
+    filings: [
+      { ref: "m1", title: "Back off retries", body: "x", credit_within_brief: true },
+      { ref: "m2", title: "Test the read ceiling", body: "z", credit_within_brief: true },
+    ],
+  });
+  writeFileSync(fileAnswerFile, JSON.stringify({ byTitle: { "Back off": { filed: "acme/digestif#12" }, "read ceiling": { filed: "acme/digestif#14" } } }));
+  assert.equal(await go(), 0);
+  assert.deepEqual(
+    posted[0]!.items.map((i) => [i["subject"], i["title"], i["link"]]),
+    [
+      ["work", "Filed Ed's idea: Back off retries", "acme/digestif#12"],
+      ["credit", "Ada is adopting your idea: Back off retries", "acme/digestif#12"],
+      ["work", "Filed Ed's idea: Test the read ceiling", "acme/digestif#14"],
+      ["credit", "Ada is adopting your idea: Test the read ceiling", "acme/digestif#14"],
+    ],
   );
 });
 

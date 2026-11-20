@@ -587,9 +587,11 @@ async function postDrafts(a: InboxRunArgs, answers: { item: string; text: string
  * filing alone, never from the agent's words (DIG-124): a work notice to the member whose title
  * starts with the outcome (Filed, Already filed, Could not file) and which carries the link as a
  * field of its own, and the same outcome, link and all, added to the message's review line. A filed
- * idea also gets a credit to its author (see `credit`), sent as the agent's when the agent says the
+ * idea also gets a credit to its author (see `credits`), sent as the agent's when the agent says the
  * brief and Rules allow it and both checks remove nothing (the node then reads it through the deny
- * layer), else a draft the member sends. Returns how many were filed.
+ * layer), else a draft the member sends. A run that takes several ideas from one message is one
+ * event (DIG-306): one work notice for that message, and one credit to its author listing every
+ * idea filed, never one each. Returns how many were filed.
  */
 async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, selfName: string, a: InboxRunArgs, items: Record<string, unknown>[], reviews: Map<string, string>): Promise<number> {
   if (filings.length === 0) return 0;
@@ -598,10 +600,10 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
   const ledger = readFiled(a.stateDir);
   const place = new Map<string, number>();
   const outcomes = new Map<string, string[]>();
+  const byMessage = new Map<string, { m: BatchMessage; filed: FiledIdea[] }>();
   let n = 0;
   for (const f of filings) {
     const m = byRef.get(f.ref)!;
-    const quoted = f.quote === undefined ? {} : { quote: f.quote };
     if (m.author === self) {
       a.log(`${m.hash}: the member's own message is never filed as an idea from the circle`);
       continue;
@@ -618,13 +620,54 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
     const o = filingOutcome(f, m, r);
     outcomes.set(f.ref, [...(outcomes.get(f.ref) ?? []), o.review]);
     a.log(`${m.hash}: ${o.log}`);
-    items.push({ subject: "work", title: o.title, detail: o.detail, about: m.hash, ...quoted, ...(o.link === undefined ? {} : { link: o.link }), circle: false, members: [] });
-    if (!("link" in r)) continue;
-    n++;
-    items.push({ subject: "credit", adopted: "as_work" satisfies CreditAdopted, about: m.hash, ...quoted, link: r.link, circle: false, members: [m.author], ...(await credit(f, m, selfName, r.link, a)) });
+    const g = byMessage.get(m.hash) ?? { m, filed: [] };
+    g.filed.push({ f, r });
+    byMessage.set(m.hash, g);
+    if ("link" in r) n++;
+  }
+  for (const { m, filed } of byMessage.values()) {
+    items.push(workNotice(m, filed));
+    const linked = filed.flatMap(({ f, r }) => ("link" in r ? [{ f, link: r.link }] : []));
+    items.push(...(await credits(linked, m, selfName, a)));
   }
   for (const [ref, lines] of outcomes) reviews.set(ref, reviewWithFilings(reviews.get(ref) ?? "", lines));
   return n;
+}
+
+/** One idea a run filed, or tried to: the reading run's filing and what the filing run came to. */
+export interface FiledIdea {
+  f: Filing;
+  r: FiledOutcome;
+}
+
+/** The one quote a group of ideas from one message carries: theirs when they hold one, else none. */
+function oneQuote(fs: Filing[]): { quote?: string } {
+  const qs = [...new Set(fs.flatMap((f) => (f.quote === undefined ? [] : [f.quote])))];
+  return qs.length === 1 ? { quote: qs[0]! } : {};
+}
+
+/** Words without the stop a list line puts after them. */
+const bare = (s: string): string => s.replace(/[\s.;:,]+$/, "");
+
+/**
+ * The work notice to the member about what came of a run's filings from one message: one filing's
+ * as `filingOutcome` writes it; several, one notice (DIG-306) whose title counts them from the
+ * outcome it leads with and whose detail lists each idea on its own line with its outcome and link.
+ */
+export function workNotice(m: BatchMessage, filed: FiledIdea[]): Record<string, unknown> {
+  const quoted = oneQuote(filed.map((x) => x.f));
+  if (filed.length === 1) {
+    const o = filingOutcome(filed[0]!.f, m, filed[0]!.r);
+    return { subject: "work", title: o.title, detail: o.detail, about: m.hash, ...quoted, ...(o.link === undefined ? {} : { link: o.link }), circle: false, members: [] };
+  }
+  const total = filed.length;
+  const linked = filed.filter((x) => "link" in x.r).length;
+  const existing = filed.filter((x) => "existing" in x.r).length;
+  const of = (k: number, verb: string) => `${verb} ${k} of ${m.author_name}'s ${k === total ? "" : `${total} `}ideas`;
+  const title = linked > 0 ? of(linked, "Filed") : existing > 0 ? of(existing, "Already filed") : of(total, "Could not file");
+  const lines = filed.map(({ f, r }) => ("link" in r ? `- Filed ${bare(f.title)}, as ${r.link}.` : "existing" in r ? `- Already filed ${bare(f.title)}, as ${r.existing}.` : `- Could not file ${bare(f.title)}: ${r.error}.`));
+  const detail = [`${m.author_name} had them, in their ${noun(m)}: ${where(m)}.`, ...lines].join("\n");
+  return { subject: "work", title, detail, about: m.hash, ...quoted, circle: false, members: [] };
 }
 
 /** One filing's outcome as each place shows it: the work notice's title, detail and link, the review line's part, the log's line. */
@@ -644,25 +687,78 @@ export function reviewWithFilings(said: string, outcomes: string[]): string {
 
 /** A credit's detail: the message's day, what was taken from it when the run said, and the link. */
 export function creditDetail(m: BatchMessage, link: string, taken?: string): string {
-  const said = taken === undefined ? "" : ` Taken from it: ${/[.!?]$/.test(taken) ? taken : `${taken}.`}`;
-  return `From your ${noun(m)} of ${day(m)}.${said} Filed as ${link}.`;
+  return `From your ${noun(m)} of ${day(m)}.${takenSaid(taken)} Filed as ${link}.`;
 }
+
+/** What was taken, as a credit says it after what comes before it: " Taken from it: <it>." or nothing. */
+const takenSaid = (taken?: string): string => (taken === undefined ? "" : ` Taken from it: ${/[.!?]$/.test(taken) ? taken : `${taken}.`}`);
+
+/** One idea of a credit that names several: its title, where it was filed, and what was taken when said. */
+export interface CreditIdea {
+  title: string;
+  link: string;
+  taken?: string;
+}
+
+/**
+ * A credit for several ideas from one message (DIG-306): "<member> is adopting <n> of your ideas",
+ * its detail the message's day and then each idea on its own line, with what was taken from it when
+ * said and the link to the work filed for it, which the Inbox shows as a link.
+ */
+export function creditWords(selfName: string, m: BatchMessage, ideas: CreditIdea[]): { title: string; detail: string } {
+  const lines = ideas.map((i) => `- ${bare(i.title)}, filed as ${i.link}.${takenSaid(i.taken)}`);
+  return { title: `${selfName} is adopting ${ideas.length} of your ideas`, detail: [`From your ${noun(m)} of ${day(m)}:`, ...lines].join("\n") };
+}
+
+/** One idea's credit as it would go alone, and what was taken that it carries. */
+type OneCredit = { title: string; detail: string; send: boolean; taken?: string };
 
 /**
  * The credit to an idea's author: with what was taken from their message when the agent says the
  * brief allows the credit and both checks pass it whole; when a check would cut it, the credit as
  * it reads without what was taken, sent if that passes; past the brief, a draft with it in.
  */
-async function credit(f: Filing, m: BatchMessage, selfName: string, link: string, a: InboxRunArgs): Promise<{ title: string; detail: string; send: boolean }> {
+async function credit(f: Filing, m: BatchMessage, selfName: string, link: string, a: InboxRunArgs): Promise<OneCredit> {
   const title = `${selfName} is adopting your idea: ${f.title}`;
-  const detail = creditDetail(m, link, f.taken);
-  if (!f.credit_within_brief) return { title, detail, send: false };
-  if (await sendable(`${title}\n\n${detail}`, a)) return { title, detail, send: true };
-  if (f.taken === undefined) return { title, detail, send: false };
+  const full = { title, detail: creditDetail(m, link, f.taken), ...(f.taken === undefined ? {} : { taken: f.taken }) };
+  if (!f.credit_within_brief) return { ...full, send: false };
+  if (await sendable(`${full.title}\n\n${full.detail}`, a)) return { ...full, send: true };
+  if (f.taken === undefined) return { ...full, send: false };
   a.log(`${m.hash}: the credit goes without what was taken, which a check would cut`);
   const plain = creditDetail(m, link);
   if (await sendable(`${title}\n\n${plain}`, a)) return { title, detail: plain, send: true };
-  return { title, detail, send: false };
+  return { ...full, send: false };
+}
+
+/**
+ * The credits to one message's author for the ideas a run filed from it (DIG-306). One idea is the
+ * credit `credit` writes. Several are one credit listing every idea: each idea is first judged as
+ * its own credit would be, so the guards are unchanged; those that would be sent are one credit,
+ * sent only when both checks pass it whole as well, and the rest, with what was taken in them, one
+ * draft the member sends. A credit naming several ideas carries their links in its detail, since an
+ * item has one link.
+ */
+async function credits(linked: { f: Filing; link: string }[], m: BatchMessage, selfName: string, a: InboxRunArgs): Promise<Record<string, unknown>[]> {
+  const each: (OneCredit & { f: Filing; link: string })[] = [];
+  for (const x of linked) each.push({ ...x, ...(await credit(x.f, m, selfName, x.link, a)) });
+  const base = { subject: "credit", adopted: "as_work" satisfies CreditAdopted, about: m.hash, circle: false, members: [m.author] };
+  const one = (c: (typeof each)[number]) => ({ ...base, ...oneQuote([c.f]), link: c.link, title: c.title, detail: c.detail, send: c.send });
+  const many = (cs: typeof each, ideas: CreditIdea[], send: boolean) => ({ ...base, ...oneQuote(cs.map((c) => c.f)), ...creditWords(selfName, m, ideas), send });
+  let sent = each.filter((c) => c.send);
+  if (sent.length > 1) {
+    const w = creditWords(selfName, m, sent.map((c) => ({ title: c.f.title, link: c.link, ...(c.taken === undefined ? {} : { taken: c.taken }) })));
+    if (!(await sendable(`${w.title}\n\n${w.detail}`, a))) {
+      a.log(`${m.hash}: the credit naming ${sent.length} ideas is kept for the member, which a check would cut`);
+      sent = [];
+    }
+  }
+  const kept = each.filter((c) => !sent.includes(c));
+  const out: Record<string, unknown>[] = [];
+  if (sent.length === 1) out.push(one(sent[0]!));
+  if (sent.length > 1) out.push(many(sent, sent.map((c) => ({ title: c.f.title, link: c.link, ...(c.taken === undefined ? {} : { taken: c.taken }) })), true));
+  if (kept.length === 1) out.push({ ...one(kept[0]!), detail: creditDetail(m, kept[0]!.link, kept[0]!.f.taken), send: false });
+  if (kept.length > 1) out.push(many(kept, kept.map((c) => ({ title: c.f.title, link: c.link, ...(c.f.taken === undefined ? {} : { taken: c.f.taken }) })), false));
+  return out;
 }
 
 /** A practice credit's detail: how it was taken and the message it came from; no link, since nothing was filed. */
