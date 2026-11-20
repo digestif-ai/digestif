@@ -781,3 +781,59 @@ let fold_entries t =
     (fun r ->
       { Fold.hash = r.hash; envelope = r.signed.envelope; body = r.signed.body })
     (of_kinds t Envelope.circle_state_kinds)
+
+(* One envelope's place in its author's chain: the columns fault detection reads, so a pass over
+   the whole log decodes no envelope and no body. *)
+type link = {
+  author : string;
+  seq : int;
+  hash : string;
+  prev : string option;
+  epoch : int;
+}
+
+(* Every envelope's link, grouped by author in chain order: one statement, one list per author. *)
+let chains t =
+  let link = function
+    | [| a; sq; h; p; e |] ->
+        {
+          author = text a;
+          seq = int sq;
+          hash = text h;
+          prev = text_opt p;
+          epoch = int e;
+        }
+    | _ -> assert false
+  in
+  let group links =
+    List.fold_left
+      (fun acc (l : link) ->
+        match acc with
+        | (a, ls) :: rest when a = l.author -> (a, l :: ls) :: rest
+        | _ -> (l.author, [ l ]) :: acc)
+      [] links
+    |> List.rev_map (fun (a, ls) -> (a, List.rev ls))
+  in
+  rows t
+    "SELECT author, seq, hash, prev, epoch FROM envelopes ORDER BY author, \
+     seq, hash"
+    []
+  |> List.map link |> group
+
+(* Record [faults], (kind, author, seq, detail) each, through one prepared statement: a pass that
+   finds a fault it already recorded leaves the row as it is. *)
+let add_faults t faults =
+  if faults <> [] then
+    with_stmt t
+      "INSERT OR IGNORE INTO faults (kind, author, seq, detail, detected_at) \
+       VALUES (?, ?, ?, ?, ?)"
+      [] (fun stmt ->
+        let now = s (Time_fmt.now ()) in
+        List.iter
+          (fun (kind, author, seq, detail) ->
+            ignore (Sqlite3.reset stmt);
+            List.iteri
+              (fun n p -> check t.db (Sqlite3.bind stmt (n + 1) p))
+              [ s kind; s author; i seq; s detail; now ];
+            check t.db (Sqlite3.step stmt))
+          faults)

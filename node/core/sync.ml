@@ -117,96 +117,110 @@ let reader_epoch (node : Node.t) (fold : Fold.t) =
   | Some k -> k.join_epoch
   | None -> 0
 
-(* The first seq of [rows] whose envelope is at or past [floor]: below it a missing seq may be content
-   written before this node joined, which no relay serves it. An author's chain carries a
+(* The first seq of [links] whose envelope is at or past [floor]: below it a missing seq may be
+   content written before this node joined, which no relay serves it. An author's chain carries a
    non-decreasing epoch, so every seq above it is at or past the floor and a missing one is a gap. A
    chain wholly below the floor has none, and expects every hole. *)
-let first_served ~floor rows =
+let first_served ~floor links =
   if floor = 0 then Some 1
   else
     List.fold_left
-      (fun m (r : Log.row) ->
-        let e = r.signed.envelope in
-        if e.epoch < floor then m
-        else match m with Some s when s <= e.seq -> m | _ -> Some e.seq)
-      None rows
+      (fun m (l : Log.link) ->
+        if l.epoch < floor then m
+        else match m with Some s when s <= l.seq -> m | _ -> Some l.seq)
+      None links
 
-(* Forks, gaps and chain breaks, recomputed over the whole log each pass. A gap that fills resolves,
-   and so does one below the reader's floor ([first_served]), in one statement per author. *)
+(* The faults one author's chain holds, as (kind, author, seq, detail), and the seqs of its open gap
+   faults that are resolved: held now, or below the reader's floor ([first_served]). [links] are the
+   author's envelopes in chain order, a revoked key's past its cutoff left out, and [open_gaps] the
+   seqs of the author's open gap faults. *)
+let chain_faults ~floor ~author ~open_gaps (links : Log.link list) =
+  let by_seq = Hashtbl.create 16 in
+  List.iter
+    (fun (l : Log.link) ->
+      Hashtbl.replace by_seq l.seq
+        (l :: Option.value (Hashtbl.find_opt by_seq l.seq) ~default:[]))
+    links;
+  let max_seq = List.fold_left (fun m (l : Log.link) -> max m l.seq) 0 links in
+  let served_from =
+    Option.value (first_served ~floor links) ~default:(max_seq + 1)
+  in
+  let resolved =
+    List.filter
+      (fun seq -> seq < served_from || Hashtbl.mem by_seq seq)
+      open_gaps
+  in
+  let faults = ref [] in
+  let fault kind seq detail =
+    faults := (kind, author, seq, detail) :: !faults
+  in
+  for seq = 1 to max_seq do
+    match Hashtbl.find_opt by_seq seq with
+    | None when seq < served_from -> ()
+    | None ->
+        if not (List.mem seq open_gaps) then
+          fault "gap" seq "missing from every relay"
+    | Some ls ->
+        (match
+           List.sort_uniq compare (List.map (fun (l : Log.link) -> l.hash) ls)
+         with
+        | _ :: _ :: _ as hashes -> fault "fork" seq (String.concat " " hashes)
+        | _ -> ());
+        List.iter
+          (fun (l : Log.link) ->
+            if seq = 1 then (
+              if l.prev <> None then
+                fault "broken_chain" seq (l.hash ^ " names a prev at seq 1"))
+            else
+              match (Hashtbl.find_opt by_seq (seq - 1), l.prev) with
+              | Some [ p ], Some prev when p.hash <> prev ->
+                  fault "broken_chain" seq
+                    (l.hash ^ " names prev " ^ prev ^ ", seq "
+                    ^ string_of_int (seq - 1)
+                    ^ " is " ^ p.hash)
+              | Some [ _ ], None ->
+                  fault "broken_chain" seq (l.hash ^ " names no prev")
+              | _ -> ())
+          ls
+  done;
+  (List.rev !faults, resolved)
+
+(* Forks, gaps and chain breaks, recomputed over the whole log each pass, so a change to the fold (a
+   revocation's cutoff, this node's join epoch) is read as soon as it lands. The pass reads only the
+   chain columns of each envelope (Log.chains), decodes none, records what it found through one
+   prepared statement, and writes a gap's resolution only where an open gap fault is resolved: it
+   runs under the sync's write lock, which every other writer waits on. DIG-210 *)
 let detect_faults (node : Node.t) (fold : Fold.t) =
   let floor = reader_epoch node fold in
+  let open_gaps = Hashtbl.create 16 in
   List.iter
-    (fun author ->
-      if not (Fold.is_chainless fold author) then begin
-        (* A revoked key's envelopes past its cutoff are not read, so they make no fork. *)
-        let rows =
-          List.filter
-            (fun (r : Log.row) ->
-              not
-                (Fold.past_cutoff fold
-                   {
-                     Fold.hash = r.hash;
-                     envelope = r.signed.envelope;
-                     body = r.signed.body;
-                   }))
-            (Log.by_author node.log author)
-        in
-        let by_seq = Hashtbl.create 16 in
-        List.iter
-          (fun (r : Log.row) ->
-            Hashtbl.replace by_seq r.signed.envelope.seq
-              (r
-              :: Option.value
-                   (Hashtbl.find_opt by_seq r.signed.envelope.seq)
-                   ~default:[]))
-          rows;
-        let max_seq =
-          List.fold_left
-            (fun m (r : Log.row) -> max m r.signed.envelope.seq)
-            0 rows
-        in
-        let served = first_served ~floor rows in
-        let served_from = Option.value served ~default:(max_seq + 1) in
-        Log.resolve_faults_below node.log ~kind:"gap" ~author ~seq:served_from;
-        for seq = 1 to max_seq do
-          match Hashtbl.find_opt by_seq seq with
-          | None when seq < served_from -> ()
-          | None ->
-              Log.add_fault node.log ~kind:"gap" ~author ~seq
-                ~detail:"missing from every relay"
-          | Some rs ->
-              Log.resolve_faults node.log ~kind:"gap" ~author ~seq;
-              (match
-                 List.sort_uniq compare
-                   (List.map (fun (r : Log.row) -> r.hash) rs)
-               with
-              | _ :: _ :: _ as hashes ->
-                  Log.add_fault node.log ~kind:"fork" ~author ~seq
-                    ~detail:(String.concat " " hashes)
-              | _ -> ());
-              List.iter
-                (fun (r : Log.row) ->
-                  let prev = r.signed.envelope.prev in
-                  if seq = 1 then (
-                    if prev <> None then
-                      Log.add_fault node.log ~kind:"broken_chain" ~author ~seq
-                        ~detail:(r.hash ^ " names a prev at seq 1"))
-                  else
-                    match (Hashtbl.find_opt by_seq (seq - 1), prev) with
-                    | Some [ p ], Some prev when p.hash <> prev ->
-                        Log.add_fault node.log ~kind:"broken_chain" ~author ~seq
-                          ~detail:
-                            (r.hash ^ " names prev " ^ prev ^ ", seq "
-                            ^ string_of_int (seq - 1)
-                            ^ " is " ^ p.hash)
-                    | Some [ _ ], None ->
-                        Log.add_fault node.log ~kind:"broken_chain" ~author ~seq
-                          ~detail:(r.hash ^ " names no prev")
-                    | _ -> ())
-                rs
-        done
-      end)
-    (Log.authors node.log)
+    (fun (f : Log.fault) ->
+      Hashtbl.replace open_gaps f.author
+        (f.seq :: Option.value (Hashtbl.find_opt open_gaps f.author) ~default:[]))
+    (Log.open_faults_of_kind node.log "gap");
+  let faults =
+    List.concat_map
+      (fun (author, links) ->
+        if Fold.is_chainless fold author then []
+        else
+          (* A revoked key's envelopes past its cutoff are not read, so they make no fork. *)
+          let links =
+            List.filter
+              (fun (l : Log.link) ->
+                not (Fold.past_cutoff_at fold ~author ~seq:l.seq ~hash:l.hash))
+              links
+          in
+          let open_gaps =
+            Option.value (Hashtbl.find_opt open_gaps author) ~default:[]
+          in
+          let faults, resolved = chain_faults ~floor ~author ~open_gaps links in
+          List.iter
+            (fun seq -> Log.resolve_faults node.log ~kind:"gap" ~author ~seq)
+            (List.sort_uniq compare resolved);
+          faults)
+      (Log.chains node.log)
+  in
+  Log.add_faults node.log faults
 
 (* A retract drops its target's body when the same identity wrote both. *)
 let apply_retracts (node : Node.t) (fold : Fold.t) =
