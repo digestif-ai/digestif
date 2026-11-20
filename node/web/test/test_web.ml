@@ -13544,7 +13544,57 @@ let inbox_practice_credits () =
   ignore (call ~meth:"DELETE" ("settings/inbox_agent/practices/" ^ s "id" last));
   Alcotest.(check bool)
     "nothing retracted" true
-    (List.exists (fun i -> s "id" i = s "id" cr) (credits ()))
+    (List.exists (fun i -> s "id" i = s "id" cr) (credits ()));
+  (* DIG-307: several lines one run saves from one message are one credit to its author, naming
+     each line; sent only when every line's own credit would have been, else one draft. *)
+  fill 0;
+  let run_credits r =
+    List.filter (fun i -> s "subject" i = "credit") (list (member "items" r))
+  in
+  let before = List.length (credits ()) in
+  let r =
+    run
+      [
+        practice "Lead with the answer.";
+        practice "Name who asked.";
+        practice "Close with the next step.";
+      ]
+  in
+  Alcotest.(check int)
+    "three adopted" 3
+    (List.length (list (member "adopted" r)));
+  (match run_credits r with
+  | [ cr ] ->
+      let _, cr = call ("items/" ^ s "id" cr) in
+      Alcotest.(check string)
+        "one credit counting them" "Ada Park is adopting 3 of your ideas"
+        (s "title" cr);
+      Alcotest.(check string)
+        "each line in the detail"
+        "Taken into how their agent works, from your note:\n\
+         - Lead with the answer.\n\
+         - Name who asked.\n\
+         - Close with the next step."
+        (s "detail" cr);
+      Alcotest.(check bool) "sent at once" true (s "status" cr <> "draft");
+      Alcotest.(check string)
+        "adopted into how the agent works" "as_how_agent_works" (s "adopted" cr)
+  | l -> Alcotest.failf "one credit, not %d" (List.length l));
+  Alcotest.(check int) "one credit held" (before + 1) (List.length (credits ()));
+  (* One line past the brief: the one credit is a draft. *)
+  let r =
+    run
+      [
+        practice "Quote the question back.";
+        practice ~send:false "Sign as the agent.";
+      ]
+  in
+  match run_credits r with
+  | [ cr ] ->
+      Alcotest.(check string)
+        "counting both" "Ada Park is adopting 2 of your ideas" (s "title" cr);
+      Alcotest.(check string) "kept as a draft" "draft" (s "status" cr)
+  | l -> Alcotest.failf "one draft credit, not %d" (List.length l)
 
 (* ISS-71225: a notice from the node clears itself, settled as resolved, once what it told of no
    longer holds: the note it told of approved or dismissed, the problem resolved. A notice for a

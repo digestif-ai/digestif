@@ -5351,10 +5351,27 @@ module Inbox_agent = struct
 
   let why = function `Held -> held_already | `Full -> full_message
 
+  (* The credit [cr] to [author] for what was taken from their message [about]: an
+     as_how_agent_works credit, sent within its guards, else kept as the member's draft. *)
+  let send_credit c ~me ~author ~about ~quote cr =
+    item c ~me
+      (`Assoc
+         [
+           ("subject", str "credit");
+           ("members", `List [ str author ]);
+           ("title", str cr.cr_title);
+           ("detail", str cr.cr_detail);
+           ("about", str about);
+           ("quote", str quote);
+           ("send", `Bool cr.cr_send);
+           ("adopted", str "as_how_agent_works");
+         ])
+
   (* The one step that saves a practice, for a run with adopting on and for Adopt on an offer
      alike: the line saved, a notice to the member alone saying so, and the credit to its author
      sent within its guards, else kept as the member's draft (ISS-85004). Answers the notice's id,
-     and the credit's id or why it could not be written. *)
+     and the credit's id or why it could not be written. A run passes no credit and sends the
+     credits of its practices itself, one per message (DIG-307). *)
   let adopt c ~me ~text ~author ~about ~quote ~credit =
     match can_save c text with
     | Error e -> Error (why e)
@@ -5372,21 +5389,7 @@ module Inbox_agent = struct
               };
             ]);
         let credited =
-          Option.map
-            (fun cr ->
-              item c ~me
-                (`Assoc
-                   [
-                     ("subject", str "credit");
-                     ("members", `List [ str author ]);
-                     ("title", str cr.cr_title);
-                     ("detail", str cr.cr_detail);
-                     ("about", str about);
-                     ("quote", str quote);
-                     ("send", `Bool cr.cr_send);
-                     ("adopted", str "as_how_agent_works");
-                   ]))
-            credit
+          Option.map (send_credit c ~me ~author ~about ~quote) credit
         in
         Result.map
           (fun id -> (id, credited))
@@ -5403,6 +5406,75 @@ module Inbox_agent = struct
                   ("about", str about);
                   ("quote", str quote);
                 ]))
+
+  (* A credit a run owes for a practice it saved: the line, the message it came from, its author,
+     and the credit the behavior composed and checked for it alone. *)
+  type owed = {
+    w_text : string;
+    w_author : string;
+    w_about : string;
+    w_quote : string;
+    w_credit : credit;
+  }
+
+  (* Words without the stop a list line puts after them. *)
+  let bare t =
+    let rec go n =
+      if n > 0 && String.contains " .;:," t.[n - 1] then go (n - 1) else n
+    in
+    String.sub t 0 (go (String.length t))
+
+  (* DIG-307: the one credit for several practices a run saved from one message, as the as_work
+     credit for several ideas reads (DIG-306): "<member> is adopting <n> of your ideas", its detail
+     the message's day and then each line saved. Sent only when every line's own credit would have
+     been, else one draft the member sends. *)
+  let merged_credit c ~me (ws : owed list) =
+    let name, _ = names c me in
+    let details =
+      List.sort_uniq compare (List.map (fun w -> w.w_credit.cr_detail) ws)
+    in
+    let lines = List.map (fun w -> "- " ^ bare w.w_text ^ ".") ws in
+    let head =
+      match details with [ d ] when bare d <> "" -> [ bare d ^ ":" ] | _ -> []
+    in
+    {
+      cr_title =
+        Printf.sprintf "%s is adopting %d of your ideas" name (List.length ws);
+      cr_detail = String.concat "\n" (head @ lines);
+      cr_send = List.for_all (fun w -> w.w_credit.cr_send) ws;
+    }
+
+  (* The credits a run owes, one per message its practices came from: a lone practice's credit as
+     the behavior composed it, several one credit naming them all. Answers the ids written. *)
+  let send_owed c ~me (ws : owed list) =
+    let abouts =
+      List.fold_left
+        (fun acc w ->
+          if List.mem w.w_about acc then acc else acc @ [ w.w_about ])
+        [] ws
+    in
+    List.filter_map
+      (fun about ->
+        let group = List.filter (fun w -> w.w_about = about) ws in
+        let first = List.hd group in
+        let cr =
+          match group with
+          | [ w ] -> w.w_credit
+          | _ -> merged_credit c ~me group
+        in
+        let quote =
+          match
+            List.sort_uniq compare (List.map (fun w -> w.w_quote) group)
+          with
+          | [ q ] -> q
+          | _ -> ""
+        in
+        match send_credit c ~me ~author:first.w_author ~about ~quote cr with
+        | Ok id -> Some id
+        | Error e ->
+            Printf.eprintf "%s inbox agent: %s\n" (Time_fmt.now ()) e;
+            None)
+      abouts
 
   (* The offer's words: the line and its author, and what Adopt also does about the credit. *)
   let offer_detail ~name credit =
@@ -5464,7 +5536,8 @@ module Inbox_agent = struct
      here, its author read from the message it names, never from the run. Adopted, with the
      credit the run composed for its author, while the member turned adopting on; otherwise
      offered to them as a choice of Adopt or Not now (ISS-85004). Words already held are neither.
-     Answers the text adopted, if any, and the ids of what it wrote. *)
+     Answers the text adopted, if any, the ids of what it wrote, and the credit it owes, which the
+     run sends with the others from the same message (DIG-307). *)
   let practice c ~me j =
     let text =
       String.concat " "
@@ -5490,16 +5563,24 @@ module Inbox_agent = struct
     | Some _ when can_save c text = Error `Held -> Error held_already
     | Some author when not (adopting c) ->
         Result.map
-          (fun id -> (None, [ id ]))
+          (fun id -> (None, [ id ], None))
           (offer c ~text ~author ~about ~quote ~credit)
-    | Some author -> (
-        match adopt c ~me ~text ~author ~about ~quote ~credit with
-        | Error e -> Error e
-        | Ok (id, None) -> Ok (Some text, [ id ])
-        | Ok (id, Some (Ok cid)) -> Ok (Some text, [ id; cid ])
-        | Ok (id, Some (Error e)) ->
-            Printf.eprintf "%s inbox agent: %s\n" (Time_fmt.now ()) e;
-            Ok (Some text, [ id ]))
+    | Some author ->
+        Result.map
+          (fun (id, _) ->
+            ( Some text,
+              [ id ],
+              Option.map
+                (fun cr ->
+                  {
+                    w_text = text;
+                    w_author = author;
+                    w_about = about;
+                    w_quote = quote;
+                    w_credit = cr;
+                  })
+                credit ))
+          (adopt c ~me ~text ~author ~about ~quote ~credit:None)
 
   (* Adopt on an offer: the run's step, then the offer is settled. A full list refuses it and keeps
      the offer, so Adopt succeeds once the member removes a line; words held already drop it. *)
@@ -5666,19 +5747,22 @@ module Inbox_agent = struct
           List.filter_map
             (fun j ->
               match practice c ~me j with
-              | Ok (a, ids) ->
-                  Some (a, List.filter_map (I.find (log c) ~now:c.now) ids)
+              | Ok (a, ids, w) -> Some (a, ids, w)
               | Error e ->
                   note (Error e);
                   None)
             (list "practices" body)
         in
-        let adopted = List.filter_map fst practiced in
+        let adopted = List.filter_map (fun (a, _, _) -> a) practiced in
+        let credited =
+          send_owed c ~me (List.filter_map (fun (_, _, w) -> w) practiced)
+        in
         let items =
           items
-          @ List.concat_map
-              (fun (_, rs) -> List.map (Inbox.summary c) rs)
-              practiced
+          @ List.filter_map
+              (fun id ->
+                Option.map (Inbox.summary c) (I.find (log c) ~now:c.now id))
+              (List.concat_map (fun (_, ids, _) -> ids) practiced @ credited)
         in
         ok
           (`Assoc
