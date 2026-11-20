@@ -93,7 +93,42 @@ CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS circle_generation (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  nonce TEXT NOT NULL,
+  n INTEGER NOT NULL
+);
 |}
+
+(* The circle generation: one row, its [n] moved by triggers on every insert, update and delete of a
+   circle-state envelope, by whichever process and connection writes it, and its [nonce] drawn once
+   when the log is made, so two logs never share a generation. A process keeps the fold it computed
+   for a generation and reuses it until the generation moves (Node.fold). The triggers are named for
+   the kinds they watch: a release that adds a circle-state kind adds triggers of its own beside the
+   older ones, which only move the generation more often. DIG-209 *)
+let circle_generation_triggers =
+  let kinds = Envelope.circle_state_kinds in
+  let suffix =
+    String.sub (Digest.to_hex (Digest.string (String.concat "," kinds))) 0 8
+  in
+  let in_kinds col =
+    Printf.sprintf "%s.kind IN (%s)" col
+      (String.concat ", " (List.map (Printf.sprintf "'%s'") kinds))
+  in
+  let trigger event when_ =
+    Printf.sprintf
+      "CREATE TRIGGER IF NOT EXISTS circle_generation_%s_%s AFTER %s ON \
+       envelopes WHEN %s BEGIN UPDATE circle_generation SET n = n + 1 WHERE id \
+       = 1; END;"
+      (String.lowercase_ascii event)
+      suffix event when_
+  in
+  String.concat "\n"
+    [
+      trigger "INSERT" (in_kinds "NEW");
+      trigger "UPDATE" (in_kinds "OLD" ^ " OR " ^ in_kinds "NEW");
+      trigger "DELETE" (in_kinds "OLD");
+    ]
 
 let check db rc =
   match rc with
@@ -350,7 +385,26 @@ let open_ path =
     (Sqlite3.exec db
        "CREATE UNIQUE INDEX IF NOT EXISTS envelopes_signed_here_seq ON \
         envelopes (author, seq) WHERE signed_here = 1;");
+  check db (Sqlite3.exec db circle_generation_triggers);
+  (* Read first, so an open of a log that has its row takes no write lock. *)
+  if rows t "SELECT 1 FROM circle_generation WHERE id = 1" [] = [] then
+    transaction t (fun () ->
+        exec t
+          "INSERT OR IGNORE INTO circle_generation (id, nonce, n) VALUES (1, \
+           lower(hex(randomblob(16))), 0)"
+          []);
   t
+
+(* The log's circle generation as this connection reads it: its nonce and its count. Inside a
+   transaction it counts the transaction's own uncommitted writes. *)
+let circle_generation t =
+  match rows t "SELECT nonce, n FROM circle_generation WHERE id = 1" [] with
+  | [ [| nonce; n |] ] -> Some (text nonce, int n)
+  | _ -> None
+
+(* Whether this connection has a transaction open, whose writes another connection cannot see and
+   which may yet roll back. *)
+let in_transaction t = t.depth > 0
 
 (* config *)
 
