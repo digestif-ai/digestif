@@ -10,12 +10,19 @@
    member's machine, and its first pass is stored before any page is read: a page reads the store,
    never the disk (Machine_scan).
 
-   Every GET the UI reads is called [samples] times through the server's own handler, which is the
-   node's whole server time for a request: the session check, the route, the store's reads and the
-   JSON written out. A route fails when its p95 exceeds [budget_ms], or when it exceeds what
+   The circle has grown past the demo's five by [members] members, the member has started
+   [approvals] approvals that have since expired, and has [suggestions] prompt suggestions open.
+
+   Every GET the UI reads is called [samples] times over a socket of its own against the node served
+   as the daemon serves it (Server.serve), which is the node's whole server time for a request: the
+   connection's thread, the request parsed, the log reopened, the session check, the route, the
+   store's reads and the JSON written out. A route fails when its p95 exceeds [budget_ms], or when it exceeds what
    baseline.json recorded for it, scaled by the run's [machine_shift], by more than [regression]
    allows. A route the baseline does not
    name yet is held to the budget alone and printed, so adding a route is adding its line.
+
+   Every size is a knob, DIGESTIF_PERF_<NAME> ([knob]): a fix for a page that grows with one is
+   written as this test failing at the size its finding measured first.
 
    DIGESTIF_PERF_RECORD=<file> writes what this run measured to <file>, in baseline.json's shape,
    which is how the baseline is retaken after a change that is meant to make a page slower:
@@ -27,27 +34,59 @@ open Digestif_core
 open Digestif_web
 
 let budget_ms = 50.
-let clones = 1000
-let organizations = 50
-let transcripts = 5000
+let samples = 40
+
+(* The fixture's size. Each is a knob: DIGESTIF_PERF_<NAME> (DIGESTIF_PERF_MEMBERS=400) runs the
+   suite at another size, which is how a fix's failing test is written first: raise the knob to the
+   size its finding measured, watch a route fail, fix it, and raise the default here in the same
+   change. A default is the largest size every route holds its budget at on main. *)
+let knob name default =
+  let var = "DIGESTIF_PERF_" ^ String.uppercase_ascii name in
+  match Sys.getenv_opt var with
+  | Some v when String.trim v <> "" -> (
+      match int_of_string_opt (String.trim v) with
+      | Some n when n >= 0 -> n
+      | _ -> failwith (Printf.sprintf "%s is not a count: %s" var v))
+  | _ -> default
+
+let clones = knob "clones" 1000
+let organizations = knob "organizations" 50
+let transcripts = knob "transcripts" 5000
 
 (* A node a few years old (ISS-41988): a note a night for three years. *)
-let notes = 1100
+let notes = knob "notes" 1100
 
 (* ISS-52609: Inbox items the circle sent over the same years, the questions answered. *)
-let inbox_items = 600
-let samples = 40
+let inbox_items = knob "inbox_items" 600
 
 (* Nights of this node's digests in the log: a member's node writes one a night, so this is eight
    years of them, or a circle's summaries over two. Every request folds the circle from the log, and
    the fold reads circle-state envelopes alone, so a page's floor holds as the log ages (ISS-42063). *)
-let digests = 3000
+let digests = knob "digests" 3000
 
 (* Summaries in the log beside them: a circle adds one per member per night, so this is ten members
    for ten months, or three for nearly three years. The feed, a message's replies and a member's
    recent list page in the log and open only what they show, so they hold as these pile up
    (ISS-42119). *)
-let summaries = 3000
+let summaries = knob "summaries" 3000
+
+(* Members joined beside the demo's five, all from one dinner, each with a card: every join and
+   card is a circle-state envelope the fold reads, and every join a signature it verifies, on each
+   request. DIG-209 is the fold that grows with them: DIGESTIF_PERF_MEMBERS=400 is its failing test. *)
+let members = knob "members" 20
+
+(* Approvals this member started that have since expired, as a circle's admins accumulate them over
+   the years, each sealed to the member. GET /approvals builds every row's progress again for each
+   row (DIG-220): one approval reads it at 10ms of CPU over the wire, two at 25ms, ten at 250ms, and
+   every Inbox read syncs them all, so DIGESTIF_PERF_APPROVALS=10 is DIG-220's failing test and its
+   fix raises this default. *)
+let approvals = knob "approvals" 1
+
+(* Prompt suggestions the member sent and judges alone, still open. While one is, every status and
+   Inbox read settles it against every summary body (DIG-221): one puts the Inbox's pages and search
+   over the budget, so DIGESTIF_PERF_SUGGESTIONS=1 is DIG-221's failing test and its fix sets this
+   default to 1. At 0 the suggestion's own page is not measured. *)
+let suggestions = knob "suggestions" 0
 
 (* Meaningfully slower: more than [factor] times the recorded p95 and more than [slack_ms] above
    it. Both, so a route recorded at a fraction of a millisecond is not failed by scheduling noise,
@@ -280,6 +319,113 @@ let aged_log (n : Node.t) =
        position
        (List.init summaries Fun.id))
 
+(* [members] members joined from one dinner this member hosts, each with its own identity, device
+   and card, as a circle that has grown past the demo's five. *)
+let add_members (n : Node.t) =
+  if members > 0 then begin
+    let host = Option.get (Log.get_config n.log Node.k_identity) in
+    let at h = Time_fmt.of_unix (Unix.gettimeofday () -. (h *. 3600.)) in
+    let invites = List.init members (fun _ -> Crypto.generate_signing_key ()) in
+    let dinner, _ =
+      Result.get_ok
+        (Node.write n ~kind:"dinner"
+           (Bodies.dinner_json
+              {
+                host;
+                date = String.sub (at 3.) 0 10;
+                label = "A larger dinner";
+                guests =
+                  List.mapi
+                    (fun i k ->
+                      {
+                        Bodies.name = Printf.sprintf "Guest %d" i;
+                        invite_key = Keys.public k;
+                        expires_at = at (-30.);
+                        admission = None;
+                      })
+                    invites;
+                relays = [ "https://relay-1.example" ];
+              }))
+    in
+    let epoch = (Node.fold n).epoch in
+    Log.transaction n.log (fun () ->
+        List.iteri
+          (fun i inv ->
+            let identity = Crypto.generate_signing_key ()
+            and device = Crypto.generate_signing_key ()
+            and enc =
+              Result.get_ok (Crypto.encryption_key_of_secret (Crypto.random 32))
+            in
+            let import sg = ignore (Result.get_ok (Node.import n sg)) in
+            import
+              (Envelope.create ~key:inv ~seq:1 ~created_at:(at 2.) ~epoch
+                 ~kind:"join"
+                 (Bodies.make_join ~invite_key:inv ~dinner_hash:dinner ~identity
+                    ~device));
+            import
+              (Envelope.create ~key:device ~seq:1 ~created_at:(at 1.9) ~epoch
+                 ~kind:"card"
+                 (Bodies.make_card
+                    ~name:(Printf.sprintf "Guest %d" i)
+                    ~agent_name:"Pax"
+                    ~encryption_key:(Keys.encryption_public enc))))
+          invites)
+  end
+
+(* [approvals] invites this member started, a day apart going back from a month ago, so every one
+   has expired: sealed to the member alone, as an approval only its starter reads. *)
+let add_approvals (n : Node.t) =
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let enc = Result.get_ok (Node.encryption_key n) in
+  for i = 1 to approvals do
+    let created_at =
+      Time_fmt.of_unix
+        (Unix.gettimeofday () -. (float_of_int (30 + i) *. 86400.))
+    in
+    ignore
+      (Result.get_ok
+         (Node.write n ~created_at ~kind:"approval"
+            (`Assoc
+               [
+                 ("to", `List [ `String me ]);
+                 ( "sealed",
+                   Item.seal ~keys:[ enc.public ]
+                     (Approval.request_to_json
+                        {
+                          kind = Invite;
+                          created_at;
+                          member = None;
+                          document = Some (Printf.sprintf "admission %d" i);
+                          removed_key = None;
+                          added_key = None;
+                        }) );
+               ])))
+  done
+
+(* [suggestions] prompt suggestions this member sent through the API, as the UI sends one, judged
+   by the member alone and still open. *)
+let add_suggestions (n : Node.t) =
+  for i = 1 to suggestions do
+    let r =
+      Api.handle n ~meth:"POST" ~path:[ "suggestions" ] ~query:[]
+        ~body:
+          (Some
+             (`Assoc
+                [
+                  ( "text",
+                    `String
+                      (Printf.sprintf
+                         "Write tonight's note in three lines, version %d.\n%s"
+                         i Suggestions.placeholder) );
+                  ("change", `String (Printf.sprintf "Three lines, take %d" i));
+                ]))
+    in
+    if r.status <> 201 then
+      failwith
+        (Printf.sprintf "POST suggestions answered %d: %s" r.status
+           (Option.fold ~none:"" ~some:Yojson.Safe.to_string r.body))
+  done
+
 (* The demo circle on [home]: its member, notes, items and rules, with the machine scan of [home]
    stored in place of the demo's hand-set sources, and a few years of notes and items. *)
 let node home =
@@ -289,7 +435,10 @@ let node home =
   (match Demo.seed n with Ok () -> () | Error e -> failwith e);
   add_notes n;
   add_items n;
+  add_members n;
+  add_approvals n;
   aged_log n;
+  add_suggestions n;
   Log.exec n.log "DELETE FROM config WHERE key = ?" [ Log.s Sources.k_fixed ];
   Log.exec n.log "DELETE FROM config WHERE key = ?"
     [ Log.s Machine_scan.k_scanned_at ];
@@ -329,17 +478,72 @@ let request ?(headers = []) target : Http.request =
     body = "";
   }
 
+(* The node served as the daemon serves it (Server.serve, on a thread of its own, on a port of its
+   own), and a session on it. Every page is read over a socket, so what a page is measured at is what
+   the member's browser waits on the node for: the connection's thread, the request parsed, the
+   log reopened for it, the handler and the response written (Server.with_own_log). *)
+type conn = { port : int; cookie : string; stop : bool ref; server : Thread.t }
+
 let session n =
+  let fd = Result.get_ok (Server.start ~port:0 n) in
+  let port =
+    match Unix.getsockname fd with Unix.ADDR_INET (_, p) -> p | _ -> 0
+  in
+  let stop = ref false in
+  let server =
+    Thread.create (fun () -> Server.serve ~stop:(fun () -> !stop) n fd) ()
+  in
   let token = Store.new_launch_token n.Node.log in
   let r = Server.handler n (request ("/launch?token=" ^ token)) in
   let cookie = List.assoc "Set-Cookie" r.headers in
-  String.sub cookie 0 (String.index cookie ';')
+  { port; cookie = String.sub cookie 0 (String.index cookie ';'); stop; server }
 
-let get n cookie path =
-  Server.handler n
-    (request
-       ~headers:[ ("cookie", cookie); ("digestif-local", "1") ]
-       ("/api/v0/" ^ path))
+let close_session c =
+  c.stop := true;
+  Thread.join c.server
+
+(* One GET over its own connection, read to the close the server answers with. *)
+let get _n c path : Http.response =
+  let s = Unix.socket ~cloexec:true Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Fun.protect
+    ~finally:(fun () -> Unix.close s)
+    (fun () ->
+      Unix.connect s (Unix.ADDR_INET (Unix.inet_addr_loopback, c.port));
+      Http.write_all s
+        (Printf.sprintf
+           "GET /api/v0/%s HTTP/1.1\r\n\
+            Host: 127.0.0.1:%d\r\n\
+            Cookie: %s\r\n\
+            Digestif-Local: 1\r\n\
+            \r\n"
+           path c.port c.cookie);
+      let buf = Buffer.create 65536 and chunk = Bytes.create 65536 in
+      let rec read () =
+        match Unix.read s chunk 0 (Bytes.length chunk) with
+        | 0 -> ()
+        | k ->
+            Buffer.add_subbytes buf chunk 0 k;
+            read ()
+      in
+      read ();
+      let raw = Buffer.contents buf in
+      let rec head_end i =
+        if i + 3 >= String.length raw then
+          failwith ("GET " ^ path ^ ": no response head")
+        else if String.sub raw i 4 = "\r\n\r\n" then i
+        else head_end (i + 1)
+      in
+      let head_end = head_end 0 in
+      let status =
+        match String.split_on_char ' ' (String.sub raw 0 head_end) with
+        | _ :: code :: _ -> int_of_string code
+        | _ -> failwith ("GET " ^ path ^ ": no status line")
+      in
+      {
+        Http.status;
+        headers = [];
+        body = String.sub raw (head_end + 4) (String.length raw - head_end - 4);
+      })
 
 let json n cookie path =
   let r = get n cookie path in
@@ -425,7 +629,34 @@ let routes n cookie =
     (* ISS-86960: a word every night's summary holds, and words a few Inbox items hold. *)
     ("search", "search?q=importer");
     ("search (few)", "search?q=circle%20know");
+    (* DIG-218: the rest of what the UI reads. *)
+    ("approvals", "approvals");
+    ("approvals?state", "approvals?state=waiting&state=expired&limit=50");
+    ("signers", "signers");
+    ("note_prompt", "note_prompt");
+    ("suggestions", "suggestions");
+    ("settings/digest", "settings/digest");
+    ("settings/agent", "settings/agent");
+    ("settings/agent/check", "settings/agent/check");
+    ("settings/inbox_agent", "settings/inbox_agent");
+    ("settings/inbox_agent/log", "settings/inbox_agent/log");
+    ("items?status", "items?limit=26&status=new&status=read");
+    ("items?voice", "items?limit=26&voice=agent");
   ]
+  @ after "feed?before" "feed?limit=50" "created_at" (fun c ->
+      "feed?limit=50&before=" ^ c)
+  (* A suggestion's page, when the fixture holds one. *)
+  @ (if suggestions = 0 then []
+     else
+       with_id "suggestions/:hash" "suggestions" "hash" (fun h ->
+           "suggestions/" ^ h))
+  @ (let note = Option.get (first_of n cookie "notes" "id") in
+     let version =
+       Option.get (first_of n cookie ("notes/" ^ enc note ^ "/versions") "id")
+     in
+     let path = "notes/" ^ enc note ^ "?version=" ^ enc version in
+     ignore (json n cookie path);
+     [ ("notes/:id?version", path) ])
   @ after "notes?cursor" "notes?limit=51" "id" (fun c ->
       "notes?limit=51&cursor=" ^ c)
   @ after "items?cursor" "items?limit=51" "id" (fun c ->
@@ -468,8 +699,9 @@ let cpu () =
    it. CPU, not wall time (DIG-172): a shared runner running five builds at once leaves a request
    waiting for a core, which multiplies its wall time by however busy the box is, while the CPU it
    spends is what the route costs. Nothing else runs in this process while a page is measured (the
-   handler is called directly, and a page's background rescan waits a day, Machine_scan.ensure), so
-   the process's CPU is the request's. A loaded box still moves CPU time a little, through shared
+   server's accept loop sleeps in select between requests, and a page's background rescan waits a
+   day, Machine_scan.ensure), so the process's CPU is the request's, the client's few writes and
+   reads of the socket beside it. A loaded box still moves CPU time a little, through shared
    caches and clock speed, which the run's [machine_shift] absorbs. *)
 let measure n cookie (name, path) =
   let once () =
@@ -521,6 +753,9 @@ let write_baseline file measured =
                   ("samples", `Int samples);
                   ("digests", `Int digests);
                   ("summaries", `Int summaries);
+                  ("members", `Int members);
+                  ("approvals", `Int approvals);
+                  ("suggestions", `Int suggestions);
                 ] );
             ( "p95_ms",
               `Assoc
@@ -598,6 +833,7 @@ let budget () =
       write_baseline f measured;
       Printf.printf "recorded the baseline in %s\n" f)
     record;
+  close_session cookie;
   match failures with [] -> () | l -> Alcotest.fail (String.concat "\n" l)
 
 (* What counts as meaningfully slower, on its own. *)
