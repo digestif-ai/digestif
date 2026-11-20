@@ -1513,6 +1513,9 @@ let supervise =
             | Interrupted v ->
                 Printf.printf "%s supervise: stopped during the trial of %s\n%!"
                   (Time_fmt.now ()) (U.Version.to_string v)
+            | Restarted (v, why) ->
+                Printf.printf "%s supervise: starting %s again on trial: %s\n%!"
+                  (Time_fmt.now ()) (U.Version.to_string v) why
           in
           let on_crash = function
             | U.Supervisor.Crashed_back (v, to_) ->
