@@ -244,6 +244,22 @@ parse to, and `approve` refuses an admission or a signer set whose bytes are not
 of it. Every reader, the node's and the relay's alike, refuses a document holding an object member
 twice, which OCaml would read the first of and `JSON.parse` the last of.
 
+No signed document carries an expiry, and no reader checks one. What an expiry would bound is
+bounded by the document's own rule instead:
+
+- **A release manifest** (node or relay) cannot be replayed to move a node back, because a node
+  takes only a version newer than the one it last ran healthy, never takes a refused version
+  again, and never takes a recalled one (A recall). A channel that serves an old manifest in
+  place of a newer one is withholding, which halts updates and does nothing else (The rule). An
+  expiry would add one thing, a node that notices it is being withheld from, at the cost of both
+  signers re-signing every live version on a schedule and every node halting when either is away.
+- **A signer-set change** is a link in a chain a node folds in order, each checked against the set
+  before it; an expired link would strand every node behind it.
+- **A revocation and a recall** must never lapse: an expired revocation would let a stolen key sign
+  again, and an expired recall would offer the bad version again.
+- **An approval** (an admission or a signer-set change being signed) is the one that ends on time:
+  one decline, or seven days without the last signature, ends it (Approvals).
+
 ## When a node updates
 
 `digestif run` reads the channel once a day, when the machine wakes (at most hourly on wakes), an
@@ -938,7 +954,8 @@ settings, cuts nothing), every module outside `relay/src` the Worker bundles, th
 change cuts both lines), and the scripts that build the bundle.
 
 **The build.** Pushing a relay tag starts `.github/workflows/relay-release.yml`, which refuses a tag
-that is not `relay-v<MAJOR.MINOR.PATCH>` on `main` or whose release is published, then:
+that is not `relay-v<MAJOR.MINOR.PATCH>` on `main` or whose release is published, then, with a
+read-only token while every dependency's install scripts run:
 
 1. refuses a migration that is not additive (`ci/relay-migrations.sh`: a `DROP` or `RENAME` in a
    migration the previous relay version did not carry, or a change to one it did), since a
@@ -955,8 +972,9 @@ that is not `relay-v<MAJOR.MINOR.PATCH>` on `main` or whose release is published
    the notes (the tag's message, or the titles of the commits since the previous relay version
    that touched a relay release path) and `compatible_with` the previous relay version (its own
    version for the first);
-6. leaves a **draft** GitHub release `relay-v<version>` holding the bundle and the manifest, created
-   and edited with `--latest=false`. It is never Latest: Latest is the node line, which the hosted
+6. in a second job, `publish`, that installs nothing and runs no code from the tree, attests the
+   bundle and the manifest and leaves a **draft** GitHub release `relay-v<version>` holding them,
+   created and edited with `--latest=false`. It is never Latest: Latest is the node line, which the hosted
    install script and `gh release download` with no tag read. Running it again on the same tag
    replaces the draft's files and drops any signature beside them.
 

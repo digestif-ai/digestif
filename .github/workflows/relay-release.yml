@@ -13,6 +13,11 @@
 #
 # It touches no Cloudflare account and holds no deploy token: a relay is deployed only by its own
 # operator's node, from the release both signers signed.
+#
+# Two jobs, so no write-scoped token is in scope while a dependency's install script runs: `build`
+# runs every `npm ci` and `opam install` with a read-only token and uploads the bundle, the manifest
+# and the notes; `publish` installs nothing, runs no code from the tree, and holds the write token
+# that attests those exact files and leaves the draft. Every action is pinned by commit sha.
 
 name: Relay release
 
@@ -32,19 +37,21 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
     env:
       TAG: ${{ github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
+      # A read-only token sees published releases only, which is the one this refuses.
       - name: the tag is a relay version on main, not yet published
         id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="${TAG#relay-v}"
           if ! [[ "$TAG" == relay-v* && "$version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]; then
@@ -92,7 +99,7 @@ jobs:
             ci/relay-migrations.sh --since ""
           fi
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
 
@@ -122,7 +129,7 @@ jobs:
           (cd conformance && npm ci)
           (cd relay && node scripts/conformance.ts --bundle ../unpacked)
 
-      - uses: ocaml/setup-ocaml@v3
+      - uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3
         with:
           ocaml-compiler: 5.2
 
@@ -160,17 +167,46 @@ jobs:
             --compatible-with "$COMPATIBLE" > assets/manifest.json
           cat assets/manifest.json
 
-      # The bundle and manifest.json, attested as built by this workflow on the tag at this commit
-      # (docs/releases.md, What ties a version to its build), before either reaches the draft.
-      - name: attest every file of the draft
-        uses: actions/attest-build-provenance@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          subject-path: assets/*
+          name: relay-release
+          path: |
+            assets/
+            notes.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  # The write token, in a job that installs nothing and runs nothing from the tree: it attests the
+  # files `build` wrote and leaves the draft. The bundle and manifest.json are attested as built by
+  # this workflow on the tag at this commit (docs/releases.md, What ties a version to its build),
+  # before either reaches the draft.
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: relay-release
+          path: release
+
+      - name: attest every file of the draft
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: release/assets/*
 
       # Never Latest, created or edited: Latest is the node line.
       - name: leave the draft release ${{ env.TAG }}
-        env:
-          VERSION: ${{ steps.plan.outputs.version }}
+        working-directory: release
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             for a in $(gh release view "$TAG" --json assets --jq '.assets[].name'); do
