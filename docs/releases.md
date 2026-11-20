@@ -278,7 +278,17 @@ symlinks choose among them (`node/update/lib/layout.ml`):
 - `current`: the release the service runs;
 - `good`: the last release that reported healthy.
 
-Older releases stay on disk. The behaviors run with the release's own Node.js, by its path:
+Each release carries its own Node.js, so a node does not keep them all. Once a switch is kept (the
+new release reported healthy and `good` moved to it), the supervisor deletes every complete release
+except `current`, `good`, the release the switch came from (the one a recall or a crash moves back
+to), the release its own binary runs from, and any release newer than the one it kept, which an
+update pass staged on its way to a trial of its own (`node/update/lib/prune.ml`). A directory being
+staged, self-tested or deleted (its name starts with a dot) and one without its `.release.json` are
+left alone. A release is renamed to a dot-prefixed name before it is deleted, so a deletion cut
+short never leaves one that looks complete; the next kept switch finishes it. A
+rollback deletes nothing, and neither does a recall or a move back for crashing.
+
+The behaviors run with the release's own Node.js, by its path:
 `behaviors/bin/nightly-hook` runs `nightly.ts`, and `behaviors/bin/read-hook` runs `read.ts`, with `runtime/bin/node` beside `behaviors/`, never a
 `node` found on `PATH`, so a member's machine needs no Node.js of its own. A release staged from a
 checkout (`digestif service install --behaviors`) carries no runtime and runs the `node` on `PATH`.

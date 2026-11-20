@@ -9,7 +9,7 @@
      manager starts (Supervisor), so a release that crashes never has to recover itself.
 
    A switch moves current, a healthy report moves good, and a rollback moves current back to good.
-   Older releases stay on disk. *)
+   Once a switch is kept, the releases nothing needs any more are deleted (Prune). *)
 
 let releases_dir dir = Filename.concat dir "releases"
 let release_dir dir name = Filename.concat (releases_dir dir) name
