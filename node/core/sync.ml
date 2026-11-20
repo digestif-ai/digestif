@@ -29,6 +29,40 @@ type report = {
 
 let page_size = 500
 
+(* Keep one envelope a relay served: true when the log did not hold it. An envelope whose hash or
+   signature does not check is a fault against its author and is passed over, as is one that has no
+   canonical form (a string that is not UTF-8): it can never verify, and nothing it says is read. *)
+let store_served ~on_stored (node : Node.t) ~relay (s : Relay_client.stored) =
+  let e = s.signed.envelope in
+  let fault kind detail =
+    Log.add_fault node.log ~kind ~author:e.author ~seq:e.seq ~detail;
+    false
+  in
+  match Envelope.hash_result e with
+  | Error m -> fault "invalid_envelope" (relay ^ " " ^ s.hash ^ " " ^ m)
+  | Ok hash when hash <> s.hash ->
+      fault "relay_hash_mismatch" (relay ^ " " ^ s.hash)
+  | Ok hash -> (
+      match Envelope.verify s.signed with
+      | Error err ->
+          fault "invalid_envelope"
+            (relay ^ " " ^ hash ^ " " ^ Envelope.error_message err)
+      | Ok () ->
+          let result = Log.insert node.log ~hash s.signed in
+          Log.add_sighting node.log ~relay ~relay_id:s.relay_id ~hash
+            ~received_at:s.received_at;
+          let inserted = result = Log.Inserted in
+          if inserted then on_stored hash s.signed;
+          inserted)
+
+(* An entry the relay served that is no envelope at all names no author this node can hold it
+   against: the fault is the relay's, keyed by where the relay placed it. *)
+let record_malformed (node : Node.t) ~relay (m : Relay_client.malformed) =
+  Log.add_fault node.log ~kind:"malformed_entry" ~author:""
+    ~seq:(Option.value m.bad_relay_id ~default:0)
+    ~detail:
+      (String.concat " " ((relay :: Option.to_list m.bad_hash) @ [ m.reason ]))
+
 let fetch_relay ?(on_stored = fun _ _ -> ()) (node : Node.t) transport ~key
     (r : Log.relay_row) =
   let rec loop after fetched stored =
@@ -44,45 +78,31 @@ let fetch_relay ?(on_stored = fun _ _ -> ()) (node : Node.t) transport ~key
           Log.transaction node.log @@ fun () ->
           let stored =
             List.fold_left
-              (fun stored (s : Relay_client.stored) ->
-                let hash = Envelope.hash s.signed.envelope in
-                if hash <> s.hash then begin
-                  Log.add_fault node.log ~kind:"relay_hash_mismatch"
-                    ~author:s.signed.envelope.author ~seq:s.signed.envelope.seq
-                    ~detail:(r.url ^ " " ^ s.hash);
-                  stored
-                end
-                else
-                  match Envelope.verify s.signed with
-                  | Error e ->
-                      Log.add_fault node.log ~kind:"invalid_envelope"
-                        ~author:s.signed.envelope.author
-                        ~seq:s.signed.envelope.seq
-                        ~detail:
-                          (r.url ^ " " ^ hash ^ " " ^ Envelope.error_message e);
-                      stored
-                  | Ok () ->
-                      let result = Log.insert node.log ~hash s.signed in
-                      Log.add_sighting node.log ~relay:r.url
-                        ~relay_id:s.relay_id ~hash ~received_at:s.received_at;
-                      if result = Log.Inserted then begin
-                        on_stored hash s.signed;
-                        stored + 1
-                      end
-                      else stored)
+              (fun stored s ->
+                if store_served ~on_stored node ~relay:r.url s then stored + 1
+                else stored)
               stored page.envelopes
           in
+          List.iter (record_malformed node ~relay:r.url) page.malformed;
+          (* The cursor passes every entry the page placed, a bad one included: an entry this node
+             refused is refused on every read, and holding the cursor before it would stop this
+             relay's sync for good. DIG-222 *)
           let last =
-            List.fold_left
-              (fun m (s : Relay_client.stored) -> max m s.relay_id)
-              after page.envelopes
+            List.fold_left max after
+              (List.map
+                 (fun (s : Relay_client.stored) -> s.relay_id)
+                 page.envelopes
+              @ List.filter_map
+                  (fun (m : Relay_client.malformed) -> m.bad_relay_id)
+                  page.malformed)
           in
           Log.set_cursor node.log r.url last;
           (stored, last)
         in
-        let fetched = fetched + List.length page.envelopes in
+        let served = List.length page.envelopes + List.length page.malformed in
+        let fetched = fetched + served in
         match page.next with
-        | Some next when next > after && page.envelopes <> [] ->
+        | Some next when next > after && served > 0 ->
             loop (max next last) fetched stored
         | _ -> (fetched, stored, None))
   in

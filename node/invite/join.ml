@@ -40,10 +40,12 @@ let read_dinner ~transport code =
   | Error (Relay_client.Refused (404, _)) ->
       Error (Unreadable "no open invite with this code")
   | Error e -> Error (Unreadable (Relay_client.error_to_string e))
-  | Ok (s : Relay_client.stored) ->
-      if Envelope.hash s.signed.envelope <> s.hash then
-        Error (Bad_dinner "the relay's hash does not match the envelope")
-      else Ok s.signed
+  | Ok (s : Relay_client.stored) -> (
+      match Envelope.hash_result s.signed.envelope with
+      | Error m -> Error (Bad_dinner m)
+      | Ok h when h <> s.hash ->
+          Error (Bad_dinner "the relay's hash does not match the envelope")
+      | Ok _ -> Ok s.signed)
 
 (* Checks what the relay handed back before anything is signed against it: the dinner envelope
    verifies, and it names this invite key, unexpired. Returns the dinner's hash, its parsed body and
