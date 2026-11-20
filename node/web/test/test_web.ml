@@ -102,6 +102,11 @@ let call n cookie ?(meth = "GET") ?body path =
   in
   (r.status, if r.body = "" then `Null else Yojson.Safe.from_string r.body)
 
+(* DIG-236: the run loop's pass after a sync (Api.keep_up), which re-opens and re-decides what a join
+   or a revoke changed; a page's GET leaves that to it. *)
+let keep_up n =
+  match Api.keep_up n with Ok () -> () | Error e -> Alcotest.fail e
+
 let member name = function
   | `Assoc f -> (
       match List.assoc_opt name f with Some v -> v | None -> `Null)
@@ -8922,11 +8927,87 @@ let inbox_follow_up_revoke_after_decision () =
           ~mail_read:[]));
   ignore (call "items");
   Alcotest.(check (list (option bool)))
+    "2: a page leaves the revoke to the run loop" [ Some true; Some true ]
+    (stored_answers n h);
+  keep_up n;
+  Alcotest.(check (list (option bool)))
     "2: the one past the cutoff is decided again" [ Some true; Some false ]
     (stored_answers n h);
   Alcotest.(check int)
     "3: and the item lists one answer" 1
     (List.length (list (member "answers" (snd (call ("items/" ^ h))))))
+
+(* DIG-236: a change of the fold names only the keys it changed, and what is forgotten for it is
+   only what those keys signed: a revoke undecides that key's follow-ups and no one else's, and a
+   join drops that key's unreadable rows and no one else's. *)
+let inbox_fold_change_is_narrowed () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let quinn2 = second_device n quinn in
+  let l = n.Node.log in
+  let h = peer_item n pia (question "Answered twice") in
+  let answer p =
+    ignore
+      (peer_write n p "item_answer"
+         (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+            ~voice:"person"))
+  in
+  answer quinn;
+  answer quinn2;
+  let stranger () =
+    {
+      quinn with
+      p_identity = Crypto.generate_signing_key ();
+      p_device = Crypto.generate_signing_key ();
+      p_seq = 1;
+      p_prev = None;
+    }
+  in
+  let s1 = stranger () and s2 = stranger () in
+  ignore (peer_item n s1 (question "From a key never admitted"));
+  ignore (peer_item n s2 (question "From another"));
+  keep_up n;
+  ignore (call "items");
+  let config = "test_fold_keys" in
+  let change () = fst (Api.Fold_keys.change l ~config (Node.fold n)) in
+  let record () =
+    Log.set_config l config (snd (Api.Fold_keys.change l ~config (Node.fold n)))
+  in
+  Alcotest.(check bool) "nothing recorded reads as All" true (change () = All);
+  record ();
+  Alcotest.(check bool)
+    "recorded reads as Unchanged" true
+    (change () = Unchanged);
+  let target = Keys.public quinn2.p_device in
+  ignore
+    (peer_write n quinn "revoke"
+       (Bodies.make_revoke ~by:quinn.p_identity ~target
+          ~after_seq:[ (target, 5) ]
+          ~mail_read:[]));
+  Alcotest.(check bool)
+    "a revoke names the revoked key alone" true
+    (change () = Keys [ target ]);
+  Alcotest.(check (list (option bool)))
+    "both answers decided" [ Some true; Some true ] (stored_answers n h);
+  Store.Items.forget_decisions ~authors:[ target ] l;
+  Alcotest.(check (list (option bool)))
+    "only the revoked key's answer is undecided" [ None; Some true ]
+    (List.sort compare (stored_answers n h));
+  let unreadable () =
+    match
+      Log.rows l
+        "SELECT count(*) FROM ui_items WHERE kind IS NULL AND local = 0" []
+    with
+    | [ [| v |] ] -> Log.int v
+    | _ -> -1
+  in
+  Alcotest.(check int) "two unreadable items" 2 (unreadable ());
+  Store.Items.forget_unread ~authors:[ Keys.public s1.p_device ] l;
+  Alcotest.(check int)
+    "only the one that key signed is dropped" 1 (unreadable ())
 
 (* DIG-554: an answer from a member's new device that reaches the log before the device's
    admission is decided once the admission arrives, as on a node that had the admission first. *)
@@ -8957,7 +9038,7 @@ let inbox_follow_up_before_its_admission () =
   Alcotest.(check (list (option bool)))
     "1: nothing counts while the key is unknown" [] (stored_answers n h);
   ignore (ok (Node.import n admission));
-  ignore (call "items");
+  keep_up n;
   Alcotest.(check (list (option bool)))
     "2: the answer counts once the admission is here" [ Some true ]
     (stored_answers n h);
@@ -9040,7 +9121,7 @@ let item_and_approval_before_their_admission () =
   ignore (ok (Node.import n admission2));
   let item2 = peer_item n late (question "Sent after the admission") in
   let started2 = approval late in
-  ignore (call "items");
+  keep_up n;
   let status id = s "status" (snd (call ("items/" ^ id))) in
   Alcotest.(check bool) "2: the item is read" true (listed item);
   Alcotest.(check string)
@@ -9098,7 +9179,7 @@ let inbox_follow_up_own_key_revoked () =
        (Bodies.make_revoke ~by:identity ~target:mine
           ~after_seq:[ (mine, sg.envelope.seq - 1) ]
           ~mail_read:[]));
-  ignore (call "items");
+  keep_up n;
   Alcotest.(check (list (option bool)))
     "2: the revoked own key no longer counts" [ Some false ]
     (stored_answers n h)
@@ -9308,7 +9389,7 @@ let inbox_follow_up_decided_again () =
           ~target:(Keys.public pia3.p_device)
           ~after_seq:[ (Keys.public pia3.p_device, 0) ]
           ~mail_read:[]));
-  ignore (call "items");
+  keep_up n;
   (* a pick on a choice *)
   Alcotest.(check (list (option bool)))
     "2: the pick is decided again" [ Some false ] (stored_picks n choice);
@@ -9330,7 +9411,7 @@ let inbox_follow_up_decided_again () =
     [ true; false ]
     [ listed ~state:"others" asked; listed asked ];
   ignore (ok (Node.import n admission));
-  ignore (call "items");
+  keep_up n;
   Alcotest.(check (list (option bool)))
     "5: the late device's answer counts once its admission is here"
     [ Some true ] (stored_answers n waited);
@@ -10467,6 +10548,7 @@ let follow_up_agreement () =
   List.iter (fun sg -> ignore (ok (Node.import n sg))) (List.rev !pending);
   ignore (ok (Node.import n late_admission));
   ignore (call "items");
+  keep_up n;
   List.iter write_close close_rest;
   ignore (call "items");
   List.iteri (fun i w -> if i >= half then write w) rest;
@@ -14203,6 +14285,8 @@ let () =
           Alcotest.test_case
             "the Inbox: a revoke after the decision decides again" `Quick
             inbox_follow_up_revoke_after_decision;
+          Alcotest.test_case "the Inbox: a fold change is narrowed to its keys"
+            `Quick inbox_fold_change_is_narrowed;
           Alcotest.test_case "the Inbox: a follow-up before its admission"
             `Quick inbox_follow_up_before_its_admission;
           Alcotest.test_case

@@ -639,9 +639,9 @@ question that has since closed stays listed.
 Whether a follow-up counts is stored on its row when it and its item are both on the node. It
 counts when the admission fold reads its envelope from its author (a device or mail key, admitted,
 and not revoked or inside the revoked key's cutoff, The admission fold) and its author is a reader.
-The stored result is decided again only when the fold's reading of a key changes, which is a
-revocation with a cutoff (or an admission), so it is the same on every node whatever order the
-envelopes arrived in and whatever the clocks say. An answer from a member who has since left keeps
+The stored result is decided again only when the fold's reading of its author's key changes, which
+is a revocation with a cutoff (or an admission), and only for the follow-ups that key signed, so it
+is the same on every node whatever order the envelopes arrived in and whatever the clocks say. An answer from a member who has since left keeps
 counting, one signed past their cutoff does not (on a node that saw the revoke late as on one that
 saw it first), and one from a key never admitted never does. A later read or a restart changes no
 result.

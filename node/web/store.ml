@@ -123,6 +123,15 @@ type source = {
 let json_strings l =
   Yojson.Safe.to_string (`List (List.map (fun s -> `String s) l))
 
+(* DIG-236: a condition on an index table's [hash], and its parameters: signed by one of [authors]
+   (keys), or every row for None. *)
+let signed_by = function
+  | None -> ("1", [])
+  | Some authors ->
+      ( "hash IN (SELECT hash FROM envelopes WHERE author IN (SELECT value \
+         FROM json_each(?)))",
+        [ Log.s (json_strings authors) ] )
+
 let strings_of_json s =
   match Yojson.Safe.from_string s with
   | `List l -> List.filter_map (function `String s -> Some s | _ -> None) l
@@ -3205,21 +3214,31 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       in_time
 
   (* DIG-554, DIG-101: the items, answers, closes and picks indexed as unreadable, which is how one
-     signed by a key the fold did not know yet is kept. Dropped so the next pass opens them again. *)
-  let forget_unread (log : Log.t) =
-    Log.exec log "DELETE FROM ui_items WHERE kind IS NULL AND local = 0" [];
+     signed by a key the fold did not know yet is kept. Dropped so the next pass opens them again:
+     those signed by [authors] (DIG-236), every one without. *)
+  let forget_unread ?authors (log : Log.t) =
+    let cond, p = signed_by authors in
+    let where = " AND " ^ cond in
+    Log.exec log
+      ("DELETE FROM ui_items WHERE kind IS NULL AND local = 0" ^ where)
+      p;
     List.iter
       (fun table ->
         Log.exec log
-          (Printf.sprintf "DELETE FROM %s WHERE item IS NULL" table)
-          [])
+          (Printf.sprintf "DELETE FROM %s WHERE item IS NULL" table ^ where)
+          p)
       [ "ui_item_answers"; "ui_item_closes"; "ui_item_picks" ]
 
-  (* The rule changed: every stored result is undecided again. *)
-  let forget_decisions (log : Log.t) =
-    Log.exec log "UPDATE ui_item_answers SET counts = NULL, in_time = NULL" [];
-    Log.exec log "UPDATE ui_item_picks SET counts = NULL" [];
-    Log.exec log "UPDATE ui_item_closes SET counts = NULL" []
+  (* The rule changed, or the fold's reading of [authors] did (DIG-236): every stored result, or
+     those of the follow-ups [authors] signed, is undecided again. *)
+  let forget_decisions ?authors (log : Log.t) =
+    let cond, p = signed_by authors in
+    let where = " WHERE " ^ cond in
+    Log.exec log
+      ("UPDATE ui_item_answers SET counts = NULL, in_time = NULL" ^ where)
+      p;
+    Log.exec log ("UPDATE ui_item_picks SET counts = NULL" ^ where) p;
+    Log.exec log ("UPDATE ui_item_closes SET counts = NULL" ^ where) p
 
   (* DIG-535, DIG-554: SQL fragments for what counts as a follow-up, over the row [r] of [shown].
      Whether one counts is decided once, in OCaml (Api.Inbox.decide_follow_ups), when it and its
@@ -3468,9 +3487,13 @@ CREATE INDEX IF NOT EXISTS ui_approval_answers_approval ON ui_approval_answers (
 
   (* DIG-101: the approvals and answers kept as unreadable, which is how one signed by a key the
      fold did not know yet is kept. Dropped so the next pass opens them again. *)
-  let forget_unread (log : Log.t) =
-    Log.exec log "DELETE FROM ui_approvals WHERE readable = 0" [];
-    Log.exec log "DELETE FROM ui_approval_answers WHERE approval IS NULL" []
+  let forget_unread ?authors (log : Log.t) =
+    let cond, p = signed_by authors in
+    let where = " AND " ^ cond in
+    Log.exec log ("DELETE FROM ui_approvals WHERE readable = 0" ^ where) p;
+    Log.exec log
+      ("DELETE FROM ui_approval_answers WHERE approval IS NULL" ^ where)
+      p
 
   (* [opened] None: an approval this node cannot read. *)
   let put (log : Log.t) ~hash opened =
