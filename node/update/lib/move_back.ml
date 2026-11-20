@@ -29,7 +29,7 @@ let on_disk dir =
 let self_test ~dir ~version root =
   match Stage.self_test ~dir ~version root with
   | Ok () -> Ok ()
-  | Error (Stage.Retry e | Stage.Refuse e) -> Error e
+  | Error (Stage.Retry e | Stage.Suspect e | Stage.Refuse e) -> Error e
 
 (* Move back from [from]: the newest release on disk older than it, not refused, not [excluded],
    and not below [floor]. Returns the state it saved. update.json is saved with it as installed before the links move, so a

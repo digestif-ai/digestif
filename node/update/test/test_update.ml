@@ -888,6 +888,7 @@ let test_local_release_uses_path_node () =
       Alcotest.(check bool)
         ("names the PATH: " ^ why) true (contains ~sub:"PATH" why)
   | Error (Stage.Refuse why) -> Alcotest.failf "refused: %s" why
+  | Error (Stage.Suspect why) -> Alcotest.failf "suspected: %s" why
   | Ok _ -> Alcotest.fail "staged without Node.js");
   Alcotest.(check (list string)) "asked the node on PATH" [ "node" ] !asked
 
@@ -991,7 +992,8 @@ let test_local_release_keeps_good_behaviors () =
   write (Layout.runtime_in good) "node";
   let binary = local_binary "0.2.0" in
   match stage_local node binary with
-  | Error (Stage.Retry e | Stage.Refuse e) -> Alcotest.failf "not staged: %s" e
+  | Error (Stage.Retry e | Stage.Suspect e | Stage.Refuse e) ->
+      Alcotest.failf "not staged: %s" e
   | Ok name ->
       let root = Layout.release_dir node name in
       Alcotest.(check bool)
@@ -1012,7 +1014,7 @@ let test_local_release_without_behaviors_is_refused () =
         ("names --behaviors: " ^ why)
         true
         (contains ~sub:"--behaviors" why)
-  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Error (Stage.Retry e | Stage.Suspect e) -> Alcotest.failf "retried: %s" e
   | Ok name -> Alcotest.failf "staged %s without behaviors" name);
   let empty = Filename.concat (temp_dir ()) "behaviors" in
   Unix.mkdir empty 0o755;
@@ -1021,7 +1023,7 @@ let test_local_release_without_behaviors_is_refused () =
       Alcotest.(check bool)
         ("names prompts/: " ^ why) true
         (contains ~sub:"prompts/" why)
-  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Error (Stage.Retry e | Stage.Suspect e) -> Alcotest.failf "retried: %s" e
   | Ok name -> Alcotest.failf "staged %s from a directory without prompts" name
 
 (* A binary built by a plain `dune build`, with no ui/build to embed, serves only the page saying how
@@ -1046,13 +1048,13 @@ let test_local_release_without_web_ui_is_refused () =
         ("names ci/build.slow.sh: " ^ why)
         true
         (contains ~sub:"ci/build.slow.sh" why)
-  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Error (Stage.Retry e | Stage.Suspect e) -> Alcotest.failf "retried: %s" e
   | Ok name -> Alcotest.failf "staged %s without its web UI" name);
   let behaviors = Filename.concat (temp_dir ()) "behaviors" in
   write (Filename.concat behaviors "prompts/always-on.md") "rule";
   match stage_local ~behaviors node binary with
   | Error (Stage.Refuse _) -> ()
-  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Error (Stage.Retry e | Stage.Suspect e) -> Alcotest.failf "retried: %s" e
   | Ok name -> Alcotest.failf "staged %s with --behaviors" name
 
 let test_holding_skips_release_without_web_ui () =
@@ -1096,7 +1098,7 @@ let test_local_release_restages_other_behaviors () =
   let staged b =
     match stage_local ~behaviors:b node binary with
     | Ok name -> name
-    | Error (Stage.Retry e | Stage.Refuse e) ->
+    | Error (Stage.Retry e | Stage.Suspect e | Stage.Refuse e) ->
         Alcotest.failf "not staged: %s" e
   in
   let first = staged (behaviors "one") in
@@ -1125,6 +1127,7 @@ let test_state_roundtrip () =
             pending_version = v "1.4.0";
             cause = "curl";
             attempts = 2;
+            strikes = 0;
             due_at = 5.;
           };
       first_installed = [ (v "1.2.3", 7.) ];
@@ -1199,6 +1202,103 @@ let test_signer_set_shrink_holds () =
         "a build naming a set not seen before still extends it" 4
         (List.length s.trust.signers)
   | Error e -> Alcotest.fail e
+
+(* A node that adopted a signed signer-set change holds the set its chain leaves: a build naming a
+   larger set it has not seen (an older supervisor's, a release moved back to) never puts a removed
+   signer back. DIG-223 *)
+let test_adopted_set_never_widens () =
+  let path = Filename.concat (temp_dir ()) "update.json" in
+  let s = { (State.initial ()) with trust = trust founders } in
+  let s, a =
+    State.adopt_sets s ~revocations:[]
+      [ signer_set ~by:[ mike; roman; carol ] new_set ]
+  in
+  Alcotest.(check int) "the change is adopted" 1 (List.length a.adopted);
+  Alcotest.(check (list string))
+    "Roman removed" [ "Mike"; "Carol" ] (names s.trust);
+  State.save path { s with build_signers = Some [ Keys.public mike ] };
+  let wider = founders @ [ signer "Carol" carol ] in
+  (match State.load ~build:wider path with
+  | Ok s ->
+      Alcotest.(check (list string))
+        "a build not seen before does not widen it" [ "Mike"; "Carol" ]
+        (names s.trust)
+  | Error e -> Alcotest.fail e);
+  (* An older binary that widened the file on its own load: the next load narrows it again. *)
+  State.save path { s with trust = { s.trust with signers = wider } };
+  match State.load ~build:wider ~reconcile:false path with
+  | Ok s ->
+      Alcotest.(check (list string))
+        "a widened file returns to the chain's set" [ "Mike"; "Carol" ]
+        (names s.trust)
+  | Error e -> Alcotest.fail e
+
+(* The supervisor writes update.json without reconciling the signer set: its binary's build never
+   reaches the file. DIG-223 *)
+let test_unreconciled_load_keeps_the_stored_set () =
+  let path = Filename.concat (temp_dir ()) "update.json" in
+  State.save path
+    { (State.initial ()) with trust = trust [ signer "Mike" mike ] };
+  match State.load ~build:founders ~reconcile:false path with
+  | Ok s ->
+      Alcotest.(check int) "the stored one" 1 (List.length s.trust.signers)
+  | Error e -> Alcotest.fail e
+
+(* Failures that may be the machine are tried again, and the [strike_limit]th refuses. *)
+let test_strikes_refuse_on_the_last () =
+  let s = State.initial () in
+  let s =
+    State.strike s (v "0.2.0") "its self-test failed: timed out" ~now:0.
+  in
+  (match s.pending with
+  | Some p ->
+      Alcotest.(check int) "one strike" 1 p.strikes;
+      Alcotest.(check bool) "after the backoff" true (p.due_at > 0.)
+  | None -> Alcotest.fail "not pending");
+  let s =
+    List.fold_left
+      (fun s _ -> State.strike s (v "0.2.0") "slow" ~now:0.)
+      s
+      (List.init (State.strike_limit - 1) Fun.id)
+  in
+  Alcotest.(check bool) "refused" true (State.is_refused s (v "0.2.0"));
+  Alcotest.(check bool) "nothing pending" true (s.pending = None)
+
+(* Writers on two threads each read, change and write update.json; the lock loses neither's
+   change, and a thread that holds it may take it again. DIG-223 *)
+let test_state_updates_are_serialized () =
+  let path = Filename.concat (temp_dir ()) "update.json" in
+  State.save path (State.initial ());
+  let bump () =
+    ignore
+      (State.update path (fun s ->
+           Thread.yield ();
+           Ok
+             {
+               s with
+               pin = None;
+               refused =
+                 s.refused @ [ { refused_version = v "9.9.9"; why = "x" } ];
+             }))
+  in
+  let threads =
+    List.init 4 (fun _ ->
+        Thread.create
+          (fun () ->
+            for _ = 1 to 10 do
+              bump ()
+            done)
+          ())
+  in
+  List.iter Thread.join threads;
+  Alcotest.(check int)
+    "every change kept" 40
+    (List.length (loaded path).refused);
+  State.with_lock path (fun () -> bump ());
+  Alcotest.(check int) "reentrant" 41 (List.length (loaded path).refused);
+  Alcotest.(check bool)
+    "no temporary file left" false
+    (Sys.file_exists (path ^ ".tmp"))
 
 (* A --key path that does not exist ends sign with one line naming it. *)
 let test_sign_missing_key () =
@@ -1890,7 +1990,56 @@ let test_unhealthy_times_out () =
   Alcotest.(check bool)
     "after the bound of awake time" true
     (sim.wall >= Supervisor.health_bound);
-  Alcotest.(check string) "current moved back" "0.1.0" (current node)
+  Alcotest.(check string) "current moved back" "0.1.0" (current node);
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check bool)
+    "a slow start may be the machine: not refused" false
+    (State.is_refused s (v "0.2.0"));
+  Alcotest.(check (option int))
+    "one strike, tried again after the backoff" (Some 1)
+    (Option.map (fun (p : State.pending) -> p.strikes) s.pending)
+
+(* A release that misses its health bound on every try is the release: the last strike refuses it.
+   DIG-223 *)
+let test_unhealthy_every_try_is_refused () =
+  let node = switched_node () in
+  for i = 1 to State.strike_limit do
+    (if i > 1 then
+       match Trial.begin_ node ~release:"0.2.0" ~version:(v "0.2.0") with
+       | Ok () -> ()
+       | Error e -> Alcotest.fail e);
+    ignore (trial_outcome (sim_ops node (new_sim ())) node);
+    let s = loaded (Schedule.state_path node) in
+    Alcotest.(check bool)
+      (Printf.sprintf "refused after try %d" i)
+      (i = State.strike_limit)
+      (State.is_refused s (v "0.2.0"))
+  done;
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check bool) "nothing pending" true (s.pending = None);
+  Alcotest.(check bool)
+    "the refusal says the machine may be why" true
+    (List.exists
+       (fun (r : State.refused) -> Status.machine_may_be_why r.why)
+       s.refused)
+
+(* A child that exits for its environment (its UI port held) before it reports healthy is rolled
+   back without refusing the release. DIG-223 *)
+let test_environment_exit_on_trial_is_a_strike () =
+  let node = switched_node () in
+  let sim = new_sim () in
+  let outcome =
+    trial_outcome
+      (sim_ops ~exit_at:(Some 2)
+         ~status:(Supervisor.Exited Supervisor.environment_exit) node sim)
+      node
+  in
+  Alcotest.(check bool)
+    "rolled back" true
+    (match outcome with Supervisor.Rolled_back _ -> true | _ -> false);
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check bool) "not refused" false (State.is_refused s (v "0.2.0"));
+  Alcotest.(check bool) "pending" true (s.pending <> None)
 
 (* Three hours of sleep in the window count as one step: health that arrives a few awake minutes
    later still keeps the release. *)
@@ -1984,6 +2133,7 @@ let test_status_problems () =
             pending_version = v "0.3.0";
             cause = "unpacking it took over 60 seconds";
             attempts = 1;
+            strikes = 0;
             due_at = 0.;
           };
     };
@@ -2037,6 +2187,7 @@ let test_unpack_failure_is_retried () =
         true
         (contains ~sub:"unpacking it failed" why)
   | Error (Stage.Refuse why) -> Alcotest.failf "refused: %s" why
+  | Error (Stage.Suspect why) -> Alcotest.failf "suspected: %s" why
   | Ok _ -> Alcotest.fail "staged garbage");
   Alcotest.(check bool) "nothing staged" false (Layout.staged node "0.2.0");
   (* A tar that never finishes (reading a FIFO nobody writes) runs past its bound. *)
@@ -2050,6 +2201,7 @@ let test_unpack_failure_is_retried () =
       Alcotest.(check string)
         "says it took too long" "unpacking it took over 2 seconds" why
   | Error (Stage.Refuse why) -> Alcotest.failf "refused: %s" why
+  | Error (Stage.Suspect why) -> Alcotest.failf "suspected: %s" why
   | Ok () -> Alcotest.fail "a tar reading nothing finished"
 
 (* Try again (DIG-255): the refusal goes, a waiting stage is due now, and the next tick checks. *)
@@ -2080,6 +2232,7 @@ let test_retry_clears_refusal () =
             pending_version = v "0.3.0";
             cause = "unpacking it took over 60 seconds";
             attempts = 3;
+            strikes = 0;
             due_at = 90_000.;
           };
     };
@@ -5958,6 +6111,11 @@ let () =
           t "signer set reaches the build's" test_signer_set_reaches_build;
           t "a signed shrink of the signer set holds"
             test_signer_set_shrink_holds;
+          t "an adopted signer set never widens" test_adopted_set_never_widens;
+          t "an unreconciled load keeps the stored set"
+            test_unreconciled_load_keeps_the_stored_set;
+          t "strikes refuse on the last" test_strikes_refuse_on_the_last;
+          t "state updates are serialized" test_state_updates_are_serialized;
           t "sign names a key file it cannot read" test_sign_missing_key;
           t "verify both signed" test_verify_both;
           t "verify one missing" test_verify_one_missing;
@@ -6052,6 +6210,10 @@ let () =
           t "crash on start rolls back" test_crash_on_start_rolls_back;
           t "healthy is kept" test_healthy_is_kept;
           t "unhealthy times out" test_unhealthy_times_out;
+          t "unhealthy on every try is refused"
+            test_unhealthy_every_try_is_refused;
+          t "an environment exit on trial is a strike"
+            test_environment_exit_on_trial_is_a_strike;
           t "sleep does not roll back" test_sleep_does_not_roll_back;
           t "trial starts are bounded" test_trial_starts_are_bounded;
           t "whole loop" test_supervisor_loop;

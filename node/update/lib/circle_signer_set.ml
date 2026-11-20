@@ -60,6 +60,7 @@ let from_circle ~state_path (node : Node.t) (fold : Fold.t) :
      its signer_set messages are read by Circle_admins. *)
   | _ when Fold.root_admins fold <> None -> Ok []
   | changes ->
+      State.with_lock state_path @@ fun () ->
       let* state = State.load state_path in
       let revocations = Circle_revocation.on_circle fold node in
       let state', a = State.adopt_sets state ~revocations changes in
@@ -85,6 +86,7 @@ let from_circle ~state_path (node : Node.t) (fold : Fold.t) :
 (* Adopt [change] now, as the node that recorded an approval's last signature does before its
    signer_set reaches a relay. *)
 let adopt ~state_path (change : signer_set signed) =
+  State.with_lock state_path @@ fun () ->
   let* state = State.load state_path in
   let state', a = State.adopt_sets state ~revocations:[] [ change ] in
   match (a.adopted, a.refused) with

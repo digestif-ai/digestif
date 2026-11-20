@@ -6,14 +6,15 @@
 
 type entry = { line : string; retry : Version.t option }
 
-(* Whether a refusal may have been this machine rather than the release: a self-test that could not
-   run or ran past its bound on a machine crawling through the night, or an unpack that an older
-   node refused for (Stage.unpack now retries those). Every other refusal is the release's bytes,
+(* Whether a refusal may have been this machine rather than the release: failures that each may
+   have been the machine, on every try (State.strike), a self-test that could not run or ran past
+   its bound, or an unpack, refused by an older node that refused those at once. Every other refusal is the release's bytes,
    which the next release replaces. *)
 let machine_may_be_why why =
-  List.exists
-    (fun prefix -> String.starts_with ~prefix why)
-    [ "its self-test failed: "; "the release archive did not unpack" ]
+  State.struck_out why
+  || List.exists
+       (fun prefix -> String.starts_with ~prefix why)
+       [ "its self-test failed: "; "the release archive did not unpack" ]
 
 let clock at =
   let t = Unix.localtime at in

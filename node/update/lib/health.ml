@@ -1,6 +1,6 @@
-(* The report a running node makes that it is healthy: `digestif run` writes health.json once its
-   first pass has opened the store, synced and started the web UI. The supervisor reads it to end a
-   switch's trial. *)
+(* The report a running node makes that it is healthy: `digestif run` writes health.json once it has
+   started (its store open and initialized, its web UI serving), before its first pass. The
+   supervisor reads it to end a switch's trial. *)
 
 type t = { version : string; pid : int; at : float }
 
