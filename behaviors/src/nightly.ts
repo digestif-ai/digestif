@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
 import { readRecord, type PartialReading, type SourceCause, type SourceProgress } from "./extract.ts";
 import type { Unjudged } from "./sessions.ts";
-import { authorKey, repositoryKey, sourceKey, type End, type Start } from "./record.ts";
+import { authorKey, dateTimeWithOffset, repositoryKey, sourceKey, type End, type Start } from "./record.ts";
 import { modelPiiCheck, modelRulesCheck, runChecks, type ModelCheck } from "./checks.ts";
 import { closeQuestions, type Ask, type OpenQuestion, type QuestionsAccess } from "./closer.ts";
 import type { DenyEntry } from "./deny.ts";
@@ -75,9 +75,15 @@ export function gaveUpDetail(tries: number, step: string, source?: string): stri
   return `gave up after ${tries} tries, the last ended at the ${step} step${source === undefined ? "" : `, in ${source}`}`;
 }
 
-/** The line a note ends with when a source was read in part, so the member knows what it leaves out. */
-export function partialLine(p: PartialReading): string {
-  return `Reading was partial. ${p.source} ran out of ${p.reason === "time" ? "time" : "its reading budget"}, so its oldest sessions are not in this note.`;
+/**
+ * The line a note ends with when a source was read in part, so the member knows what it leaves out:
+ * the source read its newest sessions first, so what is missing is its oldest, how many, and the
+ * last day any of them was active, in the machine's time zone (DIG-214).
+ */
+export function partialLine(p: PartialReading, utcOffsetMinutes?: number): string {
+  const n = p.sessions === 1 ? "its oldest session" : `its ${p.sessions} oldest sessions`;
+  const day = dateTimeWithOffset(p.lastActive, utcOffsetMinutes).slice(0, 10);
+  return `Reading was partial. ${p.source} ran out of ${p.reason === "time" ? "time" : "its reading budget"}, so ${n}, last active ${day} or earlier, ${p.sessions === 1 ? "is" : "are"} not in this note.`;
 }
 
 /**
@@ -404,7 +410,7 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
 
 /** The lines a note ends with for each source read in part. */
 function withPartialLines(text: string, partial: PartialReading[]): string {
-  return partial.length === 0 ? text : `${text.trimEnd()}\n\n${partial.map(partialLine).join("\n")}`;
+  return partial.length === 0 ? text : `${text.trimEnd()}\n\n${partial.map((p) => partialLine(p)).join("\n")}`;
 }
 
 /** Where a note ends, per source, as `digestif note --ends` reads it, written to `file`. */
@@ -658,7 +664,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   const waiting = extracted.read - extracted.items.length;
   await log(`read ${extracted.items.length} items${firstNote ? " for the first note" : ""}${waiting > 0 ? `; ${waiting} wait for the next note` : ""}`);
   for (const f of extracted.failures) await log(`source failed: ${f}`);
-  for (const p of extracted.partial) await log(`reading was partial, ${p.source} ran out of ${p.reason === "time" ? "time" : "its reading budget"}`);
+  for (const p of extracted.partial) await log(`reading was partial, ${p.source} ran out of ${p.reason === "time" ? "time" : "its reading budget"} and left out its ${p.sessions} oldest transcripts`);
   // The note ends with what a partial reading left out, after its checks: the line is the run's own.
   const withPartial = (text: string): string => withPartialLines(text, extracted.partial);
   // Each source is a job of its own: one that failed is its problem, named by its label and never

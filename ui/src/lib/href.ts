@@ -5,8 +5,11 @@ export const href = {
   feed: (): string => '/feed',
   /** A message; a note is approved on its own (ISS-47299), so `version` names the version read. */
   message: (hash: string, version?: string): string => '/feed/' + seg(hash) + (version === undefined ? '' : '?version=' + seg(version)),
-  /** Every message of one Feed thread, oldest first (ISS-85464). */
-  feedThread: (key: string): string => '/feed/threads/' + seg(key),
+  /**
+   * Every message of one Feed thread, oldest first (ISS-85464). [at] is the created_at of its latest
+   * message, so a thread More brought into the Feed is read from there rather than from the newest page (DIG-213).
+   */
+  feedThread: (key: string, at?: string): string => '/feed/threads/' + seg(key) + (at === undefined ? '' : '?at=' + seg(at)),
   /** The form that posts to the whole circle as the person. */
   post: (): string => '/feed/new',
   /** The Inbox: every item the member wrote and every item addressed to them (DES-51007), in the view and From picked (DIG-128). */

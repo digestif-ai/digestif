@@ -8,7 +8,7 @@
 import { execFile, spawn } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AwakeClock, TICK_MS } from "./awake.ts";
@@ -74,9 +74,10 @@ export interface WriterOptions {
   /** Learnings, which the note's writer reads after the rules. */
   learnings?: string;
   /**
-   * Run with the tools the member's harness grants under its own settings, in their home directory,
-   * rather than with none in an empty one: the Inbox agent's run (docs/design.md, The Inbox agent),
-   * like the setup chat. Every other run has no tools.
+   * Run with the harness's shell as its one tool, under the member's own permissions and sandbox,
+   * rather than with none: the Inbox agent's filing run (docs/design.md, The Inbox agent), which runs
+   * the one command that files work. No file, web, MCP or sub-agent tool is offered, and the run
+   * starts in an empty directory like every other. Every other run has no tools.
    */
   tools?: boolean;
 }
@@ -139,9 +140,12 @@ export function buildSystemPrompt(template: string, brief: string, rules: string
   return template.replace(/\{\{(always_on_rules|brief|default_rules|rules|learnings)\}\}/g, (_, k: string) => values[k] ?? "");
 }
 
+/** The filing run's one built-in tool: the shell that runs the command filing work. */
+export const FILING_TOOLS = "Bash";
+
 /**
- * The harness's flags: print mode, no tools, no saved session, a budget, the system prompt.
- * `--tools ""` empties only the built-in set; `--strict-mcp-config` with no `--mcp-config` loads no
+ * The harness's flags: print mode, no tools (the filing run's FILING_TOOLS alone), no saved session,
+ * a budget, the system prompt. `--tools` names the whole built-in set; `--strict-mcp-config` with no `--mcp-config` loads no
  * MCP server, so the member's configured servers add no tools either. The output is streamed, one
  * JSON event a line with the partial messages, so silence means a hang; the answer is the last
  * `result` event's `result`.
@@ -149,7 +153,9 @@ export function buildSystemPrompt(template: string, brief: string, rules: string
 export function harnessArgs(systemPrompt: string, maxBudgetUsd: number, tools = false): string[] {
   return [
     "-p",
-    ...(tools ? [] : ["--tools", "", "--strict-mcp-config"]),
+    "--tools",
+    tools ? FILING_TOOLS : "",
+    "--strict-mcp-config",
     "--no-session-persistence",
     "--output-format",
     "stream-json",
@@ -186,6 +192,9 @@ export const CODEX_TOOL_FEATURES = [
   "image_generation",
   "view_image",
 ];
+
+/** The Codex features the filing run keeps: the shell that runs the command filing work. */
+export const CODEX_FILING_FEATURES = ["shell_tool", "unified_exec"];
 
 /**
  * The model catalog fields that add tools no feature switch removes: code mode's `exec` and `wait`
@@ -228,21 +237,20 @@ export function codexCatalog(json: string): string | undefined {
  * says), no MCP server, no web search and no question to the user (`request_user_input`, which no
  * feature switch removes). With `catalog`, the path of a
  * codexCatalog file, the model offers no code mode and no sub-agents either, so the request carries
- * no tool at all. The system prompt is its developer instructions, a TOML string; the digest is the
+ * no tool at all. The filing run (`tools`) keeps CODEX_FILING_FEATURES and the member's own sandbox
+ * and approvals, and loses everything else. The system prompt is its developer instructions, a TOML string; the digest is the
  * prompt, read from stdin (`-`).
  */
 export function codexArgs(systemPrompt: string, catalog?: string, tools = false): string[] {
-  // With the harness's own tools: one non-interactive run saving no session, under the member's own
-  // Codex configuration, its sandbox and approvals included.
-  if (tools) return ["exec", "--skip-git-repo-check", "--ephemeral", "--json", "-c", `developer_instructions=${JSON.stringify(systemPrompt)}`, "-"];
+  // The filing run keeps the shell under the member's own sandbox and approvals, and nothing else.
+  const off = tools ? CODEX_TOOL_FEATURES.filter((f) => !CODEX_FILING_FEATURES.includes(f)) : CODEX_TOOL_FEATURES;
   return [
     "exec",
     "--skip-git-repo-check",
     "--ephemeral",
-    "--sandbox",
-    "read-only",
+    ...(tools ? [] : ["--sandbox", "read-only"]),
     "--json",
-    ...CODEX_TOOL_FEATURES.flatMap((f) => ["-c", `features.${f}=false`]),
+    ...off.flatMap((f) => ["-c", `features.${f}=false`]),
     "-c",
     "agents.enabled=false",
     "-c",
@@ -462,21 +470,21 @@ export type HarnessOptions = Pick<WriterOptions, "harness" | "agent" | "quietMs"
 
 /**
  * One run of the harness, the system prompt and the user message given: the writer's and each
- * model check's (src/checks.ts) with no tools, in an empty directory; the Inbox agent's with the
- * harness's own (`tools`), in the member's home directory. The answer is the run's text, trimmed;
+ * model check's (src/checks.ts) with no tools, and the Inbox agent's filing run with the shell
+ * alone (`tools`), each in an empty directory. The answer is the run's text, trimmed;
  * an empty one is "empty".
  */
 export async function askHarness(system: string, input: string, options: HarnessOptions = {}): Promise<WriteResult> {
   const tools = options.tools === true;
   const empty = await mkdtemp(join(tmpdir(), "digestif-writer-"));
-  const cwd = tools ? homedir() : empty;
+  const cwd = empty;
   // The catalog sits beside the run's directory, never in it: the harness starts in an empty one.
   let catalogDir: string | undefined;
   try {
     const quietMs = options.quietMs ?? DEFAULT_QUIET_MS;
     const harness = options.harness ?? "claude";
     const agent = options.agent ?? agentOf(harness);
-    if (agent === "codex" && !tools) catalogDirs.add((catalogDir = await mkdtemp(join(tmpdir(), "digestif-codex-catalog-"))));
+    if (agent === "codex") catalogDirs.add((catalogDir = await mkdtemp(join(tmpdir(), "digestif-codex-catalog-"))));
     const catalog = catalogDir === undefined ? undefined : await writeCodexCatalog(harness, catalogDir);
     const cmd = harnessCommand(agent, system, input, options.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD, catalog, tools);
     const r = await run(harness, cmd.args, cmd.stdin, cwd, quietMs, options.now ?? Date.now);

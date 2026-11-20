@@ -19,6 +19,7 @@ import { circleEpoch, foldLog, keyJson, loadKeys } from "../src/db.ts";
 import { releaseSignersOf } from "../src/signers.ts";
 import { DEFAULT_LIMITS } from "../src/env.ts";
 import { confirmLink } from "../src/links.ts";
+import { mailIdempotencyKey } from "../src/mail.ts";
 import { countRows, dumpTables, FakeResend, Node, RELAY, type ChoiceSpec, type Digest } from "./helpers.ts";
 
 const resend = new FakeResend();
@@ -170,6 +171,7 @@ describe("POST /v0/mail", () => {
     expect(resend.sent).toHaveLength(1);
     const mail = resend.sent[0]!;
     expect(mail.authorization).toBe(`Bearer ${env.RESEND_API_KEY}`);
+    expect(mail.idempotencyKey).toBe(mailIdempotencyKey(digest.hash));
     expect(mail.body.from).toBe("Digestif <digest@mail.digestif.io>");
     expect(mail.body.to).toEqual(["mike@example.com"]);
     expect(mail.body.subject).toBe("Digestif, October 29");
@@ -205,10 +207,42 @@ describe("POST /v0/mail", () => {
     expect(failed.status).toBe(502);
     expect(failed.body).toMatchObject({ code: "mail_failed" });
     expect(await countRows(env.DB, "mailed_digests", "digest = ?", digest.hash)).toBe(0);
+    expect(await countRows(env.DB, "mail_claims", "digest = ?", digest.hash)).toBe(0);
     expect(await countRows(env.DB, "links", "digest = ?", digest.hash)).toBe(0);
     const retried = await post(mike, body);
     expect(retried.status).toBe(202);
     expect(await countRows(env.DB, "links", "digest = ?", digest.hash)).toBe(2);
+  });
+
+  it("takes over the lease of a send whose Worker died, under the same idempotency key", async () => {
+    const item = await node.choice(BEHAVIOR);
+    const digest = await node.digest([{ hash: item, spec: BEHAVIOR }], { mailKey });
+    // What a Worker that died after taking its lease and before Resend answered leaves behind.
+    const expired = new Date(Date.now() - 1000).toISOString();
+    await env.DB.prepare("INSERT INTO mail_claims (digest, holder, claimed_until) VALUES (?, ?, ?)").bind(digest.hash, "dead-worker", expired).run();
+    const before = resend.sent.length;
+    const sent = await post(mike, await node.mailRequest(digest));
+    expect(sent.status, sent.text).toBe(202);
+    expect(sent.body).toEqual({ status: "sent", digest: digest.hash });
+    expect(resend.sent).toHaveLength(before + 1);
+    expect(resend.sent.at(-1)!.idempotencyKey).toBe(mailIdempotencyKey(digest.hash));
+    expect(await countRows(env.DB, "mailed_digests", "digest = ?", digest.hash)).toBe(1);
+    expect(await countRows(env.DB, "mail_claims", "digest = ?", digest.hash)).toBe(0);
+    expect(await countRows(env.DB, "links", "digest = ?", digest.hash)).toBe(2);
+  });
+
+  it("mails nothing and records nothing while another send holds a live lease", async () => {
+    const item = await node.choice(BEHAVIOR);
+    const digest = await node.digest([{ hash: item, spec: BEHAVIOR }], { mailKey });
+    const live = new Date(Date.now() + 60_000).toISOString();
+    await env.DB.prepare("INSERT INTO mail_claims (digest, holder, claimed_until) VALUES (?, ?, ?)").bind(digest.hash, "live-worker", live).run();
+    const before = resend.sent.length;
+    const busy = await post(mike, await node.mailRequest(digest));
+    expect(busy.status).toBe(503);
+    expect(busy.body).toMatchObject({ code: "mail_failed" });
+    expect(resend.sent).toHaveLength(before);
+    expect(await countRows(env.DB, "mailed_digests", "digest = ?", digest.hash)).toBe(0);
+    expect(await env.DB.prepare("SELECT holder FROM mail_claims WHERE digest = ?").bind(digest.hash).first("holder")).toBe("live-worker");
   });
 });
 

@@ -1011,7 +1011,7 @@ let stage_test_cmd =
         | Ok name ->
             Printf.printf "%s staged as %s in %s\n" archive name dir;
             0
-        | Error (Stage.Retry e | Stage.Refuse e) ->
+        | Error (Stage.Retry e | Stage.Suspect e | Stage.Refuse e) ->
             exit_err (archive ^ " would not stage: " ^ e))
   in
   Cmd.v

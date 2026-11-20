@@ -1901,6 +1901,105 @@ let held_reason_column () =
 
 (* ISS-42119: the feed, a member's recent list and a message's replies read one page out of the log,
    and answer exactly what reading every message and filtering it did. *)
+(* DIG-225: a Feed thread, an Inbox thread and the member this node is are read by their key on the
+   node, so a thread older than the Feed's first page still shows and nothing scans the circle. *)
+let threads_by_key () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let hashes j = List.map (s "hash") (list j) in
+  let feed = list (snd (call "feed?limit=200")) in
+  let by_preview p = List.find (fun i -> contains (s "preview" i) p) feed in
+  let ben_note = s "hash" (by_preview "a retry queue for the importer") in
+  let ben_waiting =
+    s "hash"
+      (List.find
+         (fun i ->
+           s "status_note" i = "waiting_for_approval"
+           && s "name" (member "author" i) = "Ben Ortiz")
+         feed)
+  in
+  let thread key = call ("feed/threads/" ^ enc key) in
+  let st, ben = thread ben_note in
+  Alcotest.(check int) "a note's thread" 200 st;
+  Alcotest.(check (list string))
+    "the wait it ends, then the note, oldest first" [ ben_waiting; ben_note ]
+    (hashes ben);
+  Alcotest.(check string)
+    "rows carry the Feed's status note" "waiting_for_approval"
+    (s "status_note" (List.hd (list ben)));
+  Alcotest.(check (list string))
+    "the wait's key reads the note that settled it" [ ben_waiting; ben_note ]
+    (hashes (snd (thread ben_waiting)));
+  let question =
+    s "hash"
+      (by_preview
+         "Has anyone tried a fake clock for timer tests? Ben is stuck on the \
+          same thing.")
+  in
+  let _, answer =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String "Yes, a fake clock works.");
+             ("reply_to", `String question);
+           ])
+      "messages"
+  in
+  let _, deeper =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String "And a frozen one for the CI runner.");
+             ("reply_to", `String (s "hash" answer));
+           ])
+      "messages"
+  in
+  let _, q = thread question in
+  Alcotest.(check string) "the note first" question (List.hd (hashes q));
+  Alcotest.(check bool)
+    "every reply under it, a reply's reply and the refused one too" true
+    (List.length (list q) = 4
+    && List.mem (s "hash" answer) (hashes q)
+    && List.mem (s "hash" deeper) (hashes q));
+  Alcotest.(check (list string))
+    "a reply's key reads its note's thread" (hashes q)
+    (hashes (snd (thread (s "hash" deeper))));
+  (* Sixty posts push the question off the Feed's first page; its thread still reads whole. *)
+  for i = 1 to 60 do
+    ignore
+      (call ~meth:"POST"
+         ~body:(`Assoc [ ("text", `String (Printf.sprintf "Post %d." i)) ])
+         "messages")
+  done;
+  Alcotest.(check bool)
+    "off the first page" false
+    (List.mem question (hashes (snd (call "feed?limit=50"))));
+  Alcotest.(check (list string))
+    "an old thread reads the same" (hashes q)
+    (hashes (snd (thread question)));
+  Alcotest.(check int)
+    "a key with nothing under it" 404
+    (fst (thread "sha256:00"));
+  (* Who-am-I: one member, the one Members marks as this node's. *)
+  let st, self = call "members/self" in
+  Alcotest.(check int) "self" 200 st;
+  Alcotest.(check bool) "is_self" true (member "is_self" self = `Bool true);
+  Alcotest.(check string)
+    "the member Members marks" (s "identity" self)
+    (s "identity"
+       (List.find
+          (fun m -> member "is_self" m = `Bool true)
+          (list (snd (call "members")))));
+  Alcotest.(check bool)
+    "with its devices, for Phones" true
+    (list (member "devices" self) <> []);
+  Alcotest.(check int)
+    "an Inbox thread with no item" 0
+    (List.length (list (snd (call "items/threads/nothing"))))
+
 let feed_pages () =
   let n = demo () in
   let c = session n in
@@ -3057,6 +3156,60 @@ let behavior_stopped_first_note () =
   Alcotest.(check bool)
     "handed over: not run again" false
     (Behaviors.first_note_due n.log ~now:(now +. 120.))
+
+(* A run asked for now that cannot start is refused, and one that comes to be unable to start
+   lapses at the next pass: it neither keeps the daemon passing every few seconds nor fires later,
+   unasked, once what held it clears. DIG-212 *)
+let behavior_run_now_lapses () =
+  let n = behavior_node () in
+  ok (Behaviors.set_executable n.log Nightly (script n.dir "exec sleep 30\n"));
+  let c = session n in
+  let now = Unix.gettimeofday () in
+  Log.set_config n.log Behaviors.k_armed_since (Printf.sprintf "%.0f" now);
+  Behaviors.handle_date n.log (Behaviors.local_date now);
+  Alcotest.(check bool) "nothing owed" false (Behaviors.nightly_due n.log ~now);
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
+  let run_now () =
+    let status, e = call n c ~meth:"POST" "notes/runs" in
+    (status, if status = 202 then "" else s "code" (List.hd (list e)))
+  in
+  let requested () = Store.nightly_run_requested n.log in
+  let lapses why =
+    Store.request_nightly_run n.log;
+    Alcotest.(check bool)
+      (why ^ ": the daemon does not pass for it")
+      false
+      (Behaviors.nightly_run_wanted t);
+    Alcotest.(check bool)
+      (why ^ ": nothing runs") true
+      (Behaviors.after_pass ~now t ~stored:0 = []);
+    Alcotest.(check bool) (why ^ ": the request lapses") false (requested ())
+  in
+  let id = ok (Api.submit_note_text n "Worked on: the fetcher.") in
+  Alcotest.(check (pair int string))
+    "a note waits: refused" (422, "note_waiting") (run_now ());
+  Alcotest.(check bool) "not asked for" false (requested ());
+  lapses "a note waits";
+  Alcotest.(check bool) "dismissed" true (Store.Notes.dismiss n.log ~note_id:id);
+  Store.Stages.set n.log "paused";
+  Alcotest.(check (pair int string))
+    "paused: refused" (422, "paused") (run_now ());
+  lapses "paused";
+  Store.Stages.set n.log "active";
+  Alcotest.(check (pair int string)) "accepted" (202, "") (run_now ());
+  Alcotest.(check bool)
+    "the daemon passes for it" true
+    (Behaviors.nightly_run_wanted t);
+  Alcotest.(check bool)
+    "the pass runs it" true
+    (Behaviors.after_pass ~now t ~stored:0 |> List.map fst = [ Nightly ]);
+  Alcotest.(check bool) "started: no longer asked for" false (requested ());
+  Alcotest.(check (pair int string))
+    "a run is writing: refused" (422, "running") (run_now ());
+  lapses "a run is writing";
+  let pid = (List.hd t.Behaviors.running).pid in
+  Behaviors.stop_all t;
+  ignore (Unix.waitpid [] pid)
 
 (* A note is written once and waits: while one waits, note time writes nothing. An edit's checks
    are the check hook's, the nightly behavior's own program run with DIGESTIF_HOOK=check, handed
@@ -7834,6 +7987,39 @@ let question ?(kind = "question") ?(options = []) ?default ?deadline title :
     link = None;
   }
 
+(* DIG-219: the Inbox's index reads past its watermark, and still opens an item whose body arrives
+   after a pass read past it, and one at a local order a removed envelope held. *)
+let inbox_index_mark () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let titles () = List.map (s "title") (list (snd (call "items"))) in
+  let has t = List.mem t (titles ()) in
+  ignore (peer_item n pia (question "First?"));
+  Alcotest.(check bool) "an item that arrived" true (has "First?");
+  let late, _ =
+    peer_sign n pia "item" (peer_item_body pia ~to_:`Circle (question "Late?"))
+  in
+  ignore (ok (Node.import n { late with body = None }));
+  ignore (peer_item n pia (question "After?"));
+  Alcotest.(check (pair bool bool))
+    "read past the one without its body" (true, false)
+    (has "After?", has "Late?");
+  ignore (ok (Node.import n late));
+  Alcotest.(check bool) "opened once its body arrives" true (has "Late?");
+  let newest = Store.Stages.newest_order n.log in
+  let prev = pia.p_prev in
+  let last = peer_item n pia (question "Removed?") in
+  Log.delete n.log last;
+  pia.p_seq <- pia.p_seq - 1;
+  pia.p_prev <- prev;
+  let again = peer_item n pia (question "Again?") in
+  Alcotest.(check bool)
+    "a removed envelope's order is not given again" true
+    ((Option.get (Log.find n.log again)).local_order > newest + 1);
+  Alcotest.(check bool) "read after a removal" true (has "Again?")
+
 (* DIG-179: the count beside Inbox is one for each bold row, and the Inbox lists threads: every
    item about one message is one row, bold while any of them is Draft or New. *)
 let inbox_count_threads () =
@@ -7859,7 +8045,22 @@ let inbox_count_threads () =
   Alcotest.(check int)
     "a thread with nothing unread is not counted" 2 (count ());
   add ~about:"sha256:other" "unread-2";
-  Alcotest.(check int) "one unread item makes its thread count" 3 (count ())
+  Alcotest.(check int) "one unread item makes its thread count" 3 (count ());
+  (* DIG-225: a thread is read by its key, oldest first, the Archive included. *)
+  Store.Items.archive log "adopt-2" ~at;
+  let thread key =
+    List.map
+      (fun (r : Store.Items.row) -> r.id)
+      (Store.Items.thread log ~now:(Unix.gettimeofday ()) ~me key)
+  in
+  Alcotest.(check (list string))
+    "every item about the note, the archived one too"
+    [ "adopt-1"; "adopt-2"; "adopt-3"; "adopt-4" ]
+    (thread "sha256:idea");
+  Alcotest.(check (list string))
+    "an item about nothing is its own key" [ "alone" ] (thread "alone");
+  Alcotest.(check (list string))
+    "an item about a note is not under its own id" [] (thread "adopt-1")
 
 let envelopes_of n kind = List.length (Log.of_kind n.Node.log kind)
 
@@ -11143,17 +11344,32 @@ let inbox_suggestion () =
   Alcotest.(check bool)
     "open while Pia judges" false
     (member "closed" row = `Bool true);
-  ignore
-    (peer_write n pia "summary"
-       (Content.summary_body ~text:"Short too." ~voice:"agent"
-          ~prompt:(Suggestions.prompt_id pias_prompt)
-          ~suggestion:theirs ()));
+  (* DIG-221: Pia's pick is indexed as her summary arrives: held first without its body, it picks
+     nothing; once its body arrives it decides the round; retracted, the round is open again. *)
+  let sg, pias_pick =
+    peer_sign n pia "summary"
+      (Content.summary_body ~text:"Short too." ~voice:"agent"
+         ~prompt:(Suggestions.prompt_id pias_prompt)
+         ~suggestion:theirs ())
+  in
+  ignore (ok (Node.import n { sg with body = None }));
+  let _, sg_row = call ("suggestions/" ^ theirs) in
+  Alcotest.(check string)
+    "a summary without its body picks nothing" "judging" (s "status" sg_row);
+  ignore (ok (Node.import n sg));
   let _, row = call ("items/" ^ theirs) in
   Alcotest.(check (pair bool string))
     "the round adopts it and closes the choice" (true, "closed")
     (member "closed" row = `Bool true, s "done" row);
-  let _, sg = call ("suggestions/" ^ theirs) in
-  Alcotest.(check string) "adopted" "adopted" (s "status" sg)
+  let _, sg_row = call ("suggestions/" ^ theirs) in
+  Alcotest.(check string) "adopted" "adopted" (s "status" sg_row);
+  let retract =
+    peer_write n pia "retract" (Bodies.make_retract ~target:pias_pick)
+  in
+  Log.drop_body n.log ~hash:pias_pick ~retracted_by:retract;
+  let _, sg_row = call ("suggestions/" ^ theirs) in
+  Alcotest.(check string)
+    "a retracted pick leaves the round open" "judging" (s "status" sg_row)
 
 (* ISS-52834: an Inbox read on another request's thread that lands between a send's sign and its
    stamp indexes the member's new envelope as a row of its own. on_write fires inside that window,
@@ -14286,6 +14502,7 @@ let () =
           Alcotest.test_case "note log passages" `Quick note_log_passages;
           Alcotest.test_case "held reason column" `Quick held_reason_column;
           Alcotest.test_case "feed pages" `Quick feed_pages;
+          Alcotest.test_case "threads and self by key" `Quick threads_by_key;
           Alcotest.test_case "reply_to backfill" `Quick reply_to_backfill;
           Alcotest.test_case "post deny layer" `Quick post_deny;
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
@@ -14293,6 +14510,8 @@ let () =
           Alcotest.test_case "sync health" `Quick sync_health;
           Alcotest.test_case "the Inbox count is one per thread" `Quick
             inbox_count_threads;
+          Alcotest.test_case "inbox: the index's watermark" `Quick
+            inbox_index_mark;
           Alcotest.test_case "a check that cannot finish" `Quick
             check_could_not_finish;
           Alcotest.test_case "command sources" `Quick command_sources;
@@ -14388,6 +14607,7 @@ let () =
             behavior_read_settle;
           Alcotest.test_case "first note stopped" `Quick
             behavior_stopped_first_note;
+          Alcotest.test_case "run now lapses" `Quick behavior_run_now_lapses;
           Alcotest.test_case "check" `Quick behavior_check;
           Alcotest.test_case "revise" `Quick behavior_revise;
         ] );

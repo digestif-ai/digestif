@@ -27,8 +27,11 @@ contain.
   so a channel replaying an old release cannot roll a node back. Moving back to the last healthy
   release on the node's own disk after a failed switch (below) is not a downgrade: nothing is
   fetched for it.
-- **Refused for good.** A release whose self-test failed, or that was rolled back after a switch,
-  is recorded in `update.json` and never chosen again; a newer release is. `digestif update retry
+- **Refused for good.** A release whose self-test answered no, or that crashed after a switch, is
+  recorded in `update.json` and never chosen again; a newer release is. A failure that may be the
+  machine rather than the release (a self-test past its bound, a trial that did not report healthy
+  in time or exited for its environment) is a strike: the node tries again after the backoff and
+  refuses the version only on its third. `digestif update retry
   0.4.1`, or Try again on the Feed line, forgets one refusal (or ends a pending stage's backoff) and
   makes the next pass due at once, for a refusal a person judges was the machine.
 - **Pinning.** `digestif update pin 0.4.1` makes the node install exactly that version and nothing
@@ -163,8 +166,9 @@ is built from (Cutting a release, What's new), written only by `ci/release.sh ch
 only by the Release workflow. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
 
 `candidate/` is a feed of its own, holding the one version on its way to the test nodes: its
-`index.json` names that version and the channel's revocations. Nodes never read it unless pointed at
-it with `--feed`, which is what a test node does. `ci/release.sh candidate` writes it, after
+`index.json` names that version and the channel's revocations and signer-set changes, so a test node
+whose build predates a change follows the chain to the set that signed the candidate. Nodes never
+read it unless pointed at it with `--feed`, which is what a test node does. `ci/release.sh candidate` writes it, after
 checking again that every signer signed (below), and `publish` moves the version out of it into the
 root and its `index.json` in one commit.
 
@@ -240,6 +244,22 @@ parse to, and `approve` refuses an admission or a signer set whose bytes are not
 of it. Every reader, the node's and the relay's alike, refuses a document holding an object member
 twice, which OCaml would read the first of and `JSON.parse` the last of.
 
+No signed document carries an expiry, and no reader checks one. What an expiry would bound is
+bounded by the document's own rule instead:
+
+- **A release manifest** (node or relay) cannot be replayed to move a node back, because a node
+  takes only a version newer than the one it last ran healthy, never takes a refused version
+  again, and never takes a recalled one (A recall). A channel that serves an old manifest in
+  place of a newer one is withholding, which halts updates and does nothing else (The rule). An
+  expiry would add one thing, a node that notices it is being withheld from, at the cost of both
+  signers re-signing every live version on a schedule and every node halting when either is away.
+- **A signer-set change** is a link in a chain a node folds in order, each checked against the set
+  before it; an expired link would strand every node behind it.
+- **A revocation and a recall** must never lapse: an expired revocation would let a stolen key sign
+  again, and an expired recall would offer the bad version again.
+- **An approval** (an admission or a signer-set change being signed) is the one that ends on time:
+  one decline, or seven days without the last signature, ends it (Approvals).
+
 ## When a node updates
 
 `digestif run` reads the channel once a day, when the machine wakes (at most hourly on wakes), an
@@ -278,7 +298,17 @@ symlinks choose among them (`node/update/lib/layout.ml`):
 - `current`: the release the service runs;
 - `good`: the last release that reported healthy.
 
-Older releases stay on disk. The behaviors run with the release's own Node.js, by its path:
+Each release carries its own Node.js, so a node does not keep them all. Once a switch is kept (the
+new release reported healthy and `good` moved to it), the supervisor deletes every complete release
+except `current`, `good`, the release the switch came from (the one a recall or a crash moves back
+to), the release its own binary runs from, and any release newer than the one it kept, which an
+update pass staged on its way to a trial of its own (`node/update/lib/prune.ml`). A directory being
+staged, self-tested or deleted (its name starts with a dot) and one without its `.release.json` are
+left alone. A release is renamed to a dot-prefixed name before it is deleted, so a deletion cut
+short never leaves one that looks complete; the next kept switch finishes it. A
+rollback deletes nothing, and neither does a recall or a move back for crashing.
+
+The behaviors run with the release's own Node.js, by its path:
 `behaviors/bin/nightly-hook` runs `nightly.ts`, and `behaviors/bin/read-hook` runs `read.ts`, with `runtime/bin/node` beside `behaviors/`, never a
 `node` found on `PATH`, so a member's machine needs no Node.js of its own. A release staged from a
 checkout (`digestif service install --behaviors`) carries no runtime and runs the `node` on `PATH`.
@@ -319,8 +349,10 @@ A pass that chooses a release stages it before anything the node runs changes
 
 A failure leaves `current` alone. A download, an unpack, a write or a checkout's missing Node.js is kept in
 `update.json` as pending with its cause, and tried again after a backoff (ten minutes, doubling, at
-most a day). A self-test that fails or hangs, or an archive without the binary or a runtime that
-runs, refuses that version for good.
+most a day). A self-test that runs past its bound or cannot be started may be the machine as much as
+the release: it is kept as pending the same way and counts a strike, and the third strike refuses the
+version. A self-test that answers no, or an archive without the binary or a runtime that runs,
+refuses that version for good.
 
 ## Switching
 
@@ -342,18 +374,30 @@ To switch, the pass records a trial in `update-trial.json` (the new release, and
 names to move back to), points `current` at the new release, and exits. The supervisor starts the
 new release and watches it:
 
-- `digestif run` writes `health.json` (its version and pid) once its first pass has opened the
-  store, synced and started the web UI. The new release is then kept: `good` moves to it,
+- `digestif run` writes `health.json` (its version and pid) once it has started: its store open and
+  initialized and its web UI serving, before its first pass, whose length grows with the node's
+  history and says nothing about whether the release runs. The new release is then kept: `good` moves to it,
   `installed` in `update.json` is saved, and the digest says "Updated Digestif to <version>."
   `installed` is never saved before this.
-- If the child exits before it reports healthy, or has not reported healthy after ten minutes of
-  awake time, the supervisor stops it, points `current` back at the release `good` names, refuses
-  the version for good, says so in the digest, and runs the previous release again.
+- If the child crashes before it reports healthy, the supervisor points `current` back at the
+  release `good` names, refuses the version for good, says so in the digest, and runs the previous
+  release again.
+- If it has not reported healthy after ten minutes of awake time, or exits for its environment (its
+  UI port held) or because it was stopped, the supervisor stops it and moves back the same way, but
+  the version counts a strike instead: it is tried again after the backoff, and the third strike
+  refuses it.
 - Awake time is counted in one-second steps: a step that took far longer than a second spanned the
   machine sleeping and counts as one second, so a laptop closed during the window does not use it
   up.
 - A trial that three supervisor starts did not finish (the machine restarting mid-trial) is rolled
-  back the same way.
+  back with a strike.
+- The supervisor writes `update.json` as stored: it never reconciles the signer set with its own
+  build's, since its binary is the oldest the node runs. A node that adopted a signed signer-set
+  change holds the set the last change names: no build's set widens it, a file an older binary
+  widened returns to that set on the next load, and every later signer reaches it as a signed change.
+  Every write of `update.json` is synced to disk and every read-modify-write holds a lock
+  (`update.json.lock`), so the pass, the web UI, the supervisor and a person's `digestif update`
+  never lose each other's change.
 
 The recovery runs in the supervisor and not in `digestif run`, because a release that crashes on
 start cannot run code to fix itself, and the supervisor is always a release that was healthy. A new
@@ -910,7 +954,8 @@ settings, cuts nothing), every module outside `relay/src` the Worker bundles, th
 change cuts both lines), and the scripts that build the bundle.
 
 **The build.** Pushing a relay tag starts `.github/workflows/relay-release.yml`, which refuses a tag
-that is not `relay-v<MAJOR.MINOR.PATCH>` on `main` or whose release is published, then:
+that is not `relay-v<MAJOR.MINOR.PATCH>` on `main` or whose release is published, then, with a
+read-only token while every dependency's install scripts run:
 
 1. refuses a migration that is not additive (`ci/relay-migrations.sh`: a `DROP` or `RENAME` in a
    migration the previous relay version did not carry, or a change to one it did), since a
@@ -927,8 +972,9 @@ that is not `relay-v<MAJOR.MINOR.PATCH>` on `main` or whose release is published
    the notes (the tag's message, or the titles of the commits since the previous relay version
    that touched a relay release path) and `compatible_with` the previous relay version (its own
    version for the first);
-6. leaves a **draft** GitHub release `relay-v<version>` holding the bundle and the manifest, created
-   and edited with `--latest=false`. It is never Latest: Latest is the node line, which the hosted
+6. in a second job, `publish`, that installs nothing and runs no code from the tree, attests the
+   bundle and the manifest and leaves a **draft** GitHub release `relay-v<version>` holding them,
+   created and edited with `--latest=false`. It is never Latest: Latest is the node line, which the hosted
    install script and `gh release download` with no tag read. Running it again on the same tag
    replaces the draft's files and drops any signature beside them.
 

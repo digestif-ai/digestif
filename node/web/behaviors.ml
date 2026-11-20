@@ -773,6 +773,22 @@ let wait_all ?(clock = Unix.gettimeofday) t =
 let read_due (log : Log.t) ~own =
   Store.Stages.active log && Store.Stages.unread log ~own
 
+(* Whether the nightly run could start on this pass, due or asked for. *)
+let nightly_can_start t =
+  let log = t.node.log in
+  Store.Stages.stage log <> "paused"
+  && Store.Notes.waiting log = []
+  && executable log Nightly <> None
+  && (not (is_running t Nightly))
+  && not (is_running t Revise)
+
+(* A run asked for now that can start: the node passes at once for it (the daemon's loop), and on
+   nothing else the request says. A request the run cannot start for (Store.nightly_run_refusal)
+   lapses at the next pass rather than firing once that clears; one waiting only on the agent's
+   program or a revise run stays asked for. DIG-212 *)
+let nightly_run_wanted t =
+  Store.nightly_run_requested t.node.log && nightly_can_start t
+
 (* What a pass of `digestif run` spawns: the nightly behavior when it is due and no note waits (a
    note is written once and waits, and while it waits note time writes nothing), the revise
    behavior when the waiting note's source retry is due (revise_due), the check behavior
@@ -782,15 +798,13 @@ let read_due (log : Log.t) ~own =
    most once at a time. *)
 let after_pass ?(now = Unix.gettimeofday ()) t ~stored:_ =
   let log = t.node.log in
-  let nightly =
-    (Store.nightly_run_requested log || nightly_due log ~now)
-    && Store.Stages.stage log <> "paused"
-    && Store.Notes.waiting log = []
-    && executable log Nightly <> None
-    && (not (is_running t Nightly))
-    && not (is_running t Revise)
-  in
-  if nightly then Store.clear_nightly_run log;
+  let requested = Store.nightly_run_requested log in
+  let nightly = (requested || nightly_due log ~now) && nightly_can_start t in
+  if
+    nightly
+    || requested
+       && (is_running t Nightly || Store.nightly_run_refusal log <> None)
+  then Store.clear_nightly_run log;
   (* DIG-133: while today's note waits, its source retry, one run at a time beside the nightly. *)
   let revise =
     if

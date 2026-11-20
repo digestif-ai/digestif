@@ -349,31 +349,55 @@ let record_of_json j =
       approved;
     }
 
-let of_json = function
+(* The records that parse, and every item that does not, exactly as the file holds it. *)
+let partition_json = function
   | `List items ->
-      let records = List.filter_map record_of_json items in
-      if List.length records = List.length items then Ok records
-      else Error "a ledger record does not parse"
+      Ok
+        (List.fold_right
+           (fun j (records, unreadable) ->
+             match record_of_json j with
+             | Some r -> (r :: records, unreadable)
+             | None -> (records, j :: unreadable))
+           items ([], []))
   | _ -> Error "the ledger is a list"
+
+let of_json j =
+  match partition_json j with
+  | Ok (records, []) -> Ok records
+  | Ok (_, _ :: _) -> Error "a ledger record does not parse"
+  | Error e -> Error e
 
 (* The ledger file beside the node's log. A node that never sent an invite has none. *)
 let file dir = Filename.concat dir "invites.json"
 
-let load dir =
+let read_json dir ~parse =
   let p = file dir in
-  if not (Sys.file_exists p) then Ok []
+  if not (Sys.file_exists p) then parse (`List [])
   else
     match Yojson.Safe.from_file p with
-    | j -> of_json j
+    | j -> Result.map_error (fun e -> p ^ ": " ^ e) (parse j)
     | exception (Yojson.Json_error m | Sys_error m) -> Error (p ^ ": " ^ m)
 
-(* Written to a temporary file and renamed over the old one, so a crash leaves one or the other. *)
-let save dir ledger =
+(* The whole ledger, refused when any record does not parse: the commands that change one record
+   and save the rest. *)
+let load dir = read_json dir ~parse:of_json
+
+(* The ledger as the join watcher reads it on every sync: the records that parse, and the items
+   that do not, kept as written so a [save ~keep] writes them back untouched. An Error is a file
+   that is not a ledger at all. *)
+let load_readable dir = read_json dir ~parse:partition_json
+
+(* Written to a temporary file and renamed over the old one, so a crash leaves one or the other.
+   [keep] are items [load_readable] could not read, written back after the records. *)
+let save ?(keep = []) dir ledger =
   let p = file dir in
   let tmp = p ^ ".tmp" in
+  let json =
+    match to_json ledger with `List rs -> `List (rs @ keep) | j -> j
+  in
   match
     Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc ] 0o600 tmp
-      (fun oc -> Yojson.Safe.pretty_to_channel oc (to_json ledger));
+      (fun oc -> Yojson.Safe.pretty_to_channel oc json);
     Sys.rename tmp p
   with
   | () -> Ok ()

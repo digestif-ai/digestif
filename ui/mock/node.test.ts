@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type {
   Device,
+  FeedItem,
   Item,
   ItemSummary,
   Member,
@@ -156,6 +157,27 @@ describe('mock node', () => {
     expect(member.devices.map((d) => d.key)).toContain(device.key);
   });
 
+  it('reads the member this node is, and a thread by its key whatever its age (DIG-225)', () => {
+    const node = new MockNode();
+    const self = body<Member>(node, 'GET', 'members/self');
+    expect(self.is_self).toBe(true);
+    expect(self.identity).toBe(node.store.self);
+    const note = body<Message>(node, 'POST', 'messages', { text: 'Hosting dinner 3.' });
+    const reply = body<Message>(node, 'POST', 'messages', { text: 'I can come.', reply_to: note.hash });
+    const thread = body<FeedItem[]>(node, 'GET', 'feed/threads/' + encodeURIComponent(note.hash));
+    expect(thread.map((m) => m.hash)).toEqual([note.hash, reply.hash]);
+    expect(thread.map((m) => m.created_at)).toEqual(thread.map((m) => m.created_at).sort());
+    expect(node.handle('GET', '/api/v0/feed/threads/nothing').status).toBe(404);
+    const items = [
+      ...body<ItemSummary[]>(node, 'GET', 'items?limit=200'),
+      ...body<ItemSummary[]>(node, 'GET', 'items?limit=200&state=others&state=archived')
+    ];
+    for (const item of items) {
+      const key = item.about ?? item.id;
+      expect(body<ItemSummary[]>(node, 'GET', 'items/threads/' + encodeURIComponent(key)).map((i) => i.id)).toContain(item.id);
+    }
+  });
+
   it('serves the note prompt and its suggestions, refuses a suggestion without the rules placeholder, and withdraws only a judging one of its own', () => {
     const node = new MockNode();
     const np = body<NotePrompt>(node, 'GET', 'note_prompt');
@@ -262,7 +284,13 @@ describe('mock node', () => {
     });
     const waiting = (): Item['waiting'] => body<Item>(node, 'GET', 'items/itm-asked').waiting;
     expect(waiting()?.on).toBe('others');
-    x.answers.push({ hash: 'sha256:' + 'b'.repeat(64), author: cy, voice: 'person', text: 'Maybe.', created_at: new Date().toISOString() } as Item['answers'][number]);
+    x.answers.push({
+      hash: 'sha256:' + 'b'.repeat(64),
+      author: cy,
+      voice: 'person',
+      text: 'Maybe.',
+      created_at: new Date().toISOString()
+    } as Item['answers'][number]);
     expect(waiting()?.on).toBe('others');
     expect(body<ItemSummary[]>(node, 'GET', 'items?state=others').map((r) => r.id)).toContain('itm-asked');
     x.picks.push({ member: cy, option_id: 'yes', picked_at: new Date().toISOString() });
@@ -320,5 +348,19 @@ describe('mock node', () => {
         send: true
       }).status
     ).toBe(422);
+  });
+
+  it('refuses a run asked for now while a note waits or writing is paused, as the node does (DIG-212)', () => {
+    const node = new MockNode();
+    const run = () => node.handle('POST', '/api/v0/notes/runs');
+    // A pending first note is written again whatever the fixture holds (ISS-48141).
+    node.handle('POST', '/api/v0/_first_note', { progress: { state: 'stopped', sources: [] } });
+    expect(run().status).toBe(202);
+    node.handle('POST', '/api/v0/_first_note', { note: 'n3' });
+    expect((run().body as NodeError[])[0]?.code).toBe('note_waiting');
+    expect(node.handle('POST', '/api/v0/notes/n3/dismiss').status).toBeLessThan(300);
+    expect(run().status).toBe(202);
+    expect(node.handle('POST', '/api/v0/paused').status).toBeLessThan(300);
+    expect((run().body as NodeError[])[0]?.code).toBe('paused');
   });
 });

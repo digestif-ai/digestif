@@ -1819,6 +1819,11 @@ export interface GetFeedItemsOptions {
   signal?: AbortSignal;
 }
 
+export interface GetFeedItemsThreadsByKeyOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetInboxAgentLogOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -1863,6 +1868,11 @@ export interface GetItemsOptions {
   subject?: ItemSubject[];
   voice?: Voice[];
   cursor?: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetItemsThreadsByKeyOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1964,6 +1974,11 @@ export interface UpdateLearningsOptions {
 
 export interface GetMembersOptions {
   cursor?: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetMemberSelfOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -2986,6 +3001,33 @@ export class ApiClient {
     });
   }
 
+  async getFeedItemsThreadsByKey(context: CallContext, key: string, options?: GetFeedItemsThreadsByKeyOptions): Promise<FeedItem[]> {
+    return context.recorder.call(context, 'GET /api/v0/feed/threads/:key', async (note) => {
+      const url = `${this.baseUrl}/api/v0/feed/threads/${encodeURIComponent(key)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<FeedItem>(response, 'FeedItem');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
   async getInboxAgentLog(context: CallContext, params?: GetInboxAgentLogOptions): Promise<InboxAgentLog> {
     return context.recorder.call(context, 'GET /api/v0/settings/inbox_agent/log', async (note) => {
       const url = `${this.baseUrl}/api/v0/settings/inbox_agent/log`;
@@ -3215,6 +3257,29 @@ export class ApiClient {
 
       if (response.status === 422) {
         throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getItemsThreadsByKey(context: CallContext, key: string, options?: GetItemsThreadsByKeyOptions): Promise<ItemSummary[]> {
+    return context.recorder.call(context, 'GET /api/v0/items/threads/:key', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/threads/${encodeURIComponent(key)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<ItemSummary>(response, 'ItemSummary');
       }
 
       throw new ApiException(response, `Request failed with status ${response.status}`);
@@ -3748,6 +3813,33 @@ export class ApiClient {
       }
 
       if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getMemberSelf(context: CallContext, params?: GetMemberSelfOptions): Promise<Member> {
+    return context.recorder.call(context, 'GET /api/v0/members/self', async (note) => {
+      const url = `${this.baseUrl}/api/v0/members/self`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Member>(response, 'Member');
+      }
+
+      if (response.status === 404) {
         throw new NodeErrorsResponse(response);
       }
 
@@ -4306,6 +4398,10 @@ export class ApiClient {
 
       if (response.status === 202) {
         return;
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
       }
 
       throw new ApiException(response, `Request failed with status ${response.status}`);

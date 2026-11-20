@@ -107,6 +107,29 @@ test.describe('after first run', () => {
     await expect(rows.first()).toContainText('Ada Park');
   });
 
+  test('the Feed shows its newest page and More reads the older messages (DIG-213)', async ({ page, request }) => {
+    test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'posts 55 messages; the mock plays them');
+    const headers = { 'Digestif-Local': '1' };
+    for (let i = 0; i < 55; i++) {
+      const made = await request.post('/api/v0/messages', { data: { text: `Bulk ${String(i).padStart(2, '0')}` }, headers });
+      expect(made.ok()).toBe(true);
+    }
+    await page.goto('/feed');
+    const rows = page.getByTestId('feed-row');
+    const list = page.getByRole('list', { name: 'Messages' });
+    await expect(list).toContainText('Bulk 54');
+    await expect(list).not.toContainText('retry queue');
+    await page.getByRole('button', { name: 'More messages' }).click();
+    await expect(list).toContainText('retry queue');
+    // Every message once, those that share a millisecond across the page boundary included.
+    for (let i = 0; i < 55; i++) await expect(rows.filter({ hasText: `Bulk ${String(i).padStart(2, '0')}` })).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'More messages' })).toHaveCount(0);
+    // A thread More brought in opens on every message of it.
+    await rows.filter({ hasText: 'retry queue' }).click();
+    await expect(page).toHaveURL(/\/feed\/threads\/.*\?at=/);
+    await expect(page.getByRole('list', { name: 'Thread' }).getByTestId('feed-row')).toContainText('retry queue');
+  });
+
   test("another member's note shows its review line in the Feed and on its page, its links opening", async ({ page }) => {
     await page.goto('/feed');
     const row = page.locator('li').filter({ has: page.getByTestId('feed-row').filter({ hasText: 'retry queue' }) });
@@ -145,6 +168,15 @@ test.describe('after first run', () => {
     await settled(page);
     await expect(page.getByTestId('page-header').getByRole('button')).toHaveCount(1);
     await expect.poll(() => headerActions(page)).toEqual(['Post to the circle', 'Write a note now', 'Pause']);
+    // A note waits, so a run cannot start and is refused (DIG-212).
+    await chooseAction(page, 'Write a note now');
+    await expect(page.getByRole('alert')).toContainText('A note is waiting for approval; approve or dismiss it first.');
+    await expect(page.getByTestId('writing-now')).toHaveCount(0);
+    // With the waiting note dismissed, the run is asked for.
+    await page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' }).first().click();
+    await chooseAction(page, 'Dismiss');
+    await expect(page).toHaveURL(/\/feed$/);
+    await settled(page);
     await chooseAction(page, 'Write a note now');
     await expect(page.getByTestId('writing-now')).toContainText('next pass');
     await page.getByRole('button', { name: 'Actions', exact: true }).click();

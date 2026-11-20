@@ -2,9 +2,10 @@
 // or an answer signed on the phone's own chain (docs/protocol.md, The phone, Items, Picks, Answers).
 import { denyCheck } from '#lib/deny.ts';
 import { keyRawX25519, pickBody, seal, signEnvelope } from '#lib/mail.ts';
-import { chainEnd, denyLayer, findEnrollment, items, pausedSince, type DenyLayer, type PhoneItem } from './circle.ts';
+import { chainEnd, findEnrollment, view, type DenyLayer, type PhoneItem } from './circle.ts';
 import { enrollment, phoneKeys, saveEnrollment, type Enrollment, type PhoneKeys } from './keystore.ts';
-import { append, circle, envelopes, type Stored } from './relay.ts';
+import { sync } from './log.ts';
+import { append, circle, type Stored } from './relay.ts';
 
 export type Phone =
   | { stage: 'pairing'; keys: PhoneKeys }
@@ -20,32 +21,26 @@ export type Phone =
     }
   | { stage: 'error'; keys: PhoneKeys; message: string };
 
-/** Until the laptop appends the phone's device body the relay answers 401, which means "pairing". */
+/**
+ * Until the laptop appends the phone's device body the relay answers 401, which means "pairing".
+ * The log is read past what the phone holds, and each envelope verified once, when it arrives.
+ */
 export async function read(): Promise<Phone> {
   const keys = await phoneKeys();
-  const r = await envelopes(keys);
+  const r = await sync(keys);
   const held = await enrollment();
   if (!r.ok) {
     if (r.status === 401 && held === undefined) return { stage: 'pairing', keys };
     return { stage: 'error', keys, message: r.message };
   }
+  const verified = r.data.filter((h) => h.verified).map((h) => h.stored);
   let e = held;
   if (e === undefined) {
-    e = await findEnrollment(keys, r.data);
+    e = await findEnrollment(keys, verified);
     if (e === undefined) return { stage: 'pairing', keys };
     await saveEnrollment(e);
   }
-  const since = await pausedSince(e, r.data);
-  const deny = await denyLayer(e, r.data);
-  return {
-    stage: 'paired',
-    keys,
-    enrollment: e,
-    envelopes: r.data,
-    items: await items(e, r.data),
-    ...(since === undefined ? {} : { pausedSince: since }),
-    ...(deny === undefined ? {} : { deny })
-  };
+  return { stage: 'paired', keys, enrollment: e, envelopes: r.data.map((h) => h.stored), ...(await view(e, verified)) };
 }
 
 /**

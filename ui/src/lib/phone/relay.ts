@@ -41,17 +41,21 @@ async function call<T>(keys: PhoneKeys, method: string, path: string, body?: unk
   return { ok: true, data: (await response.json()) as T };
 }
 
-/** Every envelope the relay serves this phone, oldest first. 401 until the relay admits its key. */
-export async function envelopes(keys: PhoneKeys): Promise<RelayResult<Stored[]>> {
+/**
+ * Every envelope the relay serves this phone after relay position [after], oldest first, and the
+ * position to read after next time. 401 until the relay admits its key.
+ */
+export async function envelopes(keys: PhoneKeys, after = 0): Promise<RelayResult<{ envelopes: Stored[]; after: number }>> {
   const all: Stored[] = [];
-  let after = 0;
+  let cursor = after;
   for (;;) {
-    const page = await call<{ envelopes: Stored[]; next?: number }>(keys, 'GET', '/v0/envelopes?after=' + String(after) + '&limit=500');
+    const page = await call<{ envelopes: Stored[]; next?: number }>(keys, 'GET', '/v0/envelopes?after=' + String(cursor) + '&limit=500');
     if (!page.ok) return page;
     all.push(...page.data.envelopes);
     const last = page.data.envelopes.at(-1)?.relay_id;
-    if (page.data.next === undefined || last === undefined) return { ok: true, data: all };
-    after = Math.max(page.data.next, last);
+    if (last !== undefined) cursor = Math.max(cursor, last);
+    if (page.data.next === undefined || last === undefined) return { ok: true, data: { envelopes: all, after: cursor } };
+    cursor = Math.max(page.data.next, cursor);
   }
 }
 

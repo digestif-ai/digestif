@@ -115,12 +115,6 @@ let dedupe l =
        (fun acc x -> if List.mem x acc then acc else x :: acc)
        [] l)
 
-(* The picks one summary body makes: the suggestion it judged and which prompt wrote it. *)
-let pick_of (b : Yojson.Safe.t) =
-  match (str_field "suggestion" b, str_field "prompt" b) with
-  | Some s, Some p -> Some (s, p)
-  | _ -> None
-
 (* The rounds, in order, up to the first one that decides; then each judge's picks past the
    complete rounds, as the round still open. *)
 let rounds_of ~(s : suggestion) (picks : (string * (string * pick) list) list) =
@@ -154,8 +148,9 @@ let rounds_of ~(s : suggestion) (picks : (string * (string * pick) list) list) =
   go 0 []
 
 (* Every suggestion this node can read, oldest first, folded with the picks the circle's summaries
-   make. The suggestions are the node's own Inbox rows (Store.Items.suggestions), so the index has
-   to be brought up to the log first; [identity_of] maps a summary's signing key to its member. *)
+   make. The suggestions are the node's own Inbox rows (Store.Items.suggestions) and the picks are
+   Store.Suggestion_picks, so both indexes have to be brought up to the log first; [identity_of]
+   maps a summary's signing key to its member. *)
 let read (log : Log.t) ~identity_of =
   let rows = Store.Items.suggestions log in
   if rows = [] then []
@@ -189,21 +184,12 @@ let read (log : Log.t) ~identity_of =
             })
         rows
     in
-    (* Every summary that judged a suggestion, by the judge's identity, oldest first. *)
+    (* Every summary that judged a suggestion, by the judge's identity, oldest first, read from
+       the picks indexed as the summaries arrived (Store.Suggestion_picks, DIG-221). *)
     let summaries =
-      List.map Log.row_of
-        (Log.rows log
-           ("SELECT " ^ Log.envelope_columns
-          ^ " FROM envelopes WHERE kind = 'summary' AND body LIKE \
-             '%\"suggestion\":%' ORDER BY created_at, hash")
-           [])
-      |> List.filter_map (fun (r : Log.row) ->
-          match (r.signed.body, identity_of r.signed.envelope.author) with
-          | Some b, Some who when r.retracted_by = None ->
-              Option.map
-                (fun (sh, p) -> (sh, who, r.signed.envelope.created_at, p))
-                (pick_of b)
-          | _ -> None)
+      Store.Suggestion_picks.picks log
+      |> List.filter_map (fun (sh, signer, at, p) ->
+          Option.map (fun who -> (sh, who, at, p)) (identity_of signer))
     in
     List.map
       (fun s ->

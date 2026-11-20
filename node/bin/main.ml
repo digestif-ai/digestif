@@ -340,12 +340,33 @@ let report_promotions = function
         filed
   | Error e -> Printf.printf "promotion\tthe invite ledger was not read: %s\n" e
 
+(* What the join watcher could not do is the sync job's problem under the source invites.json,
+   never relay_unreachable: the relays were reached, and Sync_health's verdict on them leaves this
+   source alone. A sync whose watcher had nothing to report closes it. DIG-224 *)
+let watch_source = "invites.json"
+
+let record_watch_problems n problems =
+  let module P = Digestif_web.Store.Problems in
+  let module I = Digestif_invite.Invite_node in
+  Digestif_web.Store.init n.Node.log;
+  match problems with
+  | [] -> P.resolve n.log ~job:"sync" ~source:watch_source ()
+  | _ ->
+      let detail =
+        String.concat "; " (List.map I.watch_problem_to_string problems)
+      in
+      Printf.eprintf "%s sync: joins: %s\n%!" (Time_fmt.now ()) detail;
+      ignore
+        (P.report n.log ~job:"sync" ~kind:"failed" ~source:watch_source ~detail
+           ())
+
 (* A sync that runs the join watcher over the joins it stores, reporting what it made of them, then
    files the promotion of every admin invitee whose join folded. *)
 let watch_joins n =
   match Digestif_invite.Invite_node.sync n with
-  | Ok (r, seen) ->
+  | Ok (r, seen, problems) ->
       report_joins seen;
+      record_watch_problems n problems;
       report_promotions (Digestif_invite.Approved_invite.file_promotions n);
       Ok r
   | Error e -> Error e
@@ -1435,7 +1456,7 @@ let update_stage =
             U.Stage.from_archive ~dir ~version:(U.Trust_root.version ()) bytes
           with
           | Ok name -> print_endline (U.Layout.release_dir dir name)
-          | Error (U.Stage.Retry e | U.Stage.Refuse e) ->
+          | Error (U.Stage.Retry e | U.Stage.Suspect e | U.Stage.Refuse e) ->
               die "%s would not stage: %s" archive e)
       $ data_dir $ archive)
 
@@ -1514,6 +1535,7 @@ let supervise =
 
 let update_state dir f =
   let path = U.Schedule.state_path (node_dir dir) in
+  U.State.with_lock path @@ fun () ->
   let s = ok_or_die (U.State.load path) in
   U.State.save path (ok_or_die (f s))
 
@@ -2508,15 +2530,18 @@ let run =
               self_update ~woke
             end
           in
-          pass ();
-          (* The first pass opened the store, synced and started the UI: the supervisor may keep
-             this release (Supervisor). *)
+          (* The release has started: its store is open and initialized, its UI serves and its
+             behaviors are watched, so the supervisor may keep it (Supervisor). This comes before
+             the first pass, whose length grows with the node's history and the network's mood and
+             says nothing about whether the release runs; a pass that fails is the pass's problem
+             (guarded) and never ends the process. DIG-223 *)
           U.Health.write (node_dir dir)
             {
               version = U.Version.to_string (U.Trust_root.version ());
               pid = Unix.getpid ();
               at = Unix.gettimeofday ();
             };
+          pass ();
           self_update ~woke:false;
           (* Sleep in short steps and compare wall clocks: a jump means the machine slept, so sync
              now and look for a release. *)
@@ -2535,7 +2560,7 @@ let run =
               && (woke
                  || now -. !last >= float_of_int interval
                  || Atomic.get sync_wanted
-                 || Digestif_web.Store.nightly_run_requested bnode.log
+                 || B.nightly_run_wanted behaviors
                  || Digestif_web.Store.Reviews.drafts_waiting bnode.log
                     && not (B.is_running behaviors B.Read))
             then begin
@@ -2847,7 +2872,8 @@ let adopt dir behaviors =
               ~behaviors ()
           with
           | Ok name -> name
-          | Error (U.Stage.Retry e | U.Stage.Refuse e) -> die "%s" e)
+          | Error (U.Stage.Retry e | U.Stage.Suspect e | U.Stage.Refuse e) ->
+              die "%s" e)
   in
   U.Trial.clear dir;
   U.Layout.point_current dir name;
@@ -2856,8 +2882,11 @@ let adopt dir behaviors =
   U.Cli_links.link_default ~dir ();
   (* The adopted release's version is now what the node runs healthy (Updater.with_good). *)
   let state_path = U.Schedule.state_path dir in
-  (match U.State.load state_path with
-  | Ok state -> U.State.save state_path (U.Updater.with_good ~dir state)
+  (match
+     U.State.update state_path (fun state ->
+         Ok (U.Updater.with_good ~dir state))
+   with
+  | Ok _ -> ()
   | Error e -> Printf.eprintf "update state not recorded: %s\n" e);
   name
 

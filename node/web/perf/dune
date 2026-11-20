@@ -1,5 +1,6 @@
 ; ISS-41944: the node's page budget over a heavy machine (test_perf.ml). baseline.json is what each
-; route's p95 last measured; the test reads it from its own directory.
+; route's p95 last measured; the test reads it from its own directory. Each DIGESTIF_PERF_<KNOB> sizes
+; the fixture (test_perf.ml, knob), so a dependency reruns the test when one changes.
 
 (test
  (name test_perf)
@@ -7,7 +8,17 @@
   baseline.json
   (env_var CI_ALCOTEST_LISTS)
   (env_var CI_SLOW_SPECS)
-  (env_var CI_ALCOTEST_RERUN))
+  (env_var CI_ALCOTEST_RERUN)
+  (env_var DIGESTIF_PERF_CLONES)
+  (env_var DIGESTIF_PERF_ORGANIZATIONS)
+  (env_var DIGESTIF_PERF_TRANSCRIPTS)
+  (env_var DIGESTIF_PERF_NOTES)
+  (env_var DIGESTIF_PERF_INBOX_ITEMS)
+  (env_var DIGESTIF_PERF_DIGESTS)
+  (env_var DIGESTIF_PERF_SUMMARIES)
+  (env_var DIGESTIF_PERF_MEMBERS)
+  (env_var DIGESTIF_PERF_APPROVALS)
+  (env_var DIGESTIF_PERF_SUGGESTIONS))
  (package digestif-node)
  (libraries
   digestif-node.core

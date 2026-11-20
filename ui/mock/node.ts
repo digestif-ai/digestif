@@ -43,6 +43,7 @@ import {
 import { INBOX_DEFAULT, INBOX_LOG, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
 import { MockApprovals } from './approvals.ts';
 import { MockItems } from './items.ts';
+import { feedThreads } from '#lib/threads.ts';
 import { MockRepositories } from './repositories.ts';
 
 export interface MockResponse {
@@ -300,6 +301,11 @@ export class MockNode {
     };
   }
 
+  /** The Feed, newest first: the messages and the notes not yet signed. */
+  private feed(): FeedItem[] {
+    return [...this.store.messages, ...this.notesInFeed()].sort((x, y) => y.created_at.localeCompare(x.created_at)).map(item);
+  }
+
   handle(method: string, url: string, body?: unknown): MockResponse {
     const u = new URL(url, 'http://node.local');
     const parts = u.pathname
@@ -322,7 +328,27 @@ export class MockNode {
     const memberOf = (identity: string | undefined): Member | undefined => s.members.find((x) => x.identity === identity);
     return [
       ['GET', 'status', () => this.status()],
-      ['GET', 'feed', () => ok([...s.messages, ...this.notesInFeed()].sort((x, y) => y.created_at.localeCompare(x.created_at)).map(item))],
+      [
+        'GET',
+        'feed',
+        (_p, _b, q) => {
+          // Newest first, strictly before `before` and at most `limit` (node/web/api.ml feed; DIG-213).
+          const before = q.get('before');
+          const limit = Number(q.get('limit') ?? '50');
+          const rows = [...s.messages, ...this.notesInFeed()]
+            .filter((x) => before === null || x.created_at < before)
+            .sort((x, y) => y.created_at.localeCompare(x.created_at));
+          return ok(rows.slice(0, limit).map(item));
+        }
+      ],
+      [
+        'GET',
+        'feed/threads/:',
+        ([key]) => {
+          const thread = feedThreads(this.feed()).find((t) => t.key === key);
+          return thread === undefined ? notFound() : ok(thread.rows);
+        }
+      ],
       [
         'GET',
         'messages/:',
@@ -350,6 +376,7 @@ export class MockNode {
             (m) => m.identity
           )
       ],
+      ['GET', 'members/self', () => ok(this.member(this.self()))],
       ['GET', 'members/:', ([id]) => withFound(memberOf(id), (m) => ok(this.member(m)))],
       ['GET', 'search', (_p, _b, q) => this.search(q)],
       [
@@ -525,6 +552,13 @@ export class MockNode {
         'POST',
         'notes/runs',
         () => {
+          // node/web/store.ml nightly_run_refusal: a run that cannot start is refused (DIG-212).
+          if (this.self().stage === Stage.Paused) return err(422, 'paused', 'Writing is paused; resume it to write a note.');
+          // The node holds no waiting note while its first note is pending; the mock's fixture keeps n3,
+          // so a pending first note (ISS-48141, Write it now) is never refused for it.
+          const pending = s.notes.some((n) => n.progress !== undefined);
+          if (!pending && s.notes.some((n) => n.status === NoteStatus.Waiting && n.versions.length > 0))
+            return err(422, 'note_waiting', 'A note is waiting for approval; approve or dismiss it first.');
           s.writeNow = true;
           // A first note no run was writing is being written again (ISS-48141).
           for (const n of s.notes)

@@ -113,10 +113,38 @@ let identity_from_phrase t phrase =
       Error "that recovery phrase belongs to a different identity"
   | _ -> Ok d.identity
 
+(* The fold this process last computed for each log, by the log's generation nonce: the generation's
+   count and the root it was folded from, and the fold. A fold is never changed once Fold.run returns
+   it, so every caller shares one. DIG-209 *)
+let folds : (string, int * string * Fold.t) Hashtbl.t = Hashtbl.create 4
+let folds_lock = Mutex.create ()
+
+(* The circle as the log holds it: the cached fold while the log's circle generation has not moved
+   since it was computed, else a fresh one. The generation is read before the entries, so a fold
+   cached under a generation holds at least what that generation counted. A fold read inside an open
+   transaction is not kept: the transaction may roll back, and another write then reach the same
+   count with different envelopes. *)
 let fold t =
   match root t with
   | None -> Fold.empty ""
-  | Some root -> Fold.run ~root (Log.fold_entries t.log)
+  | Some root -> (
+      let compute () = Fold.run ~root (Log.fold_entries t.log) in
+      match Log.circle_generation t.log with
+      | None -> compute ()
+      | Some (nonce, n) -> (
+          let held =
+            Mutex.protect folds_lock (fun () -> Hashtbl.find_opt folds nonce)
+          in
+          match held with
+          | Some (n', root', f) when n' = n && root' = root -> f
+          | _ ->
+              let f = compute () in
+              if not (Log.in_transaction t.log) then
+                Mutex.protect folds_lock (fun () ->
+                    match Hashtbl.find_opt folds nonce with
+                    | Some (newer, _, _) when newer > n -> ()
+                    | _ -> Hashtbl.replace folds nonce (n, root, f));
+              f))
 
 (* The last seq of [key]'s honest chain as this log holds it: the highest seq held below the first
    seq where the log holds two different envelopes, since a fork is where a second writer began. *)

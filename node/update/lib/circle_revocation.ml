@@ -45,6 +45,7 @@ let receive (state : State.t) (r : revocation signed) : State.t * outcome =
    revoked key in the update state at [state_path]. *)
 let receive_body ~state_path (json : Yojson.Safe.t) : (outcome, string) result =
   let* r = of_body json in
+  State.with_lock state_path @@ fun () ->
   let* state = State.load state_path in
   let state', outcome = receive state r in
   (match outcome with Revoked _ -> State.save state_path state' | _ -> ());
@@ -66,6 +67,7 @@ let from_circle ~state_path (node : Node.t) (fold : Fold.t) :
   with
   | [] -> Ok []
   | rows ->
+      State.with_lock state_path @@ fun () ->
       let* state = State.load state_path in
       let fault (row : Log.row) detail =
         Log.add_fault node.log ~kind ~author:row.signed.envelope.author

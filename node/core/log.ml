@@ -93,7 +93,42 @@ CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS circle_generation (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  nonce TEXT NOT NULL,
+  n INTEGER NOT NULL
+);
 |}
+
+(* The circle generation: one row, its [n] moved by triggers on every insert, update and delete of a
+   circle-state envelope, by whichever process and connection writes it, and its [nonce] drawn once
+   when the log is made, so two logs never share a generation. A process keeps the fold it computed
+   for a generation and reuses it until the generation moves (Node.fold). The triggers are named for
+   the kinds they watch: a release that adds a circle-state kind adds triggers of its own beside the
+   older ones, which only move the generation more often. DIG-209 *)
+let circle_generation_triggers =
+  let kinds = Envelope.circle_state_kinds in
+  let suffix =
+    String.sub (Digest.to_hex (Digest.string (String.concat "," kinds))) 0 8
+  in
+  let in_kinds col =
+    Printf.sprintf "%s.kind IN (%s)" col
+      (String.concat ", " (List.map (Printf.sprintf "'%s'") kinds))
+  in
+  let trigger event when_ =
+    Printf.sprintf
+      "CREATE TRIGGER IF NOT EXISTS circle_generation_%s_%s AFTER %s ON \
+       envelopes WHEN %s BEGIN UPDATE circle_generation SET n = n + 1 WHERE id \
+       = 1; END;"
+      (String.lowercase_ascii event)
+      suffix event when_
+  in
+  String.concat "\n"
+    [
+      trigger "INSERT" (in_kinds "NEW");
+      trigger "UPDATE" (in_kinds "OLD" ^ " OR " ^ in_kinds "NEW");
+      trigger "DELETE" (in_kinds "OLD");
+    ]
 
 let check db rc =
   match rc with
@@ -350,7 +385,26 @@ let open_ path =
     (Sqlite3.exec db
        "CREATE UNIQUE INDEX IF NOT EXISTS envelopes_signed_here_seq ON \
         envelopes (author, seq) WHERE signed_here = 1;");
+  check db (Sqlite3.exec db circle_generation_triggers);
+  (* Read first, so an open of a log that has its row takes no write lock. *)
+  if rows t "SELECT 1 FROM circle_generation WHERE id = 1" [] = [] then
+    transaction t (fun () ->
+        exec t
+          "INSERT OR IGNORE INTO circle_generation (id, nonce, n) VALUES (1, \
+           lower(hex(randomblob(16))), 0)"
+          []);
   t
+
+(* The log's circle generation as this connection reads it: its nonce and its count. Inside a
+   transaction it counts the transaction's own uncommitted writes. *)
+let circle_generation t =
+  match rows t "SELECT nonce, n FROM circle_generation WHERE id = 1" [] with
+  | [ [| nonce; n |] ] -> Some (text nonce, int n)
+  | _ -> None
+
+(* Whether this connection has a transaction open, whose writes another connection cannot see and
+   which may yet roll back. *)
+let in_transaction t = t.depth > 0
 
 (* config *)
 
@@ -551,7 +605,9 @@ type insert = Inserted | Already_held | Body_restored
 
 (* Store a verified envelope. Idempotent by hash; a body arriving for an envelope held without one
    is kept unless the envelope was retracted. Its local_order is one past the highest held, which
-   envelopes_local_order answers from the index's end rather than a scan of the log (ISS-47475).
+   envelopes_local_order answers from the index's end rather than a scan of the log (ISS-47475),
+   and past the highest one [delete] removed: a local order is never given twice, so a reader that
+   kept one (a read mark, an index's watermark) reads past it safely (DIG-219).
    [signed_here] marks an envelope this node signed, which envelopes_signed_here_seq holds to one
    per seq of its author's chain. *)
 let insert ?(signed_here = false) t ~hash (sg : Envelope.signed) =
@@ -570,7 +626,9 @@ let insert ?(signed_here = false) t ~hash (sg : Envelope.signed) =
         "INSERT INTO envelopes (hash, author, seq, prev, kind, epoch, \
          created_at, envelope, body, reply_to, local_order, stored_at, \
          signed_here) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT \
-         COALESCE(MAX(local_order), 0) + 1 FROM envelopes), ?, ?)"
+         MAX(COALESCE(MAX(local_order), 0), COALESCE((SELECT CAST(value AS \
+         INTEGER) FROM config WHERE key = 'log_order_removed'), 0)) + 1 FROM \
+         envelopes), ?, ?)"
         [
           s hash;
           s e.author;
@@ -649,6 +707,12 @@ let each_hash_column t f =
    until a relay takes it, so nothing else on the wire names it; the local rows that do are moved to
    the new hash, or let go with the removed one. *)
 let delete t hash =
+  exec t
+    "INSERT INTO config (key, value) SELECT 'log_order_removed', \
+     CAST(local_order AS TEXT) FROM envelopes WHERE hash = ? ON CONFLICT (key) \
+     DO UPDATE SET value = CAST(MAX(CAST(config.value AS INTEGER), CAST( \
+     excluded.value AS INTEGER)) AS TEXT)"
+    [ s hash ];
   exec t "DELETE FROM envelopes WHERE hash = ?" [ s hash ];
   each_hash_column t (fun table column on_delete ->
       match on_delete with
