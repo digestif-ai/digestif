@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // digestif-read: the read hook as the node's behavior (`digestif behavior set read <path>`). No
-// arguments; one JSON context on stdin. Exits 0 once the feed is read and recorded. See behaviors/README.md.
+// arguments; one JSON context on stdin. Exits 0 once the feed is read and recorded, 3 when messages
+// past the batch are left for the next run. See behaviors/README.md.
 import { readFileSync } from "node:fs";
 import { endOnSigterm, parseReadContext, ReadContextError, runRead } from "../src/read.ts";
 

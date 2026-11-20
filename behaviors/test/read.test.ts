@@ -6,7 +6,7 @@ import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test as nodeTest, type TestContext } from "node:test";
-import { buildReadPrompt, emptyState, loadConfig, loadState, localDay, parseReadContext, READ_RETRY_DELAYS_MS, readStateDir, runRead, saveState, sentence } from "../src/read.ts";
+import { buildReadPrompt, emptyState, LEFT_MORE, loadConfig, loadState, localDay, parseReadContext, READ_RETRY_DELAYS_MS, readStateDir, runRead, saveState, sentence } from "../src/read.ts";
 import { CHECK_FIRST, INBOX_PROMPT_FILE, QUOTE_MAX, TAKEN_MAX, checkFiled, filingPlaces, onNamedTracker, parseFiled, parseRun } from "../src/inbox.ts";
 import { ALWAYS_ON_FILE } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
@@ -1038,18 +1038,33 @@ test("a batch holds at most the cap, oldest first; the cursor stops at the last 
   feed = [item(6), item(5), item(4), item(3), item(2), item(1)];
   inbox = [inboxItem(1)];
   const capped = async () => runRead({ ctx: parseReadContext(JSON.stringify(context())), log: () => {}, maxBatch: 4 });
-  assert.equal(await capped(), 0);
+  assert.equal(await capped(), LEFT_MORE, "the run says it left messages, so the node reads again on its next pass");
   assert.deepEqual(batchOf(inboxRuns()[0]!).map((m) => m.hash), ["sha256:1", "sha256:2", "sha256:3", "sha256:4"]);
   assert.equal(state().cursor, "sha256:4", "the cursor is the newest note the run looked at");
   assert.ok(!requests.some((q) => q.startsWith("/api/v0/messages/sha256%3A5")), "a note past the cap is not fetched");
   assert.ok(!requests.includes("/api/v0/items/sha256%3Ai1"), "nor an item");
   assert.deepEqual(seenHashes(), ["sha256:1", "sha256:2", "sha256:3", "sha256:4"]);
   // The next run, with nothing new in the feed, reads what was left: the rest of the notes, then the item.
-  assert.equal(await capped(), 0);
+  assert.equal(await capped(), 0, "nothing is left past this batch");
   assert.deepEqual(batchOf(inboxRuns()[1]!).map((m) => m.hash), ["sha256:5", "sha256:6", "sha256:i1"]);
   assert.equal(state().cursor, "sha256:6");
   assert.equal(await capped(), 0);
   assert.equal(inboxRuns().length, 2, "nothing is left");
+});
+
+test("a run that leaves messages says so only while the day's budget has a run left", async () => {
+  feed = [item(6), item(5), item(4), item(3), item(2), item(1)];
+  setConfig({ max_agent_runs: 2 });
+  const capped = async () => runRead({ ctx: parseReadContext(JSON.stringify(context())), log: () => {}, maxBatch: 2 });
+  assert.equal(await capped(), LEFT_MORE, "one run of two spent");
+  assert.equal(await capped(), 0, "the budget is spent: what is left waits for a day with budget, not the next pass");
+  assert.equal(inboxRuns().length, 2);
+});
+
+test("a run whose agent failed does not ask for the next pass, though messages are past its batch", async () => {
+  feed = [item(4), item(3), item(2), item(1)];
+  setAnswer("not json");
+  assert.equal(await runRead({ ctx: parseReadContext(JSON.stringify(context())), log: () => {}, maxBatch: 2 }), 0);
 });
 
 test("failed messages read again count toward the cap, and those past it stay pending", async () => {

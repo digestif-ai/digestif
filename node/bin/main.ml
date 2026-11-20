@@ -2772,7 +2772,7 @@ let behavior_run =
               report_finished finished;
               print_endline (B.log_path t h);
               match finished with
-              | [ { status = "exited 0"; _ } ] -> ()
+              | [ { f_hook; status; _ } ] when B.succeeded f_hook status -> ()
               | _ -> exit 1))
       $ data_dir $ hook_arg)
 
