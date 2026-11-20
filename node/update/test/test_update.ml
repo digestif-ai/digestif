@@ -888,6 +888,7 @@ let test_local_release_uses_path_node () =
       Alcotest.(check bool)
         ("names the PATH: " ^ why) true (contains ~sub:"PATH" why)
   | Error (Stage.Refuse why) -> Alcotest.failf "refused: %s" why
+  | Error (Stage.Suspect why) -> Alcotest.failf "suspected: %s" why
   | Ok _ -> Alcotest.fail "staged without Node.js");
   Alcotest.(check (list string)) "asked the node on PATH" [ "node" ] !asked
 
@@ -991,7 +992,7 @@ let test_local_release_keeps_good_behaviors () =
   write (Layout.runtime_in good) "node";
   let binary = local_binary "0.2.0" in
   match stage_local node binary with
-  | Error (Stage.Retry e | Stage.Refuse e) -> Alcotest.failf "not staged: %s" e
+  | Error (Stage.Retry e | Stage.Suspect e | Stage.Refuse e) -> Alcotest.failf "not staged: %s" e
   | Ok name ->
       let root = Layout.release_dir node name in
       Alcotest.(check bool)
@@ -1012,7 +1013,7 @@ let test_local_release_without_behaviors_is_refused () =
         ("names --behaviors: " ^ why)
         true
         (contains ~sub:"--behaviors" why)
-  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Error (Stage.Retry e | Stage.Suspect e) -> Alcotest.failf "retried: %s" e
   | Ok name -> Alcotest.failf "staged %s without behaviors" name);
   let empty = Filename.concat (temp_dir ()) "behaviors" in
   Unix.mkdir empty 0o755;
@@ -1021,7 +1022,7 @@ let test_local_release_without_behaviors_is_refused () =
       Alcotest.(check bool)
         ("names prompts/: " ^ why) true
         (contains ~sub:"prompts/" why)
-  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Error (Stage.Retry e | Stage.Suspect e) -> Alcotest.failf "retried: %s" e
   | Ok name -> Alcotest.failf "staged %s from a directory without prompts" name
 
 (* A binary built by a plain `dune build`, with no ui/build to embed, serves only the page saying how
@@ -1046,13 +1047,13 @@ let test_local_release_without_web_ui_is_refused () =
         ("names ci/build.slow.sh: " ^ why)
         true
         (contains ~sub:"ci/build.slow.sh" why)
-  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Error (Stage.Retry e | Stage.Suspect e) -> Alcotest.failf "retried: %s" e
   | Ok name -> Alcotest.failf "staged %s without its web UI" name);
   let behaviors = Filename.concat (temp_dir ()) "behaviors" in
   write (Filename.concat behaviors "prompts/always-on.md") "rule";
   match stage_local ~behaviors node binary with
   | Error (Stage.Refuse _) -> ()
-  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Error (Stage.Retry e | Stage.Suspect e) -> Alcotest.failf "retried: %s" e
   | Ok name -> Alcotest.failf "staged %s with --behaviors" name
 
 let test_holding_skips_release_without_web_ui () =
@@ -1096,7 +1097,7 @@ let test_local_release_restages_other_behaviors () =
   let staged b =
     match stage_local ~behaviors:b node binary with
     | Ok name -> name
-    | Error (Stage.Retry e | Stage.Refuse e) ->
+    | Error (Stage.Retry e | Stage.Suspect e | Stage.Refuse e) ->
         Alcotest.failf "not staged: %s" e
   in
   let first = staged (behaviors "one") in
@@ -1125,6 +1126,7 @@ let test_state_roundtrip () =
             pending_version = v "1.4.0";
             cause = "curl";
             attempts = 2;
+            strikes = 0;
             due_at = 5.;
           };
       first_installed = [ (v "1.2.3", 7.) ];
@@ -1984,6 +1986,7 @@ let test_status_problems () =
             pending_version = v "0.3.0";
             cause = "unpacking it took over 60 seconds";
             attempts = 1;
+            strikes = 0;
             due_at = 0.;
           };
     };
@@ -2037,6 +2040,7 @@ let test_unpack_failure_is_retried () =
         true
         (contains ~sub:"unpacking it failed" why)
   | Error (Stage.Refuse why) -> Alcotest.failf "refused: %s" why
+  | Error (Stage.Suspect why) -> Alcotest.failf "suspected: %s" why
   | Ok _ -> Alcotest.fail "staged garbage");
   Alcotest.(check bool) "nothing staged" false (Layout.staged node "0.2.0");
   (* A tar that never finishes (reading a FIFO nobody writes) runs past its bound. *)
@@ -2050,6 +2054,7 @@ let test_unpack_failure_is_retried () =
       Alcotest.(check string)
         "says it took too long" "unpacking it took over 2 seconds" why
   | Error (Stage.Refuse why) -> Alcotest.failf "refused: %s" why
+  | Error (Stage.Suspect why) -> Alcotest.failf "suspected: %s" why
   | Ok () -> Alcotest.fail "a tar reading nothing finished"
 
 (* Try again (DIG-255): the refusal goes, a waiting stage is due now, and the next tick checks. *)
@@ -2080,6 +2085,7 @@ let test_retry_clears_refusal () =
             pending_version = v "0.3.0";
             cause = "unpacking it took over 60 seconds";
             attempts = 3;
+            strikes = 0;
             due_at = 90_000.;
           };
     };

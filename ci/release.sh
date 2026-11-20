@@ -567,7 +567,9 @@ verified_signatures() {
 }
 
 # candidate/ holds the one version on its way to the test nodes, as a feed of its own: its
-# index.json names that version and the channel's revocations, and nodes never read it.
+# index.json names that version and the channel's revocations and signer-set changes, so a test
+# node built before a change follows the chain to the set that signed the candidate, and members'
+# nodes never read it.
 write_candidate() {
   local version="$1" dir="$2" wt="$3"
   rm -rf "$wt/candidate"
@@ -577,7 +579,8 @@ write_candidate() {
   jq --arg v "$version" '{
       format,
       releases: [ { version: $v, manifest: "\($v)/manifest.json", signatures: "\($v)/manifest.sig.json" } ],
-      revocations: [ .revocations[] | { document: "../\(.document)", signatures: "../\(.signatures)" } ]
+      revocations: [ .revocations[] | { document: "../\(.document)", signatures: "../\(.signatures)" } ],
+      signers: [ (.signers // [])[] | { document: "../\(.document)", signatures: "../\(.signatures)" } ]
     }' "$wt/index.json" >"$wt/candidate/index.json"
 }
 

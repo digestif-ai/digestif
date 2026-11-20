@@ -41,8 +41,7 @@ let with_good ~dir (state : State.t) =
 
 (* Seconds before the next try after [attempts] failed stages: 10 minutes, doubling, at most a
    day. *)
-let backoff attempts =
-  Float.min 86_400. (600. *. (2. ** float_of_int (max 0 (attempts - 1))))
+let backoff = State.backoff
 
 (* [circle] is the recalls the node's circle carries (Circle_recall), counted with the channel's. *)
 let check ?(circle = []) ~(fetch : Feed.fetch) ~base ~platform (state : State.t)
@@ -66,7 +65,8 @@ let check ?(circle = []) ~(fetch : Feed.fetch) ~base ~platform (state : State.t)
   in
   Ok (plan, recalls, feed.problems, state.signer_sets)
 
-(* Download, verify and stage [a]; a failure is kept as pending with its backoff. The download stops
+(* Download, verify and stage [a]; a failure is kept as pending with its backoff, and one that may be
+   the release counts a strike (State.strike). The download stops
    at the size both signers signed, so a channel serving an endless answer at the archive's URL is
    one failed stage, never a node that reads until its memory runs out. *)
 let stage ?node_major ~fetch ~base ~dir ~now (state : State.t) version
@@ -86,26 +86,52 @@ let stage ?node_major ~fetch ~base ~dir ~now (state : State.t) version
     Stage.from_archive ?node_major ~dir ~version bytes
   in
   match staged with
-  | Ok name -> (Ok name, { state with pending = None })
+  | Ok name ->
+      (* A version with strikes keeps them through the trial it now starts: the trial's verdict
+         clears them (healthy) or adds one (Supervisor). *)
+      let pending =
+        match state.pending with
+        | Some p when Version.equal p.pending_version version && p.strikes > 0
+          ->
+            Some p
+        | _ -> None
+      in
+      (Ok name, { state with pending })
+  | Error (Stage.Suspect why) -> (
+      let state = State.strike state version why ~now in
+      match state.pending with
+      | Some p when Version.equal p.pending_version version ->
+          (Error (Stage_failed (version, why, p.due_at)), state)
+      | _ -> (Error (Refused (version, why ^ State.struck_out_suffix)), state))
   | Error (Stage.Refuse why) ->
       ( Error (Refused (version, why)),
         State.refuse { state with pending = None } version why )
   | Error (Stage.Retry why) ->
-      let attempts =
+      let attempts, strikes =
         match state.pending with
-        | Some p when Version.equal p.pending_version version -> p.attempts + 1
-        | _ -> 1
+        | Some p when Version.equal p.pending_version version ->
+            (p.attempts + 1, p.strikes)
+        | _ -> (1, 0)
       in
       let due_at = now +. backoff attempts in
       ( Error (Stage_failed (version, why, due_at)),
         {
           state with
           pending =
-            Some { pending_version = version; cause = why; attempts; due_at };
+            Some
+              { pending_version = version; cause = why; attempts; due_at; strikes };
         } )
 
-let run ?node_major ?self_test ?circle ~(fetch : Feed.fetch) ~base ~platform
+(* The pass holds the state's lock from its read to its write (State.with_lock), so a signer set the
+   web UI adopts or a person's Try again meanwhile waits for it rather than being overwritten. *)
+let rec run ?node_major ?self_test ?circle ~(fetch : Feed.fetch) ~base ~platform
     ~dir ~now () =
+  State.with_lock (Filename.concat dir "update.json") (fun () ->
+      run_locked ?node_major ?self_test ?circle ~fetch ~base ~platform ~dir ~now
+        ())
+
+and run_locked ?node_major ?self_test ?circle ~(fetch : Feed.fetch) ~base
+    ~platform ~dir ~now () =
   let state_path = Filename.concat dir "update.json" in
   let* state = State.load state_path in
   let state = with_good ~dir state in

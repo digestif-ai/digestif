@@ -1435,7 +1435,7 @@ let update_stage =
             U.Stage.from_archive ~dir ~version:(U.Trust_root.version ()) bytes
           with
           | Ok name -> print_endline (U.Layout.release_dir dir name)
-          | Error (U.Stage.Retry e | U.Stage.Refuse e) ->
+          | Error (U.Stage.Retry e | U.Stage.Suspect e | U.Stage.Refuse e) ->
               die "%s would not stage: %s" archive e)
       $ data_dir $ archive)
 
@@ -2508,15 +2508,18 @@ let run =
               self_update ~woke
             end
           in
-          pass ();
-          (* The first pass opened the store, synced and started the UI: the supervisor may keep
-             this release (Supervisor). *)
+          (* The release has started: its store is open and initialized, its UI serves and its
+             behaviors are watched, so the supervisor may keep it (Supervisor). This comes before
+             the first pass, whose length grows with the node's history and the network's mood and
+             says nothing about whether the release runs; a pass that fails is the pass's problem
+             (guarded) and never ends the process. DIG-223 *)
           U.Health.write (node_dir dir)
             {
               version = U.Version.to_string (U.Trust_root.version ());
               pid = Unix.getpid ();
               at = Unix.gettimeofday ();
             };
+          pass ();
           self_update ~woke:false;
           (* Sleep in short steps and compare wall clocks: a jump means the machine slept, so sync
              now and look for a release. *)
@@ -2847,7 +2850,7 @@ let adopt dir behaviors =
               ~behaviors ()
           with
           | Ok name -> name
-          | Error (U.Stage.Retry e | U.Stage.Refuse e) -> die "%s" e)
+          | Error (U.Stage.Retry e | U.Stage.Suspect e | U.Stage.Refuse e) -> die "%s" e)
   in
   U.Trial.clear dir;
   U.Layout.point_current dir name;

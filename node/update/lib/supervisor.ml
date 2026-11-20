@@ -3,8 +3,13 @@
    its child. Outside a switch it only passes the child's exit on to the service manager, which
    restarts it. During a switch's trial it watches the child: once the new release writes
    health.json the switch is kept (good moves, update.json records the version); if the child
-   exits first, or stays unhealthy for [health_bound] seconds of awake time, current moves back to
-   good and the version is refused from then on. Past the trial it counts the child's abnormal exits
+   crashes first, current moves back to good and the version is refused from then on. A child that
+   stays unhealthy for [health_bound] seconds of awake time, exits for its environment, or outlives
+   [max_starts] supervisor starts may be this machine rather than the release: current moves back
+   just the same, and the version counts a strike (State.strike), tried again after a backoff and
+   refused only on the last strike. Every write of update.json here leaves the signer set as it is
+   stored (State.load ~reconcile:false): the supervisor's binary is the oldest the node runs, and its
+   build's set must never widen what a newer release adopted. Past the trial it counts the child's abnormal exits
    on disk (Crashes): three within ten minutes of awake time move current and good back to the
    newest older release on disk (Move_back) and refuse the version, once: a release the node went
    back to that keeps crashing too stays, since the cause is then the machine. The recovery lives here, not in `digestif run`,
@@ -57,40 +62,58 @@ let report dir lines = Report.note (Schedule.report_path dir) lines
 
 let promote dir (t : Trial.t) =
   Layout.point_good dir t.release;
-  let path = Schedule.state_path dir in
-  (match State.load path with
-  | Ok s ->
-      let pending =
-        match s.pending with
-        | Some p when Version.compare p.pending_version t.version <= 0 -> None
-        | p -> p
-      in
-      State.save path
-        (State.note_install
-           { s with installed = t.version; pending }
-           t.version ~now:(Unix.gettimeofday ()))
-  | Error _ -> ());
+  ignore
+    (State.update ~reconcile:false (Schedule.state_path dir) (fun s ->
+         let pending =
+           match s.pending with
+           | Some p when Version.compare p.pending_version t.version <= 0 ->
+               None
+           | p -> p
+         in
+         Ok
+           (State.note_install
+              { s with installed = t.version; pending }
+              t.version ~now:(Unix.gettimeofday ()))));
   Trial.clear dir;
   report dir [ "Updated Digestif to " ^ Version.to_string t.version ^ "." ];
   Healthy t.version
 
-let roll_back dir (t : Trial.t) why =
+(* How a trial that failed counts against its version: refused for good, or one strike. *)
+type verdict = Refuse | Strike
+
+let roll_back ?(verdict = Refuse) ?(wall = Unix.gettimeofday) dir (t : Trial.t)
+    why =
   Layout.point_current dir t.previous;
-  let path = Schedule.state_path dir in
-  (match State.load path with
-  | Ok s -> State.save path (State.refuse s t.version why)
-  | Error _ -> ());
+  let state =
+    State.update ~reconcile:false (Schedule.state_path dir) (fun s ->
+        Ok
+          (match verdict with
+          | Refuse -> State.refuse s t.version why
+          | Strike -> State.strike s t.version why ~now:(wall ())))
+  in
   Trial.clear dir;
   let back =
     match Layout.version_of dir t.previous with
     | Some v -> Version.to_string v
     | None -> t.previous
   in
+  let next =
+    match state with
+    | Ok { pending = Some p; _ }
+      when verdict = Strike && Version.equal p.pending_version t.version ->
+        Printf.sprintf "; it is tried again after %s"
+          (Schedule.clock_line p.due_at)
+    | Ok s when verdict = Strike && State.is_refused s t.version ->
+        Printf.sprintf "; that was its %d%s such try, so it is refused"
+          State.strike_limit
+          (if State.strike_limit = 3 then "rd" else "th")
+    | _ -> ""
+  in
   report dir
     [
-      Printf.sprintf "Release %s was rolled back to %s: %s."
+      Printf.sprintf "Release %s was rolled back to %s: %s%s."
         (Version.to_string t.version)
-        back why;
+        back why next;
     ];
   Rolled_back (t.version, why)
 
@@ -98,9 +121,10 @@ let binary dir = Layout.binary_in (Layout.current_link dir)
 
 (* Run a trial to its end: the child stays running when the release is kept. *)
 let trial ops dir (t : Trial.t) =
+  let roll_back = roll_back ~wall:ops.wall in
   if t.starts >= max_starts then
     ( None,
-      roll_back dir t
+      roll_back ~verdict:Strike dir t
         (Printf.sprintf "it did not report healthy in %d starts" max_starts) )
   else begin
     Trial.save dir { t with starts = t.starts + 1 };
@@ -115,7 +139,13 @@ let trial ops dir (t : Trial.t) =
       else
         match ops.poll pid with
         | Some st ->
-            (None, roll_back dir t (describe st ^ " before it reported healthy"))
+            (* A crash is the release's; an exit for its environment (its UI port held) or a stop
+               somebody asked for is not, and counts a strike. DIG-223 *)
+            ( None,
+              roll_back
+                ~verdict:(if abnormal st then Refuse else Strike)
+                dir t
+                (describe st ^ " before it reported healthy") )
         | None ->
             if ops.stopping () then begin
               (* Not the release's fault: the next supervisor start tries again. *)
@@ -125,7 +155,7 @@ let trial ops dir (t : Trial.t) =
             else if awake.Awake.elapsed >= health_bound then begin
               ops.terminate pid;
               ( None,
-                roll_back dir t
+                roll_back ~verdict:Strike dir t
                   (Printf.sprintf
                      "it did not report healthy within %.0f minutes of awake \
                       time"
@@ -201,7 +231,7 @@ let move_back ~self_test dir (t : Crashes.t) version =
             which makes this machine the likely cause"
            from)
   | None -> (
-      match State.load path with
+      match State.load ~reconcile:false path with
       | Error e -> stayed ("its update state could not be read (" ^ e ^ ")")
       | Ok state -> (
           let refused = State.refuse state version crash_why in
