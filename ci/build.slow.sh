@@ -27,7 +27,7 @@
 # (ci/test-binaries.sh), so a listed spec of a deleted binary is reported `ci-lists: unknown`.
 #
 # PAGE BUDGET (ISS-41944): node/'s dune suite includes node/web/perf, which fails when a node page's
-# p95 over a heavy-machine fixture is over 50ms or meaningfully over node/web/perf/baseline.json
+# p95 CPU time over a heavy-machine fixture is over 50ms or meaningfully over node/web/perf/baseline.json
 # (docs/development.md, Page budget).
 #
 # ci-test-reports: node/_build/ci-test-reports/*.xml
