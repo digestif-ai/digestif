@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chooseAction, headerActions } from '../actions.ts';
+import { chooseAction, headerActions, settled } from '../actions.ts';
 import { expect, test } from '../fixtures.ts';
 
 test.beforeEach(async ({ request }) => {
@@ -142,6 +142,7 @@ test.describe('after first run', () => {
 
   test("the Feed's one header button is Actions: Post to the circle, Write a note now and Pause", async ({ page }) => {
     await page.goto('/feed');
+    await settled(page);
     await expect(page.getByTestId('page-header').getByRole('button')).toHaveCount(1);
     await expect.poll(() => headerActions(page)).toEqual(['Post to the circle', 'Write a note now', 'Pause']);
     await chooseAction(page, 'Write a note now');
