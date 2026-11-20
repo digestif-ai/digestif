@@ -113,7 +113,7 @@ export interface ItemFilter {
 export interface Client {
   status(): Promise<ApiResponse<NodeStatus>>;
   /** Newest first; [page] reads `limit` rows older than `before`. */
-  feed(page?: { limit: number; before?: string }): Promise<ApiResponse<FeedItem[]>>;
+  feed(page?: { limit: number; before?: string | undefined }): Promise<ApiResponse<FeedItem[]>>;
   message(hash: string): Promise<ApiResponse<Message>>;
   post(form: PostForm): Promise<ApiResponse<Message>>;
   /** Ask the Inbox agent for a draft reply to another member's note; it answers at once and the draft arrives as agent_answer (ISS-83154). */
