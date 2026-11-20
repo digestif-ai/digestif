@@ -2338,6 +2338,13 @@ module Stages = struct
 
   let set_read_mark log n = set_config log k_read_mark (string_of_int n)
 
+  (* Whether the last read run said it left messages for the next one (it exited
+     Behaviors.read_left_more): what is past its batch is read on the next pass, rather than once
+     another message arrives. Cleared when a read run that reads the circle is spawned. DIG-294 *)
+  let k_read_more = "ui_read_more"
+  let read_more log = config log k_read_more = Some "1"
+  let set_read_more log b = set_config log k_read_more (if b then "1" else "0")
+
   let newest_order (log : Log.t) =
     match Log.rows log "SELECT MAX(local_order) FROM envelopes" [] with
     | [ [| v |] ] -> Log.int v

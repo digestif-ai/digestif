@@ -8,7 +8,8 @@
   mirage-crypto-rng.unix
   sqlite3
   yojson
-  unix))
+  unix
+  threads.posix))
 
 (rule
  (target bip39_words.ml)

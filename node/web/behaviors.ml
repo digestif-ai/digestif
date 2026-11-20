@@ -543,6 +543,15 @@ let signal_name s =
   else if s = Sys.sigkill then "SIGKILL"
   else Printf.sprintf "signal %d" s
 
+(* The exit status of a read run that read and recorded its batch and left messages past it for the
+   next run (docs/behaviors.md, Output, exit and the deadline): a success, after which the read is
+   due again on the next pass. The hook stops saying so once its day's budget is spent. DIG-294 *)
+let read_left_more = "exited 3"
+
+(* Whether a run ended as a success: exited 0, or a read run that left more for the next. *)
+let succeeded h status =
+  status = "exited 0" || (h = Read && status = read_left_more)
+
 let status_of = function
   | Unix.WEXITED c -> Printf.sprintf "exited %d" c
   | WSIGNALED s -> "killed by " ^ signal_name s
@@ -675,7 +684,7 @@ let settle_read ?(now = Unix.gettimeofday ()) (log : Log.t) r status =
       (Store.Problems.open_ log)
   in
   if said_why then ()
-  else if status = "exited 0" then
+  else if succeeded Read status then
     Store.Problems.resolve log ~job:"read_circle" ()
   else
     ignore
@@ -751,9 +760,11 @@ let reap ?(now = Unix.gettimeofday ()) t =
       if r.hook = Read then
         Store.Reviews.settle_drafts t.node.log ~at:(Time_fmt.of_unix now)
           ~why:
-            (if status = "exited 0" then "Your agent wrote no reply."
+            (if succeeded Read status then "Your agent wrote no reply."
              else "The run that drafts it failed.");
       if r.hook = Read then settle_read ~now t.node.log r status;
+      if r.hook = Read && status = read_left_more then
+        Store.Stages.set_read_more t.node.log true;
       { f_hook = r.hook; status; seconds = now -. r.started })
     finished
 
@@ -771,9 +782,11 @@ let wait_all ?(clock = Unix.gettimeofday) t =
   go []
 
 (* The reading agent replies and proposes in the member's name, so it starts at Active and from
-   there reads what came in while Onboarding or Paused; a status note alone never starts it. *)
+   there reads what came in while Onboarding or Paused; a status note alone never starts it. A run
+   that left messages past its batch (read_left_more) makes it due again on the next pass. *)
 let read_due (log : Log.t) ~own =
-  Store.Stages.active log && Store.Stages.unread log ~own
+  Store.Stages.active log
+  && (Store.Stages.read_more log || Store.Stages.unread log ~own)
 
 (* Whether the nightly run could start on this pass, due or asked for. *)
 let nightly_can_start t =
@@ -829,6 +842,7 @@ let after_pass ?(now = Unix.gettimeofday ()) t ~stored:_ =
     if executable log Read <> None && not (is_running t Read) then
       if read_due log ~own:(Node.own_keys t.node) then begin
         Store.Stages.set_read_mark log (Store.Stages.newest_order log);
+        Store.Stages.set_read_more log false;
         [ (Read, true) ]
       end
       else if Store.Reviews.drafts_waiting log then [ (Read, false) ]

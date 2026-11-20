@@ -302,8 +302,13 @@ let push_relay ?(may_drop = true) (node : Node.t) transport (r : Log.relay_row)
       (fun author -> Log.unheld_by node.log ~relay:r.url author)
       (Node.own_keys node)
   in
+  (* Another relay's thread (sync_relays) may drop and re-sign an own envelope while this relay's
+     call is out: a row no longer in the log is never pushed or dropped again, and what is left to
+     push is read anew. *)
+  let gone (row : Log.row) = Log.find node.log row.hash = None in
   let rec go pushed dropped = function
     | [] -> { pushed; dropped; error = None }
+    | (row : Log.row) :: _ when gone row -> go pushed dropped (unpushed ())
     | (row : Log.row) :: rest -> (
         match signer node row with
         | Error why -> { pushed; dropped; error = Some why }
@@ -319,6 +324,8 @@ let push_relay ?(may_drop = true) (node : Node.t) transport (r : Log.relay_row)
           ~seq:row.signed.envelope.seq
           ~detail:(r.url ^ " refused " ^ row.hash ^ " as a fork");
         go pushed dropped rest
+    | Error e when may_drop && permanently_refused e && gone row ->
+        go pushed dropped (unpushed ())
     | Error e when may_drop && permanently_refused e -> (
         let redundant = readmits node row in
         match Node.drop_refused node row with
@@ -448,7 +455,7 @@ let replicate_relay ?(now = Unix.gettimeofday ()) (node : Node.t) transport ~key
   go 0 (replicas ~now node r)
 
 (* Read, then push, then read again a relay the push admitted this node to. The second value says
-   whether the relay read clean, so admits this node and may be replicated to (replicate_relays). *)
+   whether the relay read clean, so admits this node and may be replicated to (sync_relays). *)
 let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
   let fetched, stored, error = fetch_relay ?on_stored node transport ~key r in
   (* A relay that refused the read (this node not admitted there yet) still takes our appends:
@@ -475,16 +482,84 @@ let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
   ( { relay = r.url; fetched; stored; pushed; dropped; replicated = 0; error },
     read_clean )
 
-(* Replicate to every relay that read clean what admits other members there. It runs once every
-   relay has been read, so a join this node learns from one relay reaches every other relay in the
-   same sync, whatever order the relays are read in. *)
-let replicate_relays (node : Node.t) transport ~key relays synced =
-  List.map2
-    (fun (r : Log.relay_row) (report, read_clean) ->
+(* [f transport x] for every [x] at once, a thread each, so a relay that accepts the connection and
+   never answers costs a sync its own call's max-time once, not once per relay behind it. The node's
+   log is one connection, so the threads take turns on it: each holds [turn] while it reads or writes
+   the log and lets go only for the relay call itself, which runs outside every transaction
+   (fetch_relay stores a page after its call returns). A call made inside a transaction this sync did
+   not open keeps the turn, so no other thread writes into that transaction. A thread's exception is
+   raised here once every thread has finished. DIG-293 *)
+let concurrently (node : Node.t) transport f xs =
+  match xs with
+  | [] | [ _ ] -> List.map (f transport) xs
+  | _ ->
+      let turn = Mutex.create () in
+      let depth = node.log.depth in
+      let transport : Relay_client.transport =
+       fun ~meth ~url ~headers ~body ->
+        if node.log.depth <> depth then transport ~meth ~url ~headers ~body
+        else begin
+          Mutex.unlock turn;
+          Fun.protect
+            ~finally:(fun () -> Mutex.lock turn)
+            (fun () -> transport ~meth ~url ~headers ~body)
+        end
+      in
+      let run x slot =
+        Mutex.lock turn;
+        (slot :=
+           match f transport x with
+           | v -> Ok v
+           | exception e -> Error (e, Printexc.get_raw_backtrace ()));
+        Mutex.unlock turn
+      in
+      let slots =
+        List.map (fun _ -> ref (Error (Exit, Printexc.get_callstack 0))) xs
+      in
+      List.map2 (fun x s -> Thread.create (run x) s) xs slots
+      |> List.iter Thread.join;
+      List.map
+        (fun s ->
+          match !s with
+          | Ok v -> v
+          | Error (e, bt) -> Printexc.raise_with_backtrace e bt)
+        slots
+
+(* An own envelope one relay returned (an answer the mail key wrote, which an emailed link appended
+   there) that another relay's push, running beside that read, did not see yet: a relay that read
+   clean is pushed it once every read is done, so it reaches every relay in the same sync. A relay
+   with nothing left to push costs no call. *)
+let push_late (node : Node.t) transport (r : Log.relay_row)
+    ((report : relay_report), read_clean) =
+  if not read_clean then (report, read_clean)
+  else
+    let p = push_relay node transport r in
+    let error = match report.error with Some e -> Some e | None -> p.error in
+    if error <> report.error then Log.record_sync node.log r.url error;
+    ( {
+        report with
+        pushed = report.pushed + p.pushed;
+        dropped = report.dropped + p.dropped;
+        error;
+      },
+      read_clean )
+
+(* Read and push every relay at once, push what a read brought in, then replicate to every relay
+   that read clean what admits other members there. Replication runs once every relay has been
+   read, so a join this node learns from one relay reaches every other relay in the same sync,
+   whatever order the relays are read in. *)
+let sync_relays ?on_stored (node : Node.t) transport ~key relays =
+  let each f xs = concurrently node transport f xs in
+  let synced =
+    each (fun t r -> (r, sync_relay ?on_stored node t ~key r)) relays
+  in
+  let synced = each (fun t (r, s) -> (r, push_late node t r s)) synced in
+  each
+    (fun t ((r : Log.relay_row), ((report : relay_report), read_clean)) ->
       if read_clean then
-        { report with replicated = replicate_relay node transport ~key r }
+        { report with replicated = replicate_relay node t ~key r }
       else report)
-    relays synced
+    synced
 
 (* A member who runs a relay publishes a relay message, and every node adds it (design.md, Two
    relays to start). Each relay message the fold applied, so written by an admitted member, adds its
@@ -519,10 +594,7 @@ let sync ?(transport = Relay_client.curl) ?on_stored (node : Node.t) =
   | Ok key ->
       let relays = Log.relays node.log in
       let mark = Log.last_fault_id node.log in
-      let synced =
-        List.map (sync_relay ?on_stored node transport ~key) relays
-      in
-      let reports = replicate_relays node transport ~key relays synced in
+      let reports = sync_relays ?on_stored node transport ~key relays in
       let fold = Node.fold node in
       Log.transaction node.log (fun () ->
           detect_faults node fold;

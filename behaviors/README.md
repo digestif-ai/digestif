@@ -453,7 +453,9 @@ This story reads and records; it calls no model.
   `cursor` is the hash of the newest feed item read, a status note or the member's own included. `counters`
   holds no budget yet and resets when `day` (the local date) changes. `read.log` is the behavior's stdout and
   stderr, which the node appends to `behaviors/read.log`.
-- Exit 0 once the cursor and seen set are written; 1 when the feed could not be read or `deadline` passed
+- Exit 0 once the cursor and seen set are written; 3 when they are and messages past the batch are left for
+  the next run, while the day's `max_agent_runs` has a run left and the agent's run finished (the node then runs
+  the next read on its next pass, docs/behaviors.md); 1 when the feed could not be read or `deadline` passed
   first, or `state.json` is unreadable (the cursor stays, so the next run reads again); 2 for a context it
   refuses, an `api` that is not the node's loopback address included. `deadline` is measured in time the machine
   is awake: a sleep moves it later by as long (`src/awake.ts`, as the nightly). On SIGTERM, the node's

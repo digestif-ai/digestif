@@ -3018,6 +3018,53 @@ let behavior_exit_watched () =
       Alcotest.(check bool) "settled" false (Behaviors.busy t)
   | _ -> Alcotest.fail "one behavior finished"
 
+(* DIG-294: a read run that exits 3 left messages past its batch. It is a success, and the read is
+   due again on the next pass though nothing new arrived; the run spawned then clears it, and a run
+   that exits 0 leaves nothing due. *)
+let behavior_read_left_more () =
+  let n = behavior_node () in
+  let exit_code = Filename.concat n.dir "exit-code" in
+  let write_exit c =
+    Out_channel.with_open_bin exit_code (fun oc -> output_string oc c)
+  in
+  write_exit "3";
+  ok
+    (Behaviors.set_executable n.log Read
+       (script n.dir (Printf.sprintf "exit $(cat %s)\n" exit_code)));
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
+  let now = Unix.gettimeofday () in
+  Store.Stages.set n.log "active";
+  ignore
+    (ok
+       (Node.import n
+          (Envelope.create
+             ~key:(Crypto.generate_signing_key ())
+             ~seq:1 ~created_at:(Time_fmt.now ()) ~epoch:0 ~kind:"summary"
+             (Content.summary_body ~text:"Worked on: x." ~voice:"agent" ()))));
+  let pass () = Behaviors.after_pass ~now t ~stored:0 |> List.map fst in
+  let finish () =
+    match Behaviors.wait_all t with
+    | [ f ] -> f.status
+    | _ -> Alcotest.fail "one behavior finished"
+  in
+  Alcotest.(check bool) "a new note spawns a read" true (pass () = [ Read ]);
+  Alcotest.(check string) "it left more" "exited 3" (finish ());
+  Alcotest.(check bool)
+    "a success: no read_circle problem" true
+    (List.for_all
+       (fun (p : Store.Problems.problem) -> p.job <> "read_circle")
+       (Store.Problems.open_ n.log));
+  Alcotest.(check bool)
+    "nothing new arrived, and the next pass reads again" true
+    (pass () = [ Read ]);
+  write_exit "0";
+  Alcotest.(check string) "that run left nothing" "exited 0" (finish ());
+  Alcotest.(check bool) "nothing is due" true (pass () = []);
+  Alcotest.(check bool)
+    "a success for behavior run" true
+    (Behaviors.succeeded Read "exited 3"
+    && not (Behaviors.succeeded Nightly "exited 3"))
+
 (* A nightly run that fails leaves its local date due, so the next pass tries again, up to three
    runs a date; after the third the date is over and the failure says why. A run that exits 0 ends
    the date. ISS-36640 *)
@@ -14812,6 +14859,7 @@ let () =
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
           Alcotest.test_case "exit watched" `Quick behavior_exit_watched;
+          Alcotest.test_case "read left more" `Quick behavior_read_left_more;
           Alcotest.test_case "retry" `Quick behavior_retry;
           Alcotest.test_case "read settles its problem" `Quick
             behavior_read_settle;

@@ -268,9 +268,16 @@ export interface ReadOptions {
 export const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
- * One run. Returns the exit status: 0 once what was read is recorded (or nothing was new), 1 when the
- * feed or the state file could not be read or the deadline passed first (the cursor stays, so the next
- * run reads it again), 2 when the api is not the node's loopback address.
+ * The exit status of a run that read and recorded its batch and left messages past it, which the node
+ * takes as a success that makes the read due again on its next pass (docs/behaviors.md). DIG-294
+ */
+export const LEFT_MORE = 3;
+
+/**
+ * One run. Returns the exit status: 0 once what was read is recorded (or nothing was new), LEFT_MORE
+ * when it was and messages past the batch are left for the next run while the day's budget has runs
+ * left, 1 when the feed or the state file could not be read or the deadline passed first (the cursor
+ * stays, so the next run reads it again), 2 when the api is not the node's loopback address.
  */
 export async function runRead(options: ReadOptions): Promise<number> {
   const { ctx } = options;
@@ -665,6 +672,14 @@ export async function runRead(options: ReadOptions): Promise<number> {
     await settle();
     log(`read ${fresh.length} new feed items and ${items.length} unreviewed items, ran over ${batch.length}`);
     if (carried > 0) log(`${carried} past the batch of ${cap} are left for the next run`);
+    // The node runs the next read on its next pass only for a run that left due messages behind and
+    // whose agent run finished, while the day's budget still allows one: a failed run's batch waits
+    // for its retry delay, and a spent budget defers what is left to a day with budget.
+    const leftDue = carried > 0 || (!over && waiting.some(due));
+    if (leftDue && !runProblem && !overBudget(state, config)) {
+      log("more is left past the batch: the node runs the next read on its next pass");
+      return LEFT_MORE;
+    }
     return 0;
   } catch (e) {
     const why = e instanceof DeadlinePassed ? "the deadline passed before the feed was read" : `the run failed: ${(e as Error).message}`;
