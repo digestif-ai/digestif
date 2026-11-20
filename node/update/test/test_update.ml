@@ -3709,8 +3709,8 @@ let relay_sig_asset secret =
     (Release.add_signature ~domain:Release.relay_release_domain ~secret
        bytes_030 [])
 
-let relay_listing ?(node_draft = false) ?(draft = true) ?(extra = []) ~signed_by
-    () =
+let relay_listing ?(node_draft = false) ?(draft = true) ?(extra = [])
+    ?manifest_digest ~signed_by () =
   let asset ?digest id name =
     `Assoc
       ([ ("id", `Int id); ("name", `String name) ]
@@ -3726,7 +3726,7 @@ let relay_listing ?(node_draft = false) ?(draft = true) ?(extra = []) ~signed_by
               ( "assets",
                 `List
                   ([
-                     asset 51 "manifest.json";
+                     asset ?digest:manifest_digest 51 "manifest.json";
                      asset ~digest:doc_030.bundle.bundle_sha256 52
                        "digestif-relay-0.3.0.tar.gz";
                    ]
@@ -3769,11 +3769,12 @@ type relay_fake = {
   r_git : string list list ref;
 }
 
-let relay_answer f ?node_draft ?draft ?extra ?(relay_bytes = bytes_030)
-    ~signed_by args =
+let relay_answer f ?node_draft ?draft ?extra ?manifest_digest
+    ?(relay_bytes = bytes_030) ~signed_by args =
   match args with
   | [ "api"; "repos/o/r/releases?per_page=50" ] ->
-      Ok (relay_listing ?node_draft ?draft ?extra ~signed_by ())
+      Ok
+        (relay_listing ?node_draft ?draft ?extra ?manifest_digest ~signed_by ())
   | [ "api"; "-H"; _; "repos/o/r/releases/assets/50" ] ->
       (* Roman's key over other bytes: a signature by a signer that does not verify. *)
       Ok
@@ -3806,12 +3807,15 @@ let relay_answer f ?node_draft ?draft ?extra ?(relay_bytes = bytes_030)
       Ok ""
   | _ -> Error ("unexpected gh " ^ String.concat " " args)
 
-let relay_gh ?node_draft ?draft ?extra ?relay_bytes ~signed_by () =
+let relay_gh ?node_draft ?draft ?extra ?manifest_digest ?relay_bytes ~signed_by
+    () =
   let f = { r_calls = ref []; r_uploaded = ref None; r_git = ref [] } in
+  let m = Mutex.create () in
   let gh args =
-    f.r_calls := !(f.r_calls) @ [ args ];
+    Mutex.protect m (fun () -> f.r_calls := !(f.r_calls) @ [ args ]);
     with_attest
-      (relay_answer f ?node_draft ?draft ?extra ?relay_bytes ~signed_by)
+      (relay_answer f ?node_draft ?draft ?extra ?manifest_digest ?relay_bytes
+         ~signed_by)
       args
   in
   (f, gh)
@@ -3832,7 +3836,9 @@ let run_relay ?node_draft ?relay_bytes ?(signed_by = []) ?(key = mike)
               ("https://dinners-roman.example", Ok None);
             ]);
       publish =
-        (fun v ->
+        (fun ~manifest v ->
+          Alcotest.(check string)
+            "handed the manifest it downloaded" bytes_030 manifest;
           published := v :: !published;
           Ok ());
     }
@@ -4086,9 +4092,10 @@ let test_sign_unread_draft () =
         && contains ~sub:"newest node release that is not a draft" e)
 
 let publish_env ?(signed_by = [ (53, mike); (54, roman) ]) ?(draft = true)
-    ?extra ?(trust : Policy.trust = { signers = founders; revoked = [] }) ~dir
-    ~announced () =
-  let f, gh = relay_gh ~draft ?extra ~signed_by () in
+    ?extra ?manifest_digest
+    ?(trust : Policy.trust = { signers = founders; revoked = [] })
+    ?(timer = Timing.none) ~dir ~announced () =
+  let f, gh = relay_gh ~draft ?extra ?manifest_digest ~signed_by () in
   let said = Buffer.create 256 in
   let env : Relay_publish.env =
     {
@@ -4103,9 +4110,62 @@ let publish_env ?(signed_by = [ (53, mike); (54, roman) ]) ?(draft = true)
           Result.map (fun () -> not before) (write dir));
       announce = (fun _ -> Ok announced);
       say = (fun l -> Buffer.add_string said (l ^ "\n"));
+      timer;
     }
   in
   (f, env, said)
+
+let manifest_downloaded (f : relay_fake) =
+  List.exists
+    (fun c -> c = [ "api"; "-H"; "Accept: application/octet-stream"; "repos/o/r/releases/assets/51" ])
+    !(f.r_calls)
+
+(* The manifest sign --next already downloaded is used while the draft's manifest.json is still
+   those bytes by GitHub's digest, and downloaded again when it is not; every step of the run is
+   timed into the run's log as settle <step>. *)
+let test_relay_publish_reuses_the_manifest () =
+  let log = Filename.concat (temp_dir ()) "timings.log" in
+  let timer = Timing.create ~path:log () in
+  let f, env, _ =
+    publish_env ~manifest_digest:(Keys.hash_of_bytes bytes_030) ~timer
+      ~dir:(temp_dir ()) ~announced:(Relay_publish.Posted "h") ()
+  in
+  (match Relay_publish.run ~manifest:bytes_030 env ~version:(v "0.3.0") with
+  | Ok (Relay_publish.Posted "h") -> ()
+  | Ok _ -> Alcotest.fail "the stub's answer was not returned"
+  | Error e -> Alcotest.fail (Relay_publish.error_to_string e));
+  Alcotest.(check bool) "not downloaded again" false (manifest_downloaded f);
+  let steps =
+    In_channel.with_open_bin log In_channel.input_all
+    |> String.split_on_char '\n'
+    |> List.filter_map (fun l ->
+           match String.split_on_char '\t' l with
+           | [ _; step; _ ] -> Some step
+           | _ -> None)
+    |> List.sort compare
+  in
+  Alcotest.(check (list string))
+    "each step timed"
+    [
+      "settle announce";
+      "settle channel";
+      "settle listing";
+      "settle manifest";
+      "settle release-edit";
+      "settle signatures";
+      "settle trust";
+    ]
+    steps;
+  let f, env, _ =
+    publish_env ~manifest_digest:(Keys.hash_of_bytes bytes_030)
+      ~dir:(temp_dir ()) ~announced:(Relay_publish.Posted "h") ()
+  in
+  (match Relay_publish.run ~manifest:"other bytes" env ~version:(v "0.3.0") with
+  | Ok (Relay_publish.Posted "h") -> ()
+  | Ok _ -> Alcotest.fail "the stub's answer was not returned"
+  | Error e -> Alcotest.fail (Relay_publish.error_to_string e));
+  Alcotest.(check bool) "downloaded when the digest differs" true
+    (manifest_downloaded f)
 
 let test_relay_publish () =
   let dir = temp_dir () in
@@ -4821,7 +4881,7 @@ let run_relays_result ?public_key ~published ~patches ~signed_by ~key answer =
     {
       relay_versions = (fun () -> None);
       publish =
-        (fun v ->
+        (fun ~manifest:_ v ->
           published_ := !published_ @ [ Version.to_string v ];
           Ok ());
     }
@@ -6507,6 +6567,8 @@ let () =
           t "relay-publish" test_relay_publish;
           t "relay-publish waits" test_relay_publish_waits;
           t "relay-publish other manifest" test_relay_publish_other_manifest;
+          t "relay-publish reuses the manifest"
+            test_relay_publish_reuses_the_manifest;
           t "relay-publish keeps the verified signature"
             test_relay_publish_keeps_verified_signature;
           t "relay-publish checks the channel's trust"
