@@ -12,6 +12,8 @@ type transport =
   body:string option ->
   (response, string) result
 
+let connect_timeout = 10
+
 let curl : transport =
  fun ~meth ~url ~headers ~body ->
   let hs = List.concat_map (fun (k, v) -> [ "-H"; k ^ ": " ^ v ]) headers in
@@ -29,6 +31,10 @@ let curl : transport =
          "=http,https";
          "--proto-redir";
          "=https";
+         (* A relay that does not answer the connection costs this many seconds of a sync, not the
+            whole minute an answering relay may take. *)
+         "--connect-timeout";
+         string_of_int connect_timeout;
          "--max-time";
          "60";
          "-X";

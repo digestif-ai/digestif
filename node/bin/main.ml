@@ -1573,7 +1573,7 @@ let relay_pass (n : Node.t) (r : Sync.report) (p : Digestif_daily.Daily.report)
         (fun o ->
           Printf.printf "%s relay: %s\n" (Time_fmt.now ())
             (Digestif_relay_deploy.Deploy.outcome_to_string o))
-        (Digestif_relay_deploy.Deploy.pass ~dir:n.dir n ~releases
+        (Digestif_relay_deploy.Deploy.pass ~fold:r.fold ~dir:n.dir n ~releases
            ~now:(Unix.gettimeofday ()))
 
 let report_daily (p : Daily.report) =

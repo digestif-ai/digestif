@@ -803,7 +803,7 @@ type added = {
 }
 
 (* A relay as the signer's own node last read it: its url and the relay_version its GET /v0/circle
-   answered at the node's last sync with it (the node's relay_versions table), None for a relay
+   answered at the node's last read of it, at most six hours old (the node's relay_versions table), None for a relay
    built before relay releases, or why there is none to show. *)
 type relay_read = string * (string option, string) result
 

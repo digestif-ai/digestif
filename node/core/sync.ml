@@ -265,10 +265,8 @@ let push_relay ?(may_drop = true) (node : Node.t) transport (r : Log.relay_row)
     =
   let unpushed () =
     List.concat_map
-      (fun author -> Log.by_author node.log author)
+      (fun author -> Log.unheld_by node.log ~relay:r.url author)
       (Node.own_keys node)
-    |> List.filter (fun (row : Log.row) ->
-        not (Log.held_by node.log ~relay:r.url row.hash))
   in
   let rec go pushed dropped = function
     | [] -> { pushed; dropped; error = None }
@@ -332,11 +330,15 @@ let bootstrapped error pushed push_error =
    members this way, since the guest's own late join is judged at that relay's clock and refused. A
    device message another device of the identity wrote is not here: a relay takes it only from its
    author, whose node pushes it as its own once the join has admitted that device. *)
-let replicas (node : Node.t) (r : Log.relay_row) =
+let replicas ?(now = Unix.gettimeofday ()) (node : Node.t) (r : Log.relay_row) =
   let own = Node.own_keys node in
   let lacks (row : Log.row) =
     (not (List.mem row.signed.envelope.author own))
-    && not (Log.held_by node.log ~relay:r.url row.hash)
+    && (not (Log.held_by node.log ~relay:r.url row.hash))
+    &&
+    match Log.replica_refusal node.log ~relay:r.url row.hash with
+    | Some (_, retry_at) -> now >= retry_at
+    | None -> true
   in
   let dinners =
     List.filter lacks
@@ -362,6 +364,12 @@ let replicas (node : Node.t) (r : Log.relay_row) =
     in
     in_fold_order dinners @ in_fold_order joins @ in_fold_order devices
 
+(* How long a replica a relay refused [refusals] times waits before it is posted again: ten minutes,
+   doubling with each refusal, never more than a day. A refusal can lift (the dinner a join names
+   reaches the relay from its host), so it is retried, but never on every sync. *)
+let replica_backoff refusals =
+  Float.min 86_400. (600. *. (2. ** float_of_int (max 0 (refusals - 1))))
+
 (* Push [replicas] to a relay that admits this node. A join goes with this node's device key as the
    request signer, the one envelope a relay takes from a signer other than its author, and is judged
    there by its created_at; a dinner and a self-authored device message go unsigned, as their
@@ -369,7 +377,8 @@ let replicas (node : Node.t) (r : Log.relay_row) =
    behind a later envelope of its host device is a sequence_regression). A refusal is a replicate_refused fault naming the relay's reason, and the loop goes on: the
    envelope is someone else's, so it is never dropped. A transport failure ends the pass; the next
    sync tries again. *)
-let replicate_relay (node : Node.t) transport ~key (r : Log.relay_row) =
+let replicate_relay ?(now = Unix.gettimeofday ()) (node : Node.t) transport ~key
+    (r : Log.relay_row) =
   let rec go replicated = function
     | [] -> replicated
     | (row : Log.row) :: rest -> (
@@ -383,6 +392,7 @@ let replicate_relay (node : Node.t) transport ~key (r : Log.relay_row) =
               ~hash:row.hash ~received_at:None;
             Log.resolve_relay_faults node.log ~kind:"replicate_refused"
               ~author:e.author ~seq:e.seq ~relay:r.url;
+            Log.clear_replica_refusal node.log ~relay:r.url row.hash;
             go (if receipt.duplicate then replicated else replicated + 1) rest
         | Error (Relay_client.Transport _) -> replicated
         | Error err ->
@@ -391,9 +401,17 @@ let replicate_relay (node : Node.t) transport ~key (r : Log.relay_row) =
               ~detail:
                 (r.url ^ " refused the " ^ e.kind ^ " " ^ row.hash ^ ": "
                 ^ Relay_client.error_to_string err);
+            let refusals =
+              1
+              + Option.fold ~none:0 ~some:fst
+                  (Log.replica_refusal node.log ~relay:r.url row.hash)
+            in
+            Log.record_replica_refusal node.log ~relay:r.url ~hash:row.hash
+              ~refusals
+              ~retry_at:(now +. replica_backoff refusals);
             go replicated rest)
   in
-  go 0 (replicas node r)
+  go 0 (replicas ~now node r)
 
 (* Read, then push, then read again a relay the push admitted this node to. The second value says
    whether the relay read clean, so admits this node and may be replicated to (replicate_relays). *)

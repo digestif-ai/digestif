@@ -601,6 +601,30 @@ let admitted_node_replicates_joins () =
     "nothing left to replicate" 0
     (List.find (fun (rr : Sync.relay_report) -> rr.relay = b.url) again.relays)
       .replicated;
+  (* The refused join waits out its backoff rather than going to relay B on every sync. *)
+  let ghost_hash = Envelope.hash ghost.envelope in
+  let refusals () =
+    Option.map fst (Log.replica_refusal host.log ~relay:b.url ghost_hash)
+  in
+  Alcotest.(check (option int))
+    "the second sync did not post the refused join again" (Some 1) (refusals ());
+  let rb_row =
+    List.find (fun (r : Log.relay_row) -> r.url = b.url) (Log.relays host.log)
+  in
+  Alcotest.(check int)
+    "inside the backoff nothing is a replica" 0
+    (List.length (Sync.replicas host rb_row));
+  let later = Unix.gettimeofday () +. Sync.replica_backoff 1 +. 1. in
+  ignore
+    (Sync.replicate_relay ~now:later host net
+       ~key:(ok (Node.device_key host))
+       rb_row);
+  Alcotest.(check (option int))
+    "past it the join is posted again, and refused again" (Some 2) (refusals ());
+  Alcotest.(check bool)
+    "each refusal doubles the wait" true
+    (Sync.replica_backoff 2 = 2. *. Sync.replica_backoff 1
+    && Sync.replica_backoff 30 = 86_400.);
   let after = ok (Sync.sync ~transport:net roman) in
   Alcotest.(check (option string))
     "roman's next sync reads relay B" None (error_on b.url after)
@@ -2029,6 +2053,33 @@ let own_seq_unique () =
           ~seq:first.envelope.seq));
   Node.close n
 
+(* A push reads only the envelopes a relay holds no sighting of, in chain order, per relay. *)
+let unheld_by_reads_what_a_relay_lacks () =
+  let dir = tmpdir () in
+  let n = Node.open_ ~keystore:(Keystore.memory ()) dir in
+  ignore (ok (Node.init n ~phrase:(Phrase.generate ())));
+  let author = Keys.public (ok (Node.device_key n)) in
+  let held =
+    List.map (fun (r : Log.row) -> r.hash) (Log.by_author n.log author)
+  in
+  let first, _ = ok (Node.write n ~kind:"summary" (summary "first")) in
+  let second, _ = ok (Node.write n ~kind:"summary" (summary "second")) in
+  List.iter
+    (fun hash ->
+      Log.add_sighting n.log ~relay:"https://a.test" ~relay_id:1 ~hash
+        ~received_at:None)
+    (first :: held);
+  let unheld relay =
+    List.map (fun (r : Log.row) -> r.hash) (Log.unheld_by n.log ~relay author)
+  in
+  Alcotest.(check (list string))
+    "relay A lacks only the second" [ second ] (unheld "https://a.test");
+  Alcotest.(check (list string))
+    "relay B lacks the whole chain, in chain order"
+    (List.map (fun (r : Log.row) -> r.hash) (Log.by_author n.log author))
+    (unheld "https://b.test");
+  Node.close n
+
 let () =
   match Sys.argv with
   | [| _; flag; path; i |] when flag = log_writer_flag -> log_writer path i
@@ -2103,6 +2154,8 @@ let () =
           Alcotest.test_case "own chain signed by many processes" `Quick
             own_chain_many_processes;
           Alcotest.test_case "an own seq is signed once" `Quick own_seq_unique;
+          Alcotest.test_case "unheld by a relay is one anti-join" `Quick
+            unheld_by_reads_what_a_relay_lacks;
           Alcotest.test_case "one connection, many threads" `Quick
             log_one_connection_many_threads;
         ] );
