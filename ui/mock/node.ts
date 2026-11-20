@@ -43,6 +43,7 @@ import {
 import { INBOX_DEFAULT, INBOX_LOG, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
 import { MockApprovals } from './approvals.ts';
 import { MockItems } from './items.ts';
+import { feedThreads } from '#lib/threads.ts';
 import { MockRepositories } from './repositories.ts';
 
 export interface MockResponse {
@@ -300,6 +301,11 @@ export class MockNode {
     };
   }
 
+  /** The Feed, newest first: the messages and the notes not yet signed. */
+  private feed(): FeedItem[] {
+    return [...this.store.messages, ...this.notesInFeed()].sort((x, y) => y.created_at.localeCompare(x.created_at)).map(item);
+  }
+
   handle(method: string, url: string, body?: unknown): MockResponse {
     const u = new URL(url, 'http://node.local');
     const parts = u.pathname
@@ -322,7 +328,15 @@ export class MockNode {
     const memberOf = (identity: string | undefined): Member | undefined => s.members.find((x) => x.identity === identity);
     return [
       ['GET', 'status', () => this.status()],
-      ['GET', 'feed', () => ok([...s.messages, ...this.notesInFeed()].sort((x, y) => y.created_at.localeCompare(x.created_at)).map(item))],
+      ['GET', 'feed', () => ok(this.feed())],
+      [
+        'GET',
+        'feed/threads/:',
+        ([key]) => {
+          const thread = feedThreads(this.feed()).find((t) => t.key === key);
+          return thread === undefined ? notFound() : ok(thread.rows);
+        }
+      ],
       [
         'GET',
         'messages/:',
@@ -350,6 +364,7 @@ export class MockNode {
             (m) => m.identity
           )
       ],
+      ['GET', 'members/self', () => ok(this.member(this.self()))],
       ['GET', 'members/:', ([id]) => withFound(memberOf(id), (m) => ok(this.member(m)))],
       ['GET', 'search', (_p, _b, q) => this.search(q)],
       [

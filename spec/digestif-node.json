@@ -3825,6 +3825,20 @@
               "type": "[feed_item]"
             }
           }
+        },
+        {
+          "method": "GET",
+          "path": "/threads/:key",
+          "description": "One Feed thread (ui/src/lib/threads.ts, feedThreadKeys), oldest first, whatever its age: the message the key names, every reply under it, and its author's Waiting for approval status notes that the note answers. A key the Feed lists for a run of Waiting for approval notes reads the note that settled them once there is one.",
+          "responses": {
+            "200": {
+              "type": "[feed_item]"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "No message, and no reply to one, under that key."
+            }
+          }
         }
       ]
     },
@@ -3909,6 +3923,20 @@
               "description": "The identity of the last member on the page before; the page starts after it. An id the node does not hold answers 422."
             }
           ]
+        },
+        {
+          "method": "GET",
+          "path": "/self",
+          "description": "The member this node is: who-am-I, without reading the circle.",
+          "responses": {
+            "200": {
+              "type": "member"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "The member has not joined yet."
+            }
+          }
         },
         {
           "method": "GET",
@@ -5068,6 +5096,16 @@
             "422": {
               "type": "[node_error]",
               "description": "An unknown status, state, kind, subject or voice, a limit out of range, or a cursor the node does not hold."
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/threads/:key",
+          "description": "One Inbox thread (ui/src/lib/threads.ts, itemThreadKey), oldest first: every item the member has (the Inbox, Waiting on others and the Archive) about the message the key names, else the one item whose id it is.",
+          "responses": {
+            "200": {
+              "type": "[item_summary]"
             }
           }
         },

@@ -1,5 +1,5 @@
 import { createClient } from '#lib/api/client.ts';
-import { loaded, unwrap } from '#lib/load.ts';
+import { loaded, selfOf, unwrap } from '#lib/load.ts';
 import { phonesOf } from '#lib/phones.ts';
 import type { PageLoad } from './$types';
 
@@ -7,7 +7,7 @@ import type { PageLoad } from './$types';
 export const load: PageLoad = async ({ fetch, parent }) => {
   const client = createClient(fetch);
   const status = parent().then((p) => p.status);
-  const [sources, brief, rules, learnings, approval, noteTime, digest, members, agent, notePrompt, inboxAgent] = await Promise.all([
+  const [sources, brief, rules, learnings, approval, noteTime, digest, member, agent, notePrompt, inboxAgent] = await Promise.all([
     client.sources(),
     client.brief(),
     client.rules(),
@@ -15,13 +15,11 @@ export const load: PageLoad = async ({ fetch, parent }) => {
     client.approvalSetting(),
     client.noteTime(),
     client.digestSettings(),
-    client.members(),
+    selfOf(client),
     client.agent(),
     client.notePrompt(),
     client.inboxAgent()
   ]);
-  const self = unwrap(members).find((m) => m.is_self);
-  const member = self === undefined ? undefined : unwrap(await client.member(self.identity));
   return {
     status: await status,
     sources: unwrap(sources),

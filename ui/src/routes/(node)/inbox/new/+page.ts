@@ -1,6 +1,6 @@
 import { createClient } from '#lib/api/client.ts';
-import { unwrap } from '#lib/load.ts';
+import { everyMember } from '#lib/load.ts';
 import type { PageLoad } from './$types';
 
-/** Whom an item can be addressed to: the circle is small and invite-only, so one page holds it. */
-export const load: PageLoad = async ({ fetch }) => ({ members: unwrap(await createClient(fetch).members({ limit: 200 })) });
+/** Whom an item can be addressed to: every member of the circle (DIG-225). */
+export const load: PageLoad = async ({ fetch }) => ({ members: await everyMember(createClient(fetch)) });
