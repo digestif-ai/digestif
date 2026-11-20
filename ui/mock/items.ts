@@ -190,6 +190,7 @@ export class MockItems {
     };
     return [
       ['GET', 'items', (_p, _b, q) => this.list(q)],
+      ['GET', 'items/threads/:', ([key]) => ok(this.thread(key ?? ''))],
       ['POST', 'items', (_p, b) => this.create(b)],
       ['GET', 'items/:', ([id]) => found(id, (x) => ok(this.view(this.withReply(x))))],
       ['PUT', 'items/:', ([id], b) => found(id, (x) => this.edit(x, b))],
@@ -220,6 +221,15 @@ export class MockItems {
     if (n === 0 || held === undefined) return stored;
     held.title = n === 1 ? 'A new repository waits on your machine' : String(n) + ' new repositories wait on your machine';
     return [held, ...stored];
+  }
+
+  /** One Inbox thread, oldest first: every item the member has (the Inbox, Waiting on others, the Archive) under [key]. */
+  private thread(key: string): ItemSummary[] {
+    const theirs = (x: Item): boolean => this.inbox().includes(x) || this.inState(x, ItemState.Others) || x.archived_at !== undefined;
+    return this.all()
+      .filter((x) => itemThreadKey(x) === key && theirs(x))
+      .sort((x, y) => x.created_at.localeCompare(y.created_at))
+      .map((x) => summaryOf(this.view(x)));
   }
 
   private list(q: URLSearchParams): MockResponse {

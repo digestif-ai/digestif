@@ -1,7 +1,9 @@
 import { StatusNote, Voice, type FeedItem, type ItemSummary } from '#generated/ai-digestif-digestif-node.ts';
 
 // Threads (ISS-85464): rows about the same thing are one thread, the way a mail client threads a
-// conversation. A list shows each thread once, as one row, and opening it shows every row in order. Nothing is stored: a thread is read off the rows a list already holds.
+// conversation. A list shows each thread once, as one row, and opening it shows every row in order. Nothing is stored: a list's
+// threads are read off the rows it holds, and a thread's own page reads it from the node by its key
+// (GET /feed/threads/:key and /items/threads/:key, DIG-225), which keys rows the way this file does.
 
 export interface Thread<T> {
   /** What the rows share; the thread's address. */
