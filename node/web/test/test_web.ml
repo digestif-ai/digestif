@@ -3058,6 +3058,60 @@ let behavior_stopped_first_note () =
     "handed over: not run again" false
     (Behaviors.first_note_due n.log ~now:(now +. 120.))
 
+(* A run asked for now that cannot start is refused, and one that comes to be unable to start
+   lapses at the next pass: it neither keeps the daemon passing every few seconds nor fires later,
+   unasked, once what held it clears. DIG-212 *)
+let behavior_run_now_lapses () =
+  let n = behavior_node () in
+  ok (Behaviors.set_executable n.log Nightly (script n.dir "exec sleep 30\n"));
+  let c = session n in
+  let now = Unix.gettimeofday () in
+  Log.set_config n.log Behaviors.k_armed_since (Printf.sprintf "%.0f" now);
+  Behaviors.handle_date n.log (Behaviors.local_date now);
+  Alcotest.(check bool) "nothing owed" false (Behaviors.nightly_due n.log ~now);
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
+  let run_now () =
+    let status, e = call n c ~meth:"POST" "notes/runs" in
+    (status, if status = 202 then "" else s "code" (List.hd (list e)))
+  in
+  let requested () = Store.nightly_run_requested n.log in
+  let lapses why =
+    Store.request_nightly_run n.log;
+    Alcotest.(check bool)
+      (why ^ ": the daemon does not pass for it")
+      false
+      (Behaviors.nightly_run_wanted t);
+    Alcotest.(check bool)
+      (why ^ ": nothing runs") true
+      (Behaviors.after_pass ~now t ~stored:0 = []);
+    Alcotest.(check bool) (why ^ ": the request lapses") false (requested ())
+  in
+  let id = ok (Api.submit_note_text n "Worked on: the fetcher.") in
+  Alcotest.(check (pair int string))
+    "a note waits: refused" (422, "note_waiting") (run_now ());
+  Alcotest.(check bool) "not asked for" false (requested ());
+  lapses "a note waits";
+  Alcotest.(check bool) "dismissed" true (Store.Notes.dismiss n.log ~note_id:id);
+  Store.Stages.set n.log "paused";
+  Alcotest.(check (pair int string))
+    "paused: refused" (422, "paused") (run_now ());
+  lapses "paused";
+  Store.Stages.set n.log "active";
+  Alcotest.(check (pair int string)) "accepted" (202, "") (run_now ());
+  Alcotest.(check bool)
+    "the daemon passes for it" true
+    (Behaviors.nightly_run_wanted t);
+  Alcotest.(check bool)
+    "the pass runs it" true
+    (Behaviors.after_pass ~now t ~stored:0 |> List.map fst = [ Nightly ]);
+  Alcotest.(check bool) "started: no longer asked for" false (requested ());
+  Alcotest.(check (pair int string))
+    "a run is writing: refused" (422, "running") (run_now ());
+  lapses "a run is writing";
+  let pid = (List.hd t.Behaviors.running).pid in
+  Behaviors.stop_all t;
+  ignore (Unix.waitpid [] pid)
+
 (* A note is written once and waits: while one waits, note time writes nothing. An edit's checks
    are the check hook's, the nightly behavior's own program run with DIGESTIF_HOOK=check, handed
    each due edit with the version it edited; handing it over holds the next try off an hour. *)
@@ -14388,6 +14442,7 @@ let () =
             behavior_read_settle;
           Alcotest.test_case "first note stopped" `Quick
             behavior_stopped_first_note;
+          Alcotest.test_case "run now lapses" `Quick behavior_run_now_lapses;
           Alcotest.test_case "check" `Quick behavior_check;
           Alcotest.test_case "revise" `Quick behavior_revise;
         ] );

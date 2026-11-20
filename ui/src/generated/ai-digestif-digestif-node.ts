@@ -4308,6 +4308,10 @@ export class ApiClient {
         return;
       }
 
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
       throw new ApiException(response, `Request failed with status ${response.status}`);
     });
   }

@@ -1803,11 +1803,15 @@ module Notes = struct
       (fun n ->
         ok (`List (List.map version_json (N.versions (log c) ~note_id:n.n_id))))
 
-  (* Write a note now: the note writer runs on the next pass rather than at Note time. *)
+  (* Write a note now: the note writer runs on the next pass rather than at Note time, unless the
+     run could not start then (Store.nightly_run_refusal). DIG-212 *)
   let run_now c =
-    Store.request_nightly_run (log c);
-    c.on_write ();
-    { status = 202; body = None }
+    match Store.nightly_run_refusal (log c) with
+    | Some (code, message) -> invalid code message
+    | None ->
+        Store.request_nightly_run (log c);
+        c.on_write ();
+        { status = 202; body = None }
 
   (* A note as the feed shows it: its own message until it is signed, at the note's id, and the
      signed summary once it is. ISS-47299 *)

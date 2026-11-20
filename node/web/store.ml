@@ -1502,13 +1502,15 @@ let alive pid =
   | exception Unix.Unix_error (Unix.EPERM, _, _) -> true
   | exception Unix.Unix_error _ -> false
 
-(* Whether a nightly run is writing, or one is asked for and the node's next pass starts it. *)
-let nightly_run_in_progress log =
-  nightly_run_requested log
-  ||
+(* Whether the nightly run's process is writing now. *)
+let nightly_running log =
   match Option.bind (config log k_nightly_running) int_of_string_opt with
   | Some pid -> alive pid
   | None -> false
+
+(* Whether a nightly run is writing, or one is asked for and the node's next pass starts it. *)
+let nightly_run_in_progress log =
+  nightly_run_requested log || nightly_running log
 
 (* The program a settable hook runs, by the hook's name (Behaviors.hooks), and the mark a member's
    own unset leaves, so the node never sets that hook back by itself. *)
@@ -2345,6 +2347,21 @@ module Stages = struct
              (r.signed.envelope.kind = "summary"
              && Content.status_of r.signed.body <> None))
 end
+
+(* Why a run asked for now cannot start, as an error code and its sentence: writing is paused, a
+   note waits for approval (while it waits note time writes nothing), or a run is writing already.
+   A request is refused while one holds, and a request one comes to hold lapses (Behaviors.after_pass),
+   so it never keeps the node passing nor fires later unasked. DIG-212 *)
+let nightly_run_refusal log =
+  if Stages.stage log = "paused" then
+    Some ("paused", "Writing is paused; resume it to write a note.")
+  else if Notes.waiting log <> [] then
+    Some
+      ( "note_waiting",
+        "A note is waiting for approval; approve or dismiss it first." )
+  else if nightly_running log then
+    Some ("running", "A note is being written now.")
+  else None
 
 (* The member's fixed minute of the 3 AM note time, chosen once: the first time anything asks for
    it (Behaviors.minute, and the Paused page's next-note sentence). *)
