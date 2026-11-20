@@ -447,6 +447,57 @@ let fresh_relay_bootstrap () =
     "the relay list shows no error" None
     (List.hd (Log.relays host.log)).last_error
 
+(* Relays are read at once: each relay's first read waits until the other relay has been called too,
+   which a sync reading one relay at a time never reaches before the wait runs out, so a relay that
+   never answers holds no other relay behind it. DIG-293 *)
+let relays_are_read_at_once () =
+  let host = new_node () in
+  let hd = ok (Node.init host ~phrase:(Phrase.generate ())) in
+  let dinner =
+    Bodies.dinner_json
+      {
+        host = Keys.public hd.identity;
+        date = "2026-10-27";
+        label = "AI Dinner 2";
+        guests = [];
+        relays = [ "https://a.test"; "https://b.test" ];
+      }
+  in
+  let root, _ = ok (Node.write host ~kind:"dinner" dinner) in
+  Node.set_root host root;
+  let a = Fake_relay.create ~url:"https://a.test" ~root in
+  let b = Fake_relay.create ~url:"https://b.test" ~root in
+  List.iter (fun (r : Fake_relay.t) -> Log.add_relay host.log r.url) [ a; b ];
+  let net = Fake_relay.network [ a; b ] in
+  let called = Atomic.make 0 in
+  let first = Hashtbl.create 2 and first_lock = Mutex.create () in
+  let transport : Relay_client.transport =
+   fun ~meth ~url ~headers ~body ->
+    let relay = if String.starts_with ~prefix:a.url url then a.url else b.url in
+    let is_first =
+      Mutex.protect first_lock (fun () ->
+          let f = not (Hashtbl.mem first relay) in
+          Hashtbl.replace first relay ();
+          f)
+    in
+    if not is_first then net ~meth ~url ~headers ~body
+    else begin
+      Atomic.incr called;
+      let deadline = Unix.gettimeofday () +. 5. in
+      while Atomic.get called < 2 && Unix.gettimeofday () < deadline do
+        Thread.delay 0.01
+      done;
+      if Atomic.get called < 2 then Error "never answered"
+      else net ~meth ~url ~headers ~body
+    end
+  in
+  let r = ok (Sync.sync ~transport host) in
+  List.iter
+    (fun (rr : Sync.relay_report) ->
+      Alcotest.(check (option string)) (rr.relay ^ " answered") None rr.error;
+      Alcotest.(check int) (rr.relay ^ " took the dinner") 1 rr.pushed)
+    r.relays
+
 (* A member who starts a relay publishes a relay message, and every node adds it (design.md, Two
    relays to start); a relay message from outside the circle adds nothing, and a relay a node removed
    stays removed. *)
@@ -2246,6 +2297,8 @@ let () =
             unsafe_relay_message;
           Alcotest.test_case "relay URLs a node takes from the circle" `Quick
             relay_urls_from_circle;
+          Alcotest.test_case "relays are read at once" `Quick
+            relays_are_read_at_once;
           Alcotest.test_case "relay message adds a relay" `Quick
             relay_message_adds_relay;
           Alcotest.test_case "an admitted node replicates joins" `Quick
