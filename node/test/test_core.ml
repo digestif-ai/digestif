@@ -1112,6 +1112,93 @@ let duplicates_idempotent () =
   ignore (ok (Sync.sync ~transport:c.net c.roman));
   Alcotest.(check int) "the node stores it once" (n + 1) (Log.count c.roman.log)
 
+(* A relay that serves entries with no envelope in them replaces the envelope of every entry
+   [bad] names, on the relay at [base], with one no envelope parses from. *)
+let serving_unparsable ~base bad (net : Relay_client.transport) :
+    Relay_client.transport =
+ fun ~meth ~url ~headers ~body ->
+  match net ~meth ~url ~headers ~body with
+  | Ok ({ status = 200; body = b } as r)
+    when String.starts_with ~prefix:(base ^ "/v0/envelopes") url ->
+      let entry = function
+        | `Assoc f when List.mem (List.assoc_opt "relay_id" f) bad ->
+            `Assoc
+              (List.map
+                 (fun (k, v) ->
+                   if k = "envelope" then (k, `Assoc [ ("version", `Int 0) ])
+                   else (k, v))
+                 f)
+        | e -> e
+      in
+      let page =
+        match Yojson.Safe.from_string b with
+        | `Assoc f ->
+            `Assoc
+              (List.map
+                 (function
+                   | "envelopes", `List l ->
+                       ("envelopes", `List (List.map entry l))
+                   | kv -> kv)
+                 f)
+        | j -> j
+      in
+      Ok { r with body = Yojson.Safe.to_string page }
+  | other -> other
+
+(* An entry a relay serves that this node cannot read (a string that is not UTF-8, which has no
+   canonical form and so no hash; an entry with no envelope in it) is a fault against that entry, and
+   the sync reads on past it: the envelopes around it are stored and the cursor passes it. DIG-222 *)
+let unreadable_entries_passed_over () =
+  let c = make_circle () in
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  let key = ok (Node.device_key c.host) in
+  let a = relay c "https://a.test" in
+  let sg =
+    Envelope.create ~key ~seq:1000 ~epoch:1 ~kind:"summary"
+      (summary "never served as signed")
+  in
+  let not_utf8 =
+    {
+      sg with
+      envelope = { sg.envelope with created_at = "2026-11-20T00:00:00\xffZ" };
+    }
+  in
+  ignore (Fake_relay.force a ~hash:(Some "sha256:00") not_utf8);
+  let unparsable = Fake_relay.force a sg in
+  let h_after, _ = ok (Node.write c.host ~kind:"summary" (summary "after")) in
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  let net =
+    serving_unparsable ~base:a.url [ Some (`Int unparsable.relay_id) ] c.net
+  in
+  let report = ok (Sync.sync ~transport:net c.roman) in
+  Alcotest.(check (list (option string)))
+    "every relay reads clean"
+    (List.map (fun _ -> None) report.relays)
+    (List.map (fun (r : Sync.relay_report) -> r.error) report.relays);
+  Alcotest.(check bool)
+    "the envelope after them is stored" true
+    (Log.find c.roman.log h_after <> None);
+  Alcotest.(check int)
+    "the string that is not UTF-8 is a fault" 1
+    (List.length (faults_of c.roman "invalid_envelope"));
+  Alcotest.(check (list int))
+    "the entry with no envelope is a fault at its place" [ unparsable.relay_id ]
+    (List.map
+       (fun (f : Log.fault) -> f.seq)
+       (faults_of c.roman "malformed_entry"));
+  let cursor =
+    (List.find
+       (fun (r : Log.relay_row) -> r.url = a.url)
+       (Log.relays c.roman.log))
+      .cursor
+  in
+  Alcotest.(check bool) "the cursor passes both" true (cursor >= a.next_id - 1);
+  let open_before = List.length (Log.open_faults c.roman.log) in
+  ignore (ok (Sync.sync ~transport:net c.roman));
+  Alcotest.(check int)
+    "a second read raises nothing new" open_before
+    (List.length (Log.open_faults c.roman.log))
+
 let feed_hashes (n : Node.t) =
   List.map (fun (r : Log.row) -> r.hash) (View.feed n.log (Node.fold n))
 
@@ -2161,6 +2248,8 @@ let () =
             refused_own_dropped;
           Alcotest.test_case "duplicates idempotent" `Quick
             duplicates_idempotent;
+          Alcotest.test_case "unreadable entries are passed over" `Quick
+            unreadable_entries_passed_over;
           Alcotest.test_case "revocation" `Quick revocation;
           Alcotest.test_case "mail key revocation" `Quick mail_revocation;
           Alcotest.test_case "mail envelope pushed by its author" `Quick
