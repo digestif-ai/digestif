@@ -1986,7 +1986,8 @@ let circle_list =
     "List every circle's node on this machine, one per line: its id (the name \
      --circle takes), the circle's name, its root, and its data directory. The \
      default node (\\$DIGESTIF_HOME, else the platform's application data \
-     directory) is listed as default until an id links it."
+     directory) is listed as default until an id links it. Anything under \
+     ~/digestif that is not a node or a link is left out, and named on stderr."
     Term.(
       const (fun () ->
           let line id dir =
@@ -1998,6 +1999,9 @@ let circle_list =
                   (Option.value s.root ~default:"-")
                   dir
           in
+          (match Circles.check_parent () with
+          | Ok _ -> ()
+          | Error e -> Printf.eprintf "digestif: %s\n%!" e);
           let entries = Circles.entries () in
           List.iter (fun (e : Circles.entry) -> line e.id e.dir) entries;
           let default = Node.default_dir () in
