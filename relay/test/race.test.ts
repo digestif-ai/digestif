@@ -24,17 +24,17 @@ import { Refusal } from "../src/errors.ts";
 const RELAY = "http://relay.test";
 const realFetch = globalThis.fetch;
 
-/** Where in check() the competitor commits: the first statement matching the pattern waits for it. */
+/**
+ * Where in check() the competitor commits: the first statement matching the pattern waits for it.
+ * check() reads the position, the duplicate, the fold's inputs, the chain and the cap in one batch,
+ * so there are two points between which another append can commit: before that read and before
+ * the write.
+ */
 const POINTS: Record<string, RegExp> = {
-  "before the position read": /MAX\(relay_id\)/,
-  "before the duplicate read": /WHERE hash = \? AND relay_id < \?/,
-  "before the fold read": /FROM envelopes INDEXED BY envelopes_kind_relay_id WHERE kind IN/,
-  "before the chain read": /MAX\(seq\)/,
-  "before the cap read": /FROM daily_appends/,
+  "before the check's reads": /MAX\(relay_id\)/,
   "before the write batch": /INSERT INTO envelopes/,
 };
-/** A join skips the chain check, so a competitor waiting there would never run. */
-const JOIN_POINTS = Object.entries(POINTS).filter(([name]) => name !== "before the chain read");
+const JOIN_POINTS = Object.entries(POINTS);
 
 interface Interleaved {
   db: D1Database;
@@ -42,12 +42,16 @@ interface Interleaved {
   fired: () => boolean;
 }
 
-/** A D1 that runs `competitor` to completion before the first statement matching `at` executes. */
-function interleaving(real: D1Database, at: RegExp, competitor: () => Promise<void>): Interleaved {
-  let fired = false;
+/**
+ * A D1 that runs each competitor to completion before a statement matching `at` executes, the
+ * first before the first match, the second before the next, and so on.
+ */
+function interleaving(real: D1Database, at: RegExp, ...competitors: (() => Promise<void>)[]): Interleaved {
+  let ran = 0;
   const fire = async (sql: string): Promise<void> => {
-    if (fired || !at.test(sql)) return;
-    fired = true;
+    const competitor = competitors[ran];
+    if (competitor === undefined || !at.test(sql)) return;
+    ran++;
     await competitor();
   };
   const unwrapped = new WeakMap<D1PreparedStatement, { inner: D1PreparedStatement; sql: string }>();
@@ -78,7 +82,7 @@ function interleaving(real: D1Database, at: RegExp, competitor: () => Promise<vo
       return real.batch<T>(parts.map((p) => p.inner));
     },
   } as unknown as D1Database;
-  return { db, fired: () => fired };
+  return { db, fired: () => ran === competitors.length };
 }
 
 function relayOn(db: D1Database, now = new Date()): Relay {
@@ -178,6 +182,31 @@ describe("a signed append that loses the relay_id race", () => {
   });
 });
 
+describe("three appends at once", () => {
+  // Each competitor commits between the loser's reads and its write, so the loser loses twice.
+  it("the one that loses twice lands third, not a 500", async () => {
+    const at = /INSERT INTO envelopes/;
+    const [a, b] = [member(0), member(1)];
+    const epoch = await circleEpoch(env.DB);
+    const first = requestFor(b.device.next("summary", summaryBody(`first ${world.tag}`), epoch), b.device.signer);
+    const second = requestFor(b.device.next("summary", summaryBody(`second ${world.tag}`), epoch), b.device.signer);
+    const third = requestFor(a.device.next("summary", summaryBody(`third ${world.tag}`), epoch), a.device.signer);
+    const won: Posted[] = [];
+    const staged = interleaving(
+      env.DB,
+      at,
+      async () => void won.push(await post(relayOn(env.DB), first.request, first.url)),
+      async () => void won.push(await post(relayOn(env.DB), second.request, second.url)),
+    );
+    const lost = await post(relayOn(staged.db), third.request, third.url);
+    expect(staged.fired(), "both competitors ran").toBe(true);
+    const [one, two] = won.map(relayIdOf);
+    expect(two).toBe((one ?? 0) + 1);
+    expect(relayIdOf(lost)).toBe((two ?? 0) + 1);
+    await expectRefold();
+  });
+});
+
 describe("two joins at once", () => {
   it.each(JOIN_POINTS)("take consecutive epochs, the second folded over the first (%s)", async (_name, at) => {
     const [x, y] = (await world.dinner(["race x", "race y"])).map((i) => world.joinFor(i));
@@ -229,9 +258,9 @@ describe("two copies of one signed request", () => {
     const nonce = "race-nonce-reuse";
     const signedAt = (timestamp: Date): Request =>
       new Request(url, { method: "GET", headers: signedHeaders(a.device.signer, "GET", url.pathname, "", { timestamp, nonce }) });
-    await expect(authenticate(relayOn(env.DB, at), signedAt(at), url, "")).resolves.toEqual({ key: a.device.key });
+    await expect(authenticate(relayOn(env.DB, at), signedAt(at), url, "")).resolves.toMatchObject({ key: a.device.key });
     await expect(authenticate(relayOn(env.DB, at), signedAt(at), url, "")).rejects.toMatchObject({ code: "replayed_nonce" });
     const later = new Date(at.getTime() + DEFAULT_LIMITS.skew_seconds * 1000 + 1);
-    await expect(authenticate(relayOn(env.DB, later), signedAt(later), url, "")).resolves.toEqual({ key: a.device.key });
+    await expect(authenticate(relayOn(env.DB, later), signedAt(later), url, "")).resolves.toMatchObject({ key: a.device.key });
   });
 });

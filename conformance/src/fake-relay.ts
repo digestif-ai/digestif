@@ -90,6 +90,15 @@ class Refusal {
   }
 }
 
+/** A path segment decoded, or 400 malformed for an escape that decodes to nothing (relay/src/index.ts, decodePath). */
+function decodePath(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw new Refusal(400, "malformed", `the path segment ${segment} is not a valid percent-encoding`);
+  }
+}
+
 /** The longest a Digestif header may be (relay/src/auth.ts, MAX_HEADER_LENGTH). */
 const MAX_HEADER_LENGTH = 128;
 
@@ -157,7 +166,7 @@ export class FakeRelay {
       if (req.method === "GET" && url.pathname === "/v0/circle") return respond(res, 200, this.circle(req, url, raw));
       if (req.method === "GET" && url.pathname === "/v0/version") return respond(res, 200, this.version(req, url, raw));
       if (req.method === "GET" && url.pathname.startsWith("/v0/invites/")) {
-        const found = this.invite(req, url, raw, decodeURIComponent(url.pathname.slice("/v0/invites/".length)));
+        const found = this.invite(req, url, raw, decodePath(url.pathname.slice("/v0/invites/".length)));
         return found === undefined ? respond(res, 404, null) : respond(res, 200, found);
       }
       return respond(res, 404, { code: "malformed", message: `no route ${req.method} ${url.pathname}` });

@@ -5,11 +5,11 @@
 // the admission fold. The fold's output lands in D1 in one batch with the envelope.
 //
 // Concurrency: the request is authenticated once (its nonce is spent by then), and the storage
-// step, check(), is what a lost race re-runs. check() chooses the relay_id before it reads
-// anything else and every read after that sees only the log below it, so the UNIQUE on relay_id
-// is the optimistic token for the whole check: a commit by another append between the choice and
-// the batch takes that id, the batch fails, and the loser re-reads the duplicate, the fold and the
-// chain from the longer log. appendSigned() is that path from the envelope checks on, shared with
+// step, check(), is what a lost race re-runs. check() reads the relay_id it will take and
+// everything else it checks in one batch, a transaction that sees one log, so the UNIQUE on
+// relay_id is the optimistic token for the whole check: a commit by another append between that
+// read and the write batch takes that id, the write fails, and the loser re-reads the duplicate,
+// the fold and the chain from the longer log, a few times with jitter (RETRIES). appendSigned() is that path from the envelope checks on, shared with
 // the decision a confirmed answer link appends (src/links.ts), which comes in with no request
 // signer as a bootstrap append does: the envelope's own signature is the proof.
 //
@@ -29,7 +29,7 @@ import {
   type SignedEnvelope,
 } from "../../conformance/src/envelope.ts";
 import { authenticate, type Authenticated } from "./auth.ts";
-import { changedKeys, foldLog, keepFold, loadKey, snapshotKeys, type EnvelopeRow } from "./db.ts";
+import { changedKeys, checkedRoot, CIRCLE_STATE_IDS_SQL, foldLog, keepFold, loadKey, snapshotKeys, type EnvelopeRow, type FoldedIdRow } from "./db.ts";
 import type { Relay } from "./env.ts";
 import { json, Refusal } from "./errors.ts";
 
@@ -129,6 +129,7 @@ export async function appendSigned(relay: Relay, auth: Authenticated, signed: Si
     } catch (error) {
       if (!isLostRace(error) || attempt >= RETRIES) throw error;
     }
+    await backoff(attempt);
   }
 }
 
@@ -179,35 +180,95 @@ function clockFor(relay: Relay, auth: Authenticated, envelope: Envelope): Date {
   return created;
 }
 
-/** How many times a lost race (another append committed first) is re-run before it is a 500. */
-const RETRIES = 1;
+/**
+ * How many times a lost race (another append committed first) is re-run before it is a 500. Each
+ * re-run waits a random moment first, longer each time, so appends that lost together do not
+ * collide again in step. DIG-234
+ */
+const RETRIES = 5;
+const RETRY_BASE_MS = 10;
+
+function backoff(attempt: number): Promise<void> {
+  const ms = Math.random() * RETRY_BASE_MS * 2 ** attempt;
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** D1 reports two appends taking one relay_id, or one hash, as the envelopes table's UNIQUE failing. */
 function isLostRace(error: unknown): boolean {
   return error instanceof Error && /UNIQUE constraint failed: envelopes\./.test(error.message);
 }
 
+/** What the check reads of the log, all in one batch: one transaction, so every read sees the same log. */
+interface LogReads {
+  position: number;
+  held: number | undefined;
+  root: string | undefined;
+  cutover: number;
+  ids: FoldedIdRow[];
+  atSeq: string | undefined;
+  last: number;
+  daily: number;
+  retractKind: string | undefined;
+}
+
 /**
- * The storage step, re-run on a lost race. The position comes first; the duplicate, the fold, the
- * chain and the retract target are then read below it, so they describe the log this append
- * extends, and nothing another append commits after the position read can pass unseen: it takes
- * this relay_id and the batch fails.
+ * The check's reads in one round trip. The batch is a transaction, so every read sees exactly the
+ * log below the position it reads first, and none needs the position as a bound. DIG-234
+ */
+async function readLog(relay: Relay, envelope: Envelope, hash: string, day: string, retractTarget: string | undefined): Promise<LogReads> {
+  const db = relay.db;
+  const results = await db.batch<Record<string, unknown>>([
+    db.prepare("SELECT COALESCE(MAX(relay_id), 0) + 1 AS next FROM envelopes"),
+    db.prepare("SELECT relay_id FROM envelopes WHERE hash = ?").bind(hash),
+    db.prepare("SELECT root, admission_cutover FROM circle WHERE id = 1"),
+    db.prepare(CIRCLE_STATE_IDS_SQL).bind(Number.MAX_SAFE_INTEGER),
+    db.prepare("SELECT hash FROM envelopes WHERE author = ? AND seq = ?").bind(envelope.author, envelope.seq),
+    db.prepare("SELECT MAX(seq) AS last FROM envelopes WHERE author = ?").bind(envelope.author),
+    db.prepare("SELECT count FROM daily_appends WHERE author = ? AND day = ?").bind(envelope.author, day),
+    db.prepare("SELECT kind FROM envelopes WHERE hash = ?").bind(retractTarget ?? ""),
+  ]);
+  const first = (i: number): Record<string, unknown> | undefined => results[i]?.results[0];
+  const circle = first(2) as { root: string; admission_cutover: number } | undefined;
+  return {
+    position: (first(0)?.["next"] as number | undefined) ?? 1,
+    held: first(1)?.["relay_id"] as number | undefined,
+    root: circle?.root,
+    cutover: circle?.admission_cutover ?? 0,
+    ids: (results[3]?.results ?? []) as unknown as FoldedIdRow[],
+    atSeq: first(4)?.["hash"] as string | undefined,
+    last: (first(5)?.["last"] as number | null | undefined) ?? 0,
+    daily: (first(6)?.["count"] as number | undefined) ?? 0,
+    retractKind: retractTarget === undefined ? undefined : (first(7)?.["kind"] as string | undefined),
+  };
+}
+
+/**
+ * The storage step, re-run on a lost race. The position, the duplicate, the chain, the cap, the
+ * retract target and the fold's inputs are read in one batch, so they describe the log this append
+ * extends, and nothing another append commits after that batch can pass unseen: it takes this
+ * relay_id and the write batch fails.
  */
 async function check(relay: Relay, envelope: Envelope, body: Json, hash: string, judgedAt: Date, along?: AlongWith): Promise<Receipt> {
-  const next = await relay.db.prepare("SELECT COALESCE(MAX(relay_id), 0) + 1 AS next FROM envelopes").first<{ next: number }>();
-  const position = next?.next ?? 1;
-  const held = await relay.db.prepare("SELECT relay_id FROM envelopes WHERE hash = ? AND relay_id < ?").bind(hash, position).first<{ relay_id: number }>();
-  if (held !== null) return { status: "duplicate", relay_id: held.relay_id, hash };
-  const retractTarget = envelope.kind === "retract" ? targetOf(body) : undefined;
-  const fold = await foldLog(relay.db, relay.root, { include: retractTarget, before: position, signers: relay.releaseSigners });
-  const author = fold.activeAuthor(envelope.author);
-  if (envelope.kind !== "join") await checkChain(relay, envelope, hash, author?.role === "mail", position);
   const day = isoTime(relay.now).slice(0, 10);
-  const daily = await relay.db.prepare("SELECT count FROM daily_appends WHERE author = ? AND day = ?").bind(envelope.author, day).first<{ count: number }>();
-  if ((daily?.count ?? 0) >= relay.limits.max_appends_per_device_per_day) {
+  const retractTarget = envelope.kind === "retract" ? targetOf(body) : undefined;
+  const log = await readLog(relay, envelope, hash, day, retractTarget);
+  checkedRoot(relay.db, relay.root, log.root);
+  const { position } = log;
+  if (log.held !== undefined) return { status: "duplicate", relay_id: log.held, hash };
+  const fold = await foldLog(relay.db, relay.root, {
+    include: retractTarget,
+    before: position,
+    signers: relay.releaseSigners,
+    read: { cutover: log.cutover, ids: log.ids },
+  });
+  const author = fold.activeAuthor(envelope.author);
+  if (envelope.kind !== "join") checkChain(envelope, hash, author?.role === "mail", log);
+  if (log.daily >= relay.limits.max_appends_per_device_per_day) {
     throw new Refusal(429, "rate_limited", `this key has made ${relay.limits.max_appends_per_device_per_day} appends today`);
   }
-  if (retractTarget !== undefined) await checkRetractTarget(relay, retractTarget, position);
+  if (log.retractKind !== undefined && isCircleState(log.retractKind)) {
+    throw new Refusal(422, "malformed", `a retract cannot drop a ${log.retractKind}, which the fold reads`);
+  }
   const before = snapshotKeys(fold);
   const epochBefore = fold.epoch;
   const error = fold.apply({ hash, envelope, body, position, now: judgedAt });
@@ -270,31 +331,18 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string,
   return { status: "accepted", relay_id: position, hash };
 }
 
-/** The sequence and fork rules, over the log below the position. A join is its invite key's only envelope, so the spent rule covers it. */
-async function checkChain(relay: Relay, envelope: Envelope, hash: string, mail: boolean, position: number): Promise<void> {
-  const [atSeq, chain] = await relay.db.batch<{ hash: string } | { last: number | null }>([
-    relay.db.prepare("SELECT hash FROM envelopes WHERE author = ? AND seq = ? AND relay_id < ?").bind(envelope.author, envelope.seq, position),
-    relay.db.prepare("SELECT MAX(seq) AS last FROM envelopes WHERE author = ? AND relay_id < ?").bind(envelope.author, position),
-  ]);
-  const held = atSeq?.results[0] as { hash: string } | undefined;
-  if (held !== undefined && held.hash !== hash) {
+/**
+ * The sequence and fork rules, over the log the check read. A join is its invite key's only
+ * envelope, so the spent rule covers it. A retract naming a circle-state envelope is refused in
+ * check(): the fold is replayed from those bodies, so dropping one would leave the log unfoldable.
+ */
+function checkChain(envelope: Envelope, hash: string, mail: boolean, log: LogReads): void {
+  if (log.atSeq !== undefined && log.atSeq !== hash) {
     throw new Refusal(422, "fork", `a different envelope from this author at seq ${envelope.seq} is already held`);
   }
-  const last = (chain?.results[0] as { last: number | null } | undefined)?.last ?? 0;
-  if (!mail && envelope.seq <= last) {
-    throw new Refusal(422, "sequence_regression", `seq ${envelope.seq} is not greater than ${last}, the last held`);
+  if (!mail && envelope.seq <= log.last) {
+    throw new Refusal(422, "sequence_regression", `seq ${envelope.seq} is not greater than ${log.last}, the last held`);
   }
-}
-
-/**
- * A retract drops its target's body, and the fold is replayed from the circle-state envelopes'
- * bodies, so a retract naming one of those would leave the log unfoldable: it is refused. The
- * protocol fixes retracts for content; this is the relay's reading of what a retract of a dinner,
- * join, device or revoke would mean.
- */
-async function checkRetractTarget(relay: Relay, target: string, position: number): Promise<void> {
-  const row = await relay.db.prepare("SELECT kind FROM envelopes WHERE hash = ? AND relay_id < ?").bind(target, position).first<{ kind: string }>();
-  if (row !== null && isCircleState(row.kind)) throw new Refusal(422, "malformed", `a retract cannot drop a ${row.kind}, which the fold reads`);
 }
 
 /** A device message authored by the key it admits: the lost-laptop bootstrap, proved by the identity signature inside it. */

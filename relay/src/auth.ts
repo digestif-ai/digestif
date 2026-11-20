@@ -8,17 +8,32 @@
 import { verifySignature } from "../../conformance/src/keys.ts";
 import { HEADER_KEY, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, requestString } from "../../conformance/src/request.ts";
 import { loadKey } from "./db.ts";
+import type { KeyState } from "../../conformance/src/fold.ts";
 import type { Relay } from "./env.ts";
 import { Refusal } from "./errors.ts";
 
 export interface Authenticated {
   /** The signing key, or undefined on an unsigned bootstrap append. */
   key: string | undefined;
+  /** The signing key's admitted_keys row, read once here so no route reads it again. */
+  state?: KeyState;
 }
 
 export interface AuthOptions {
   /** Accept a request with no Digestif-Key: the bootstrap append. */
   allowUnsigned?: boolean;
+}
+
+/**
+ * Reads a route runs in the nonce's own batch, given the signer's state: one round trip for the
+ * nonce and the route's answer. The batch is a transaction, so a replayed nonce answers nothing.
+ */
+export type WithNonce = (state: KeyState) => D1PreparedStatement[];
+
+/** A signed request authenticated, with the results of the statements that rode its nonce batch. */
+export interface AuthenticatedWith extends Authenticated {
+  state: KeyState;
+  results: D1Result[];
 }
 
 /**
@@ -47,14 +62,24 @@ export async function authenticate(relay: Relay, request: Request, url: URL, raw
     if (options.allowUnsigned) return { key: undefined };
     throw new Refusal(401, "not_admitted", "Digestif-Key is required");
   }
+  const { key, state } = await authenticateWith(relay, request, url, raw);
+  return { key, state };
+}
+
+/**
+ * A signed request from an admitted, unrevoked device or mail key, its nonce spent in one batch with
+ * the statements `along` builds from the signer's state: a signed read is two round trips, the key
+ * and then the nonce with the answer.
+ */
+export async function authenticateWith(relay: Relay, request: Request, url: URL, raw: string, along?: WithNonce): Promise<AuthenticatedWith> {
   const verified = verifyRequest(relay, request, url, raw);
   const state = await loadKey(relay.db, verified.key);
   // Fold.activeAuthor without an envelope: an admitted device or mail key, not revoked.
   if (state === undefined || state.role === "identity" || state.revoked_at !== undefined) {
     throw new Refusal(401, "not_admitted", "the signing key is not admitted");
   }
-  await spendNonce(relay, verified);
-  return { key: verified.key };
+  const results = await spendNonce(relay, verified, along === undefined ? [] : along(state));
+  return { key: verified.key, state, results };
 }
 
 /**
@@ -89,15 +114,18 @@ export function verifyRequest(relay: Relay, request: Request, url: URL, raw: str
  * record is one INSERT against the (key, nonce) primary key, so two copies of one request arriving
  * together cannot both pass: the second's INSERT fails the constraint, and that failure is the
  * refusal. Nonces the window has passed are dropped first, in the same transaction, so a nonce
- * whose window has passed may be used again and the table stays bounded.
+ * whose window has passed may be used again and the table stays bounded. `along` runs after the
+ * insert in the same batch, and its results are returned in order.
  */
-export async function spendNonce(relay: Relay, verified: Verified): Promise<void> {
+export async function spendNonce(relay: Relay, verified: Verified, along: D1PreparedStatement[] = []): Promise<D1Result[]> {
   const now = relay.now.getTime();
   try {
-    await relay.db.batch([
+    const results = await relay.db.batch([
       relay.db.prepare("DELETE FROM nonces WHERE expires_at < ?").bind(now),
       relay.db.prepare("INSERT INTO nonces (key, nonce, expires_at) VALUES (?, ?, ?)").bind(verified.key, verified.nonce, verified.until),
+      ...along,
     ]);
+    return results.slice(2);
   } catch (error) {
     if (!isNonceConflict(error)) throw error;
     throw new Refusal(401, "replayed_nonce", "this nonce was already used by this key");

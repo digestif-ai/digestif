@@ -17,6 +17,15 @@ import { version } from "./version.ts";
 const INVITES = "/v0/invites/";
 const LINKS = "/v0/links/";
 
+/** A path segment decoded, or 400 malformed for an escape that decodes to nothing (`%E0`, `%zz`). */
+export function decodePath(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw new Refusal(400, "malformed", `the path segment ${segment} is not a valid percent-encoding`);
+  }
+}
+
 async function route(relay: Relay, request: Request, url: URL): Promise<Response> {
   const { method } = request;
   const path = url.pathname;
@@ -25,13 +34,13 @@ async function route(relay: Relay, request: Request, url: URL): Promise<Response
   if (method === "GET" && path === "/v0/circle") return circle(relay, request, url);
   if (method === "GET" && path === "/v0/version") return version();
   if (method === "GET" && path.startsWith(INVITES) && path.length > INVITES.length) {
-    return invite(relay, request, url, decodeURIComponent(path.slice(INVITES.length)));
+    return invite(relay, request, url, decodePath(path.slice(INVITES.length)));
   }
   if ((method === "POST" && path === "/v0/mail") || path.startsWith(LINKS)) {
     const mailer = relay.mailer;
     if (mailer === undefined) throw new Refusal(404, "not_mailer", "this relay does not mail");
     if (path === "/v0/mail") return mail(relay, mailer, request, url);
-    const id = decodeURIComponent(path.slice(LINKS.length));
+    const id = decodePath(path.slice(LINKS.length));
     if (id !== "" && method === "GET") return linkPage(relay, request, url, id);
     if (id !== "" && method === "POST") return confirmLink(relay, request, url, id);
   }

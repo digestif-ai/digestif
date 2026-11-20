@@ -40,6 +40,14 @@ describe("routes", () => {
     }
   });
 
+  it("answers 400 malformed to a path whose escape decodes to nothing", async () => {
+    for (const path of ["/v0/invites/%E0%A4%A", "/v0/links/%zz?s=def"]) {
+      const response = await SELF.fetch(`http://relay.test${path}`);
+      expect(response.status, path).toBe(400);
+      expect(await response.json()).toMatchObject({ code: "malformed" });
+    }
+  });
+
   it("answers 404 not_mailer on the mailer routes when MAILER is not \"1\"", async () => {
     for (const mailer of [undefined, "0", "true"]) {
       for (const [method, path] of [
