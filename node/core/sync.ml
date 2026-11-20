@@ -469,10 +469,10 @@ let concurrently (node : Node.t) transport f xs =
       in
       let run x slot =
         Mutex.lock turn;
-        slot :=
-          (match f transport x with
-          | v -> Ok v
-          | exception e -> Error (e, Printexc.get_raw_backtrace ()));
+        (slot :=
+           match f transport x with
+           | v -> Ok v
+           | exception e -> Error (e, Printexc.get_raw_backtrace ()));
         Mutex.unlock turn
       in
       let slots =
