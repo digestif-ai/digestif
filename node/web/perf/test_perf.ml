@@ -676,6 +676,20 @@ let routes n cookie =
      ignore (json n cookie path);
      [ ("feed/:hash (note)", path) ])
   @ with_id "members/:identity" "members" "identity" (fun i -> "members/" ^ i)
+  (* DIG-225: who-am-I, and a thread read by its key: the newest note's, and the oldest note's,
+     whose author's walk reaches back through their whole history. *)
+  @ [ ("members/self", "members/self") ]
+  @ with_id "feed/threads/:key" "feed?limit=1" "hash" (fun h ->
+      "feed/threads/" ^ h)
+  @ (let oldest =
+       List.rev (items (json n cookie "feed?limit=200")) |> List.hd
+     in
+     [
+       ( "feed/threads/:key (older)",
+         "feed/threads/" ^ enc (Option.get (field "hash" oldest)) );
+     ])
+  @ with_id "items/threads/:key" "items?limit=1" "id" (fun i ->
+      "items/threads/" ^ i)
   @ with_id "rules/deny/:id" "rules/deny" "id" (fun i -> "rules/deny/" ^ i)
   @ with_id "notes/:id" "notes" "id" (fun i -> "notes/" ^ i)
   @ with_id "notes/:id/log" "notes" "id" (fun i -> "notes/" ^ i ^ "/log")

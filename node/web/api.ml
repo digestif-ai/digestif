@@ -3631,6 +3631,13 @@ module Inbox = struct
                 (I.page (log c) ~now:c.now ?inbox:(self_identity c) ?status
                    ?state ?kinds ?subjects ?voices ?after ~limit ())))
 
+  (* GET /items/threads/:key (DIG-225): one Inbox thread, oldest first, read by its key. *)
+  let thread c key =
+    ok
+      (`List
+         (List.map (summary c)
+            (I.thread (log c) ~now:c.now ?me:(self_identity c) key)))
+
   (* Whom a form addresses: the circle, or the members it names, each in the circle and none the
      member. A prompt suggestion's ([judges]) is always the members it names, the member taken out
      because they judge it anyway, and the member alone when it names nobody else. *)
@@ -6937,6 +6944,174 @@ module Signers = struct
              ])
 end
 
+(* DIG-225: GET /feed/threads/:key, one Feed thread read by its key, oldest first, whatever its age.
+   The key is the Feed's (ui/src/lib/threads.ts, feedThreadKeys): a reply joins the thread of the
+   message it answers; a run of Waiting for approval status notes joins the note its author's agent
+   sends next, and until one goes out is a thread of its own keyed by the first of them; any other
+   status note from the author ends the run. Only the author's own messages either side of the key
+   decide that, so the walk reads the author's index from the key until the run's ends, never the
+   circle's feed, and the replies by the reply_to index. *)
+module Feed_thread = struct
+  type row = { m : msg; status_note : string option }
+
+  let page_size = 50
+
+  let row_of_log c (r : Log.row) =
+    {
+      m = of_row c r;
+      status_note =
+        (if r.signed.envelope.kind = "summary" then
+           Content.status_of r.signed.body
+         else None);
+    }
+
+  let plain m = { m; status_note = None }
+  let waiting r = r.status_note = Some "waiting_for_approval"
+
+  (* The client's isAgentNote: a note an agent wrote for its member. *)
+  let agent_note r =
+    r.status_note = None && r.m.reply_to = None && r.m.voice = "agent"
+    && r.m.kind = "summary"
+
+  (* What ends a run of Waiting for approval: the author's note, or any other status note. *)
+  let ends_wait r = (not (waiting r)) && (r.status_note <> None || agent_note r)
+
+  (* The author's messages the Feed shows that answer nothing, newest first from [before], page
+     after page until [stop] holds for one (which is kept) or the author has no older message. *)
+  let author_walk c identity ?before ~stop () =
+    let keys = keys_of c identity in
+    let rec go before acc =
+      let page =
+        View.page ?before ~authors:keys ~kinds:Content.feed_kinds
+          ~limit:page_size (log c) c.fold
+      in
+      let rec each acc = function
+        | [] -> (
+            match List.rev page with
+            | last :: _ when List.length page = page_size ->
+                go (Some last.signed.envelope.created_at) acc
+            | _ -> acc)
+        | r :: rest ->
+            let row = row_of_log c r in
+            if row.m.reply_to <> None then each acc rest
+            else if stop row then row :: acc
+            else each (row :: acc) rest
+      in
+      each acc page
+    in
+    go before []
+
+  (* The member's own messages the log does not hold: notes not yet signed and what was refused
+     before signing. The Feed shows both. *)
+  let unsigned c identity =
+    if self_identity c <> Some identity then []
+    else
+      List.map plain (refused c @ Notes.in_feed c ~before:None ~limit:200)
+      |> List.filter (fun r -> r.m.reply_to = None)
+
+  (* feedThreadKeys over one author's messages, oldest first. *)
+  let keys_of_rows rows =
+    let keys = Hashtbl.create 16 in
+    let run = ref [] in
+    let settle key =
+      List.iter (fun r -> Hashtbl.replace keys r.m.hash key) !run;
+      run := []
+    in
+    List.iter
+      (fun r ->
+        if waiting r then run := !run @ [ r ]
+        else begin
+          if r.status_note <> None then
+            match !run with first :: _ -> settle first.m.hash | [] -> ()
+          else if agent_note r then settle r.m.hash;
+          Hashtbl.replace keys r.m.hash r.m.hash
+        end)
+      rows;
+    (match !run with first :: _ -> settle first.m.hash | [] -> ());
+    keys
+
+  let oldest_first l =
+    List.sort_uniq
+      (fun a b -> compare (a.m.created_at, a.m.hash) (b.m.created_at, b.m.hash))
+      l
+
+  (* The thread [root] is in: its author's messages that share its key. *)
+  let base c root =
+    let author = root.m.author and at = root.m.created_at in
+    let older =
+      if waiting root || agent_note root then
+        author_walk c author ~before:at ~stop:ends_wait ()
+      else []
+    in
+    (* A run of waiting notes is settled by what its author sent after it, read back to the root. *)
+    let newer =
+      if waiting root then
+        author_walk c author ~stop:(fun r -> r.m.created_at <= at) ()
+        |> List.filter (fun r -> r.m.created_at > at)
+      else []
+    in
+    let lo = match older with first :: _ -> first.m.created_at | [] -> at in
+    let hi = if newer = [] then at else "~" in
+    let extra =
+      List.filter
+        (fun r -> r.m.created_at >= lo && r.m.created_at <= hi)
+        (unsigned c author)
+    in
+    let rows = oldest_first ((root :: older) @ newer @ extra) in
+    let keys = keys_of_rows rows in
+    let key r =
+      Option.value (Hashtbl.find_opt keys r.m.hash) ~default:r.m.hash
+    in
+    let k = key root in
+    List.filter (fun r -> key r = k) rows |> List.map (fun r -> r.m)
+
+  (* Every reply under [hashes], however deep, by the reply_to index. *)
+  let rec replies c seen = function
+    | [] -> []
+    | hash :: rest ->
+        let found =
+          List.map (of_row c)
+            (View.replies ~kinds:Content.feed_kinds (log c) c.fold hash)
+          @ List.filter (fun m -> m.reply_to = Some hash) (refused c)
+          |> List.filter (fun m -> not (Hashtbl.mem seen m.hash))
+        in
+        List.iter (fun m -> Hashtbl.replace seen m.hash ()) found;
+        found @ replies c seen (rest @ List.map (fun m -> m.hash) found)
+
+  let root c key =
+    match find_msg c key with
+    | Some m ->
+        Some
+          (match Log.find (log c) m.hash with
+          | Some r -> row_of_log c r
+          | None -> plain m)
+    | None ->
+        Option.map
+          (fun n -> plain (Notes.message_of c n))
+          (Store.Notes.find (log c) key)
+
+  (* A key that names a reply reads the thread of what it answers, as the Feed keys it. *)
+  let rec thread ?(depth = 0) c key =
+    match root c key with
+    | Some { m = { reply_to = Some parent; _ }; _ } when depth < 64 ->
+        thread ~depth:(depth + 1) c parent
+    | Some r ->
+        let base = base c r in
+        let seen = Hashtbl.create 16 in
+        List.iter (fun m -> Hashtbl.replace seen m.hash ()) base;
+        base @ replies c seen (List.map (fun m -> m.hash) base)
+    | None -> replies c (Hashtbl.create 16) [ key ]
+
+  let get c key =
+    match thread c key with
+    | [] -> not_found ()
+    | l ->
+        List.stable_sort (fun a b -> compare a.created_at b.created_at) l
+        |> List.map (fun m ->
+            extend_json (Stages.feed_fields c m.hash) (item_json c m))
+        |> fun l -> ok (`List l)
+end
+
 let route c ~meth ~path ~query ~body =
   match (meth, path) with
   | "GET", [ "status" ] ->
@@ -6949,6 +7124,7 @@ let route c ~meth ~path ~query ~body =
       extend_each
         (fun j -> Stages.feed_fields c (string_of "hash" j))
         (feed ~extra:Notes.in_feed c query)
+  | "GET", [ "feed"; "threads"; key ] -> Feed_thread.get c key
   | "GET", [ "messages"; h ] -> Notes.message c h
   | "POST", [ "messages"; h; "draft-reply" ] -> draft_reply c h
   | "POST", [ "messages" ] -> Stages.compose c (fun () -> post c body)
@@ -6963,6 +7139,10 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "paused" ] -> Pause.paused c
   | "POST", [ "paused" ] -> Pause.pause c
   | "DELETE", [ "paused" ] -> Pause.unpause c
+  | "GET", [ "members"; "self" ] ->
+      with_found
+        (Option.bind (self_identity c) (find_identity c))
+        (fun k -> ok (member_json c k))
   | "GET", [ "members"; id ] ->
       with_found (find_identity c id) (fun k -> ok (member_json c k))
   | "PUT", [ "members"; id; "mute" ] ->
@@ -7061,6 +7241,7 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "items" ] ->
       Prompts.sync c;
       Inbox.list c query
+  | "GET", [ "items"; "threads"; key ] -> Inbox.thread c key
   | "POST", [ "items"; id; "ask-agent" ] -> Ask_agent.ask c id
   | "POST", [ "items"; id; "picks" ] ->
       Inbox_agent.pick c id body ~otherwise:(fun () ->

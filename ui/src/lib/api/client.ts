@@ -114,6 +114,8 @@ export interface Client {
   status(): Promise<ApiResponse<NodeStatus>>;
   /** Newest first; [page] reads `limit` rows older than `before`. */
   feed(page?: { limit: number; before?: string | undefined }): Promise<ApiResponse<FeedItem[]>>;
+  /** One Feed thread by its key (lib/threads.ts, feedThreadKeys), oldest first, however old (DIG-225). */
+  feedThread(key: string): Promise<ApiResponse<FeedItem[]>>;
   message(hash: string): Promise<ApiResponse<Message>>;
   post(form: PostForm): Promise<ApiResponse<Message>>;
   /** Ask the Inbox agent for a draft reply to another member's note; it answers at once and the draft arrives as agent_answer (ISS-83154). */
@@ -124,6 +126,8 @@ export interface Client {
    */
   items(statuses: ItemStatus[], page?: PageQuery, filter?: ItemFilter): Promise<ApiResponse<ItemSummary[]>>;
   item(id: string): Promise<ApiResponse<Item>>;
+  /** One Inbox thread by its key (lib/threads.ts, itemThreadKey): every item the member has under it, oldest first (DIG-225). */
+  itemThread(key: string): Promise<ApiResponse<ItemSummary[]>>;
   /** New item: saved as a Draft, or sent at once with `send`. */
   createItem(form: ItemForm): Promise<ApiResponse<Item>>;
   /** Edit a draft in place; an agent's words are kept beside the member's. */
@@ -150,6 +154,8 @@ export interface Client {
   search(q: string, limit: number): Promise<ApiResponse<SearchResults>>;
   invitees(): Promise<ApiResponse<Invitee[]>>;
   member(identity: string): Promise<ApiResponse<Member>>;
+  /** The member this node is, without reading the circle (DIG-225); a 404 before they have joined. */
+  self(): Promise<ApiResponse<Member>>;
   mute(identity: string, muted: boolean): Promise<ApiResponse<Member>>;
   /** The approvals this node reads, newest first, at most 50; a member who is not an admin reads none (DES-85466). */
   approvals(states?: CircleApprovalState[]): Promise<ApiResponse<CircleApproval[]>>;
@@ -236,6 +242,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
             ? ''
             : '?limit=' + String(page.limit) + (page.before === undefined ? '' : '&before=' + encodeURIComponent(page.before)))
       ),
+    feedThread: (key) => get(path('feed', 'threads', key)),
     message: (hash) => get(path('messages', hash)),
     post: (form) => send('POST', path('messages'), form),
     draftReply: (hash) => send('POST', path('messages', hash, 'draft-reply')),
@@ -248,6 +255,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
       return get(withPage(path('items') + (params.length === 0 ? '' : '?' + params.join('&')), page));
     },
     item: (id) => get(path('items', id)),
+    itemThread: (key) => get(path('items', 'threads', key)),
     createItem: (form) => send('POST', path('items'), form),
     editItem: (id, form) => send('PUT', path('items', id), form),
     discardItem: (id) => send('DELETE', path('items', id)),
@@ -264,6 +272,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     search: (q, limit) => get(path('search') + '?q=' + encodeURIComponent(q) + '&limit=' + String(limit)),
     invitees: () => get(path('invitees')),
     member: (identity) => get(path('members', identity)),
+    self: () => get(path('members', 'self')),
     mute: (identity, muted) => send('PUT', path('members', identity, 'mute'), { muted: muted }),
     approvals: (states) => get(path('approvals') + '?' + [...(states ?? []).map((s) => 'state=' + s), 'limit=50'].join('&')),
     startApproval: (form) => send('POST', path('approvals'), form),

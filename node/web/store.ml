@@ -2759,6 +2759,7 @@ CREATE TABLE IF NOT EXISTS ui_items (
   clock_due INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ui_items_created ON ui_items (created_at, id);
+CREATE INDEX IF NOT EXISTS ui_items_about ON ui_items (about);
 CREATE TABLE IF NOT EXISTS ui_item_answers (
   hash TEXT PRIMARY KEY,
   item TEXT,
@@ -3651,6 +3652,26 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     with
     | [ [| n |] ] -> Log.int n
     | _ -> 0
+
+  (* DIG-225: one thread of the Inbox (ui/src/lib/threads.ts, itemThreadKey), oldest first: the
+     items about the message [key], else the item whose id it is, read by the about index whatever
+     their age. With [me] known, the items that are theirs: in the Inbox, Waiting on others or the
+     Archive (ISS-88476). *)
+  let thread (log : Log.t) ~now ?me key =
+    let theirs, params =
+      match me with
+      | None -> ("1", [])
+      | Some m ->
+          let others, p = state_condition m "others" in
+          ( "(" ^ in_inbox ^ " OR " ^ others ^ " OR r.archived_at IS NOT NULL)",
+            inbox_params (Some m) @ p )
+    in
+    Log.rows log
+      (shown ^ "SELECT " ^ columns
+     ^ ", status FROM r WHERE (r.about = ? OR (r.about IS NULL AND r.id = ?)) \
+        AND " ^ theirs ^ " ORDER BY created_at, id")
+      ((Sqlite3.Data.FLOAT now :: [ Log.s key; Log.s key ]) @ params)
+    |> List.filter_map row_of
 end
 
 (* ISS-87806: the approvals this node reads (docs/protocol.md, approval), indexed from the log once

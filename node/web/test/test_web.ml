@@ -1901,6 +1901,105 @@ let held_reason_column () =
 
 (* ISS-42119: the feed, a member's recent list and a message's replies read one page out of the log,
    and answer exactly what reading every message and filtering it did. *)
+(* DIG-225: a Feed thread, an Inbox thread and the member this node is are read by their key on the
+   node, so a thread older than the Feed's first page still shows and nothing scans the circle. *)
+let threads_by_key () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let hashes j = List.map (s "hash") (list j) in
+  let feed = list (snd (call "feed?limit=200")) in
+  let by_preview p = List.find (fun i -> contains (s "preview" i) p) feed in
+  let ben_note = s "hash" (by_preview "a retry queue for the importer") in
+  let ben_waiting =
+    s "hash"
+      (List.find
+         (fun i ->
+           s "status_note" i = "waiting_for_approval"
+           && s "name" (member "author" i) = "Ben Ortiz")
+         feed)
+  in
+  let thread key = call ("feed/threads/" ^ enc key) in
+  let st, ben = thread ben_note in
+  Alcotest.(check int) "a note's thread" 200 st;
+  Alcotest.(check (list string))
+    "the wait it ends, then the note, oldest first" [ ben_waiting; ben_note ]
+    (hashes ben);
+  Alcotest.(check string)
+    "rows carry the Feed's status note" "waiting_for_approval"
+    (s "status_note" (List.hd (list ben)));
+  Alcotest.(check (list string))
+    "the wait's key reads the note that settled it" [ ben_waiting; ben_note ]
+    (hashes (snd (thread ben_waiting)));
+  let question =
+    s "hash"
+      (by_preview
+         "Has anyone tried a fake clock for timer tests? Ben is stuck on the \
+          same thing.")
+  in
+  let _, answer =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String "Yes, a fake clock works.");
+             ("reply_to", `String question);
+           ])
+      "messages"
+  in
+  let _, deeper =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String "And a frozen one for the CI runner.");
+             ("reply_to", `String (s "hash" answer));
+           ])
+      "messages"
+  in
+  let _, q = thread question in
+  Alcotest.(check string) "the note first" question (List.hd (hashes q));
+  Alcotest.(check bool)
+    "every reply under it, a reply's reply and the refused one too" true
+    (List.length (list q) = 4
+    && List.mem (s "hash" answer) (hashes q)
+    && List.mem (s "hash" deeper) (hashes q));
+  Alcotest.(check (list string))
+    "a reply's key reads its note's thread" (hashes q)
+    (hashes (snd (thread (s "hash" deeper))));
+  (* Sixty posts push the question off the Feed's first page; its thread still reads whole. *)
+  for i = 1 to 60 do
+    ignore
+      (call ~meth:"POST"
+         ~body:(`Assoc [ ("text", `String (Printf.sprintf "Post %d." i)) ])
+         "messages")
+  done;
+  Alcotest.(check bool)
+    "off the first page" false
+    (List.mem question (hashes (snd (call "feed?limit=50"))));
+  Alcotest.(check (list string))
+    "an old thread reads the same" (hashes q)
+    (hashes (snd (thread question)));
+  Alcotest.(check int)
+    "a key with nothing under it" 404
+    (fst (thread "sha256:00"));
+  (* Who-am-I: one member, the one Members marks as this node's. *)
+  let st, self = call "members/self" in
+  Alcotest.(check int) "self" 200 st;
+  Alcotest.(check bool) "is_self" true (member "is_self" self = `Bool true);
+  Alcotest.(check string)
+    "the member Members marks" (s "identity" self)
+    (s "identity"
+       (List.find
+          (fun m -> member "is_self" m = `Bool true)
+          (list (snd (call "members")))));
+  Alcotest.(check bool)
+    "with its devices, for Phones" true
+    (list (member "devices" self) <> []);
+  Alcotest.(check int)
+    "an Inbox thread with no item" 0
+    (List.length (list (snd (call "items/threads/nothing"))))
+
 let feed_pages () =
   let n = demo () in
   let c = session n in
@@ -7946,7 +8045,22 @@ let inbox_count_threads () =
   Alcotest.(check int)
     "a thread with nothing unread is not counted" 2 (count ());
   add ~about:"sha256:other" "unread-2";
-  Alcotest.(check int) "one unread item makes its thread count" 3 (count ())
+  Alcotest.(check int) "one unread item makes its thread count" 3 (count ());
+  (* DIG-225: a thread is read by its key, oldest first, the Archive included. *)
+  Store.Items.archive log "adopt-2" ~at;
+  let thread key =
+    List.map
+      (fun (r : Store.Items.row) -> r.id)
+      (Store.Items.thread log ~now:(Unix.gettimeofday ()) ~me key)
+  in
+  Alcotest.(check (list string))
+    "every item about the note, the archived one too"
+    [ "adopt-1"; "adopt-2"; "adopt-3"; "adopt-4" ]
+    (thread "sha256:idea");
+  Alcotest.(check (list string))
+    "an item about nothing is its own key" [ "alone" ] (thread "alone");
+  Alcotest.(check (list string))
+    "an item about a note is not under its own id" [] (thread "adopt-1")
 
 let envelopes_of n kind = List.length (Log.of_kind n.Node.log kind)
 
@@ -14388,6 +14502,7 @@ let () =
           Alcotest.test_case "note log passages" `Quick note_log_passages;
           Alcotest.test_case "held reason column" `Quick held_reason_column;
           Alcotest.test_case "feed pages" `Quick feed_pages;
+          Alcotest.test_case "threads and self by key" `Quick threads_by_key;
           Alcotest.test_case "reply_to backfill" `Quick reply_to_backfill;
           Alcotest.test_case "post deny layer" `Quick post_deny;
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
