@@ -4,8 +4,9 @@
    again:
 
    1. Download the draft's manifest and every signature and check them as a node does
-      (Policy.check_relay against this binary's signer set), so nothing is published that a node
-      would not count.
+      (Policy.check_relay against the trust the channel leaves: the build's signer set advanced by
+      the channel's signers/ and every revocation it lists, the set sign --next signs under), so
+      nothing is published that a node would not count.
    2. Publish the GitHub release, never as Latest (Latest is the node line to the install script
       and to the signing line), and write the manifest and the combined manifest.sig.json under
       relay/ on the channel branch, with relay/index.json listing it, in one commit.
@@ -36,7 +37,9 @@ let error_to_string = function Waiting e | Failed e -> e
 type env = {
   gh : string list -> (string, string) result;
   repo : string;
-  signers : Release.signer list;
+  trust : unit -> (Policy.trust, string) result;
+      (** The trust a node reading the channel holds (Signers_channel.trust):
+          the set every signature is checked against, and its revocations. *)
   channel :
     message:string -> (string -> (unit, string) result) -> (bool, string) result;
       (** Commit what the function writes into a checkout of the channel branch,
@@ -50,7 +53,7 @@ let tag_of version = Sign_next.relay_tag_prefix ^ Version.to_string version
 let failed r = Result.map_error (fun e -> Failed e) r
 
 (* Step 1: the draft's manifest and the signature of every signer, checked; the signatures kept
-   are one valid signature per signer, as manifest.sig.json carries them. *)
+   are, per signer, the one that verified, as manifest.sig.json carries them. *)
 let verified env ~version =
   let tag = tag_of version in
   let* listed = failed (env.gh [ "api"; Sign_next.releases_path env.repo ]) in
@@ -86,23 +89,16 @@ let verified env ~version =
             (fun (a : Sign_next.asset) -> Sign_next.is_signature_asset a.name)
             release.assets))
   in
-  let valid =
-    Release.valid_signers ~domain:Release.relay_release_domain bytes
-      (List.concat sigs)
-  in
+  let* trust = failed (env.trust ()) in
   let kept =
-    List.filter_map
-      (fun (s : Release.signer) ->
-        if List.mem s.key valid then
-          List.find_opt
-            (fun (g : Release.signature) -> g.by = s.key)
-            (List.concat sigs)
-        else None)
-      env.signers
+    Release.verified_signatures ~domain:Release.relay_release_domain
+      ~wanted:(fun k ->
+        List.exists (fun (s : Release.signer) -> s.key = k) trust.signers)
+      bytes (List.concat sigs)
   in
   let signed = { Release.bytes; doc; signatures = kept } in
-  match Policy.check_relay { signers = env.signers; revoked = [] } signed with
-  | Ok () -> Ok (release, signed)
+  match Policy.check_relay trust signed with
+  | Ok () -> Ok (release, signed, trust)
   | Error (Policy.Missing_signatures names) ->
       Error
         (Waiting
@@ -321,11 +317,11 @@ let announced_line = function
 
 let run env ~version =
   let tag = tag_of version in
-  let* release, signed = verified env ~version in
+  let* release, signed, trust = verified env ~version in
   env.say
     (Printf.sprintf "%s: signed by %s." tag
        (String.concat ", "
-          (List.map (fun (s : Release.signer) -> s.name) env.signers)));
+          (List.map (fun (s : Release.signer) -> s.name) trust.signers)));
   let* () =
     if release.draft then (
       let* _ =

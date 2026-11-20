@@ -84,10 +84,12 @@ let write_sets ~dir (held : signer_set signed list) =
       write (at "index.json") (Yojson.Safe.pretty_to_string json ^ "\n");
       Ok sets
 
-(* The set a signer signs under: the build's, advanced by every change the channel lists and every
-   change the node on this machine holds, each checked against the set before it. A promoted admin's
-   key is in it from the moment the change is signed, before any release carries it. *)
-let current ~build ~(channel : Feed.t option) ~(held : signer_set signed list) =
+(* The trust a signer signs under: the build's set, advanced by every change the channel lists and
+   every change the node on this machine holds, each checked against the set before it, with the
+   channel's revocations applied (Policy.adopt_sets), as a node reading that channel reaches it. A
+   promoted admin's key is in it from the moment the change is signed, before any release carries
+   it. *)
+let trust ~build ~(channel : Feed.t option) ~(held : signer_set signed list) =
   let revocations, from_channel =
     match channel with
     | Some f -> (f.revocations, f.signer_sets)
@@ -98,4 +100,7 @@ let current ~build ~(channel : Feed.t option) ~(held : signer_set signed list) =
       { signers = build; revoked = [] }
       ~revocations (from_channel @ held)
   in
-  a.adopted_trust.signers
+  a.adopted_trust
+
+(* The set a signer signs under: [trust]'s signers. *)
+let current ~build ~channel ~held = (trust ~build ~channel ~held).signers

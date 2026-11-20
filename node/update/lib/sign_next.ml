@@ -794,10 +794,18 @@ let relay_titles ~git ~repo ~clone ~since tag =
       let* titles, url = log_titles ~git ~repo ~clone ~since ~pathspecs tag in
       Ok (titles, url, None)
 
-(* A migration the version adds, with its full text as the tag holds it, checked against the
-   manifest's sha256. *)
+(* A migration the version adds or changes over the last published relay version, with its full
+   text as the tag holds it, checked against the manifest's sha256. *)
+type migration_change =
+  | Added  (** The last published version did not list it. *)
+  | Changed of string
+      (** The last published version listed it with this other sha256: an
+          applied migration is never run again, so the edit reaches only a relay
+          deployed fresh. Never signed. *)
+
 type added = {
   migration_name : string;
+  change : migration_change;
   text : (string, string) result;
   matches : bool;  (** The text's sha256 is the manifest's. *)
 }
@@ -817,6 +825,10 @@ type relay_shown = {
   relay_compare_url : string;
   relay_manifest : Release.relay_manifest;
   added : added list;
+      (** Every migration whose sha256 the last published version lacks. *)
+  removed : Release.relay_migration list;
+      (** Every migration the last published version listed and this one does
+          not. *)
   relays : relay_read list option;  (** None: no node runs on this machine. *)
   relay_already : Release.signer list;
   relay_remaining : int;  (** Required signatures not on the draft yet. *)
@@ -838,28 +850,52 @@ let relay_manifest_of (release : draft) bytes =
   in
   Ok (bytes, m)
 
+let previous_migrations (before : Release.relay_manifest option) =
+  match before with None -> [] | Some b -> b.migrations
+
+(* Every migration of [m] whose name or sha256 the last published version [before] lacks: one it
+   adds, and one whose bytes changed under the same name. *)
 let added_migrations ~git ~clone ~tag ~(before : Release.relay_manifest option)
     (m : Release.relay_manifest) =
-  let had =
-    match before with
-    | None -> []
-    | Some b ->
-        List.map (fun (g : Release.relay_migration) -> g.migration) b.migrations
-  in
+  let had = previous_migrations before in
   List.filter_map
     (fun (g : Release.relay_migration) ->
-      if List.mem g.migration had then None
-      else
-        let text =
-          git [ "-C"; clone; "show"; tag ^ ":relay/migrations/" ^ g.migration ]
-        in
-        let matches =
-          match text with
-          | Ok t -> Keys.hash_of_bytes t = g.migration_sha256
-          | Error _ -> false
-        in
-        Some { migration_name = g.migration; text; matches })
+      let change =
+        match
+          List.find_opt
+            (fun (h : Release.relay_migration) -> h.migration = g.migration)
+            had
+        with
+        | None -> Some Added
+        | Some h when h.migration_sha256 <> g.migration_sha256 ->
+            Some (Changed h.migration_sha256)
+        | Some _ -> None
+      in
+      Option.map
+        (fun change ->
+          let text =
+            git
+              [ "-C"; clone; "show"; tag ^ ":relay/migrations/" ^ g.migration ]
+          in
+          let matches =
+            match text with
+            | Ok t -> Keys.hash_of_bytes t = g.migration_sha256
+            | Error _ -> false
+          in
+          { migration_name = g.migration; change; text; matches })
+        change)
     m.migrations
+
+(* Every migration the last published version [before] listed that [m] does not. *)
+let removed_migrations ~(before : Release.relay_manifest option)
+    (m : Release.relay_manifest) =
+  List.filter
+    (fun (h : Release.relay_migration) ->
+      not
+        (List.exists
+           (fun (g : Release.relay_migration) -> g.migration = h.migration)
+           m.migrations))
+    (previous_migrations before)
 
 (* [downloaded] answers the manifest of a relay release, downloaded once for the whole run. *)
 let show_relay ~gh ~git ~clone ~tmp ~signers ~repo ~relays ~releases ~downloaded
@@ -895,19 +931,35 @@ let show_relay ~gh ~git ~clone ~tmp ~signers ~repo ~relays ~releases ~downloaded
         Ok (Some m)
   in
   let added = added_migrations ~git ~clone ~tag:release.tag ~before manifest in
+  let removed = removed_migrations ~before manifest in
   let migration_problems =
     List.filter_map
       (fun a ->
-        match a.text with
-        | Error _ ->
+        match (a.change, a.text) with
+        | Changed was, _ ->
+            Some
+              (Printf.sprintf
+                 "migration %s was %s in %s and is %s here: a published \
+                  migration is never edited, so a new one carries the change"
+                 a.migration_name was
+                 (Option.value since ~default:"the last published version")
+                 (Option.value
+                    (Option.map
+                       (fun (g : Release.relay_migration) -> g.migration_sha256)
+                       (List.find_opt
+                          (fun (g : Release.relay_migration) ->
+                            g.migration = a.migration_name)
+                          manifest.migrations))
+                    ~default:"another sha256"))
+        | Added, Error _ ->
             Some
               (Printf.sprintf "migration %s could not be read at %s"
                  a.migration_name release.tag)
-        | Ok _ when not a.matches ->
+        | Added, Ok _ when not a.matches ->
             Some
               (Printf.sprintf "migration %s differs from the tag's file"
                  a.migration_name)
-        | Ok _ -> None)
+        | Added, Ok _ -> None)
       added
   in
   let already = signed_on ~required:signers release in
@@ -923,6 +975,7 @@ let show_relay ~gh ~git ~clone ~tmp ~signers ~repo ~relays ~releases ~downloaded
         relay_compare_url = compare_url;
         relay_manifest = manifest;
         added;
+        removed;
         relays;
         relay_already = already;
         relay_remaining;
@@ -975,11 +1028,11 @@ let render_relay ~repo s =
   | n -> List.iter (fun l -> line "  %s" l) (String.split_on_char '\n' n));
   line "";
   (match s.added with
-  | [] -> line "Migrations: this version adds none."
+  | [] -> line "Migrations: this version adds or changes none."
   | l ->
       line
-        "Migrations this version adds, in full (a rollback replaces the Worker \
-         and never undoes one):";
+        "Migrations this version adds or changes, in full (a rollback replaces \
+         the Worker and never undoes one):";
       List.iter
         (fun a ->
           let sha =
@@ -993,7 +1046,10 @@ let render_relay ~repo s =
             | None -> ""
           in
           line "";
-          line "  %s %s%s" a.migration_name sha
+          line "  %s %s%s%s" a.migration_name sha
+            (match a.change with
+            | Added -> ""
+            | Changed was -> "  CHANGED, WAS " ^ was)
             (if a.matches then "  (the tag's file matches)"
              else "  DIFFERS FROM THE TAG'S FILE");
           match a.text with
@@ -1007,6 +1063,17 @@ let render_relay ~repo s =
               List.iter
                 (fun l -> line "    | %s" l)
                 (String.split_on_char '\n' t))
+        l);
+  (match s.removed with
+  | [] -> ()
+  | l ->
+      line "";
+      line
+        "Migrations this version NO LONGER LISTS (a relay deployed fresh from \
+         it never runs them):";
+      List.iter
+        (fun (g : Release.relay_migration) ->
+          line "  %s %s  REMOVED" g.migration g.migration_sha256)
         l);
   line "";
   line "Bundle:";

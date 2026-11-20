@@ -530,9 +530,10 @@ let affirmative s =
   | "y" | "yes" -> true
   | _ -> false
 
-(* digestif-update approve <id>: shown, asked once, signed, handed to the node. *)
-let sign ~(api : api) ~secret ~ask ~say id =
-  let me = Keys.public secret in
+(* digestif-update approve <id>: shown, asked once, signed, handed to the node. [me] is the key
+   shown and asked about (signer.json's public_key); [read_secret] reads the release key, called only
+   once the signer answers y, and a key that is not [me] signs nothing. *)
+let sign_as ~(api : api) ~me ~read_secret ~ask ~say id =
   let* a = find ~api id in
   let* set = signer_set api in
   let* step = step ~me ~set a in
@@ -554,6 +555,16 @@ let sign ~(api : api) ~secret ~ask ~say id =
     say "nothing was signed";
     Ok ())
   else
+    let* secret = read_secret () in
+    let* () =
+      if Keys.public secret = me then Ok ()
+      else
+        Error
+          (Printf.sprintf
+             "your key is %s but signer.json's public_key is %s; nothing was \
+              signed. Write your key's public half there."
+             (Keys.public secret) me)
+    in
     let path = "/api/v0/approvals/" ^ a.id ^ "/signatures" in
     let body =
       `Assoc
@@ -580,6 +591,12 @@ let sign ~(api : api) ~secret ~ask ~say id =
       | Error _ ->
           say "signed";
           Ok ()
+
+(* sign_as with a key already in memory. *)
+let sign ~(api : api) ~secret ~ask ~say id =
+  sign_as ~api ~me:(Keys.public secret)
+    ~read_secret:(fun () -> Ok secret)
+    ~ask ~say id
 
 (* digestif-update signers propose --replace OLD --with NEW: the replacement filed through the
    node, which seals it to the admins; NEW signs first. *)

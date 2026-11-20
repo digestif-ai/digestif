@@ -3473,7 +3473,8 @@ let relay_sig_asset secret =
     (Release.add_signature ~domain:Release.relay_release_domain ~secret
        bytes_030 [])
 
-let relay_listing ?(node_draft = false) ?(draft = true) ~signed_by () =
+let relay_listing ?(node_draft = false) ?(draft = true) ?(extra = []) ~signed_by
+    () =
   let asset ?digest id name =
     `Assoc
       ([ ("id", `Int id); ("name", `String name) ]
@@ -3493,6 +3494,7 @@ let relay_listing ?(node_draft = false) ?(draft = true) ~signed_by () =
                      asset ~digest:doc_030.bundle.bundle_sha256 52
                        "digestif-relay-0.3.0.tar.gz";
                    ]
+                  @ List.map (fun (id, name) -> asset id name) extra
                   @ List.map
                       (fun (id, k) ->
                         asset id
@@ -3531,11 +3533,17 @@ type relay_fake = {
   r_git : string list list ref;
 }
 
-let relay_answer f ?node_draft ?draft ?(relay_bytes = bytes_030) ~signed_by args
-    =
+let relay_answer f ?node_draft ?draft ?extra ?(relay_bytes = bytes_030)
+    ~signed_by args =
   match args with
   | [ "api"; "repos/o/r/releases?per_page=50" ] ->
-      Ok (relay_listing ?node_draft ?draft ~signed_by ())
+      Ok (relay_listing ?node_draft ?draft ?extra ~signed_by ())
+  | [ "api"; "-H"; _; "repos/o/r/releases/assets/50" ] ->
+      (* Roman's key over other bytes: a signature by a signer that does not verify. *)
+      Ok
+        (Release.signatures_to_string
+           (Release.add_signature ~domain:Release.relay_release_domain
+              ~secret:roman bytes_020 []))
   | [ "api"; "-H"; _; "repos/o/r/releases/assets/51" ] -> Ok relay_bytes
   | [ "api"; "-H"; _; "repos/o/r/releases/assets/52" ] -> Ok "1"
   | [ "api"; "-H"; _; "repos/o/r/releases/assets/41" ] -> Ok bytes_020
@@ -3562,16 +3570,18 @@ let relay_answer f ?node_draft ?draft ?(relay_bytes = bytes_030) ~signed_by args
       Ok ""
   | _ -> Error ("unexpected gh " ^ String.concat " " args)
 
-let relay_gh ?node_draft ?draft ?relay_bytes ~signed_by () =
+let relay_gh ?node_draft ?draft ?extra ?relay_bytes ~signed_by () =
   let f = { r_calls = ref []; r_uploaded = ref None; r_git = ref [] } in
   let gh args =
     f.r_calls := !(f.r_calls) @ [ args ];
-    with_attest (relay_answer f ?node_draft ?draft ?relay_bytes ~signed_by) args
+    with_attest
+      (relay_answer f ?node_draft ?draft ?extra ?relay_bytes ~signed_by)
+      args
   in
   (f, gh)
 
 let run_relay ?node_draft ?relay_bytes ?(signed_by = []) ?(key = mike)
-    ?(answers = [ "s" ]) ?(migration = migration_text) () =
+    ?(answers = [ "s" ]) ?(migration = migration_text) ?(files = []) () =
   let f, gh = relay_gh ?node_draft ?relay_bytes ~signed_by () in
   let said = Buffer.create 1024 in
   let published = ref [] in
@@ -3614,7 +3624,8 @@ let run_relay ?node_draft ?relay_bytes ?(signed_by = []) ?(key = mike)
              :(exclude,glob)relay/**/*.test.ts\n" );
         ]
       ~files:
-        [ ("relay-v0.3.0:relay/migrations/0003_relay_version.sql", migration) ]
+        (("relay-v0.3.0:relay/migrations/0003_relay_version.sql", migration)
+        :: files)
       ()
   in
   let result =
@@ -3838,15 +3849,16 @@ let test_sign_unread_draft () =
         (contains ~sub:"frob-v1.0.0" e
         && contains ~sub:"newest node release that is not a draft" e)
 
-let publish_env ?(signed_by = [ (53, mike); (54, roman) ]) ?(draft = true) ~dir
+let publish_env ?(signed_by = [ (53, mike); (54, roman) ]) ?(draft = true)
+    ?extra ?(trust : Policy.trust = { signers = founders; revoked = [] }) ~dir
     ~announced () =
-  let f, gh = relay_gh ~draft ~signed_by () in
+  let f, gh = relay_gh ~draft ?extra ~signed_by () in
   let said = Buffer.create 256 in
   let env : Relay_publish.env =
     {
       gh;
       repo = "o/r";
-      signers = founders;
+      trust = (fun () -> Ok trust);
       channel =
         (fun ~message:_ write ->
           let before =
@@ -3949,6 +3961,73 @@ let test_relay_publish_other_manifest () =
   | Error (Relay_publish.Failed e) ->
       Alcotest.(check bool) e true (contains ~sub:"a different manifest" e)
   | _ -> Alcotest.fail "overwrote another manifest"
+
+(* A signature asset carrying an invalid signature by a signer's key, listed before the real one,
+   never shadows it: the signature kept is the one that verified. *)
+let test_relay_publish_keeps_verified_signature () =
+  let dir = temp_dir () in
+  let _, env, _ =
+    publish_env
+      ~extra:[ (50, "manifest.forged.sig.json") ]
+      ~dir ~announced:(Relay_publish.Posted "h") ()
+  in
+  (match Relay_publish.run env ~version:(v "0.3.0") with
+  | Ok (Relay_publish.Posted "h") -> ()
+  | Ok _ -> Alcotest.fail "the stub's answer was not returned"
+  | Error e -> Alcotest.fail (Relay_publish.error_to_string e));
+  match
+    Release.signatures_of_string
+      (In_channel.with_open_bin
+         (Filename.concat dir "relay/0.3.0/manifest.sig.json")
+         In_channel.input_all)
+  with
+  | Error e -> Alcotest.fail e
+  | Ok sigs ->
+      Alcotest.(check int)
+        "two signatures, both valid" 2
+        (List.length
+           (Release.valid_signers ~domain:Release.relay_release_domain bytes_030
+              sigs));
+      Alcotest.(check int) "one per signer" 2 (List.length sigs)
+
+(* The set relay-publish checks against is the channel's: after Roman's key is replaced, the old
+   key's signature does not count, and a revoked key in the set halts the release. *)
+let test_relay_publish_checks_the_channel_trust () =
+  let dir = temp_dir () in
+  let replaced : Policy.trust =
+    { signers = [ signer "Mike" mike; signer "Roman" roman2 ]; revoked = [] }
+  in
+  let f, env, _ =
+    publish_env ~trust:replaced ~dir ~announced:(Relay_publish.Posted "h") ()
+  in
+  (match Relay_publish.run env ~version:(v "0.3.0") with
+  | Error (Relay_publish.Waiting e) ->
+      Alcotest.(check bool)
+        ("waits for Roman's new key: " ^ e)
+        true (contains ~sub:"Roman" e)
+  | _ -> Alcotest.fail "published without the new key's signature");
+  Alcotest.(check bool)
+    "the release is not edited" false
+    (List.exists (fun c -> List.mem "edit" c) !(f.r_calls));
+  let revoked : Policy.trust =
+    { signers = founders; revoked = [ Keys.public roman ] }
+  in
+  let f, env, _ =
+    publish_env ~trust:revoked ~dir ~announced:(Relay_publish.Posted "h") ()
+  in
+  (match Relay_publish.run env ~version:(v "0.3.0") with
+  | Error (Relay_publish.Failed e) ->
+      Alcotest.(check bool)
+        ("names the revocation: " ^ e)
+        true
+        (contains ~sub:"revoked" e)
+  | _ -> Alcotest.fail "published under a revoked key");
+  Alcotest.(check bool)
+    "nothing published under a revocation" false
+    (List.exists (fun c -> List.mem "edit" c) !(f.r_calls));
+  Alcotest.(check bool)
+    "nothing on the channel" false
+    (Sys.file_exists (Filename.concat dir "relay"))
 
 let test_relay_held_line () =
   let one l = not (String.contains l '\n') in
@@ -4240,6 +4319,63 @@ let test_sign_relay_refuses_migration () =
        ~sub:"migration 0003_relay_version.sql differs from the tag's file" said);
   Alcotest.(check bool) "nothing uploaded" true (!(f.r_uploaded) = None);
   Alcotest.(check int) "nothing published" 0 (List.length published)
+
+(* A migration the last published relay version listed under the same name with another sha256 is
+   shown in full and flagged, and the version is never signed: the edit would reach only a relay
+   deployed fresh. *)
+let test_sign_relay_refuses_changed_migration () =
+  let edited = "mailer, edited" in
+  let bytes =
+    Release.relay_manifest_to_string
+      (relay_doc
+         ~migrations:
+           [
+             ("0001_init.sql", "init");
+             ("0002_mailer.sql", edited);
+             ("0003_relay_version.sql", migration_text);
+           ]
+         "0.3.0")
+  in
+  let f, result, said, published =
+    run_relay ~relay_bytes:bytes
+      ~files:[ ("relay-v0.3.0:relay/migrations/0002_mailer.sql", edited) ]
+      ()
+  in
+  Alcotest.(check bool) "the run fails" true (Result.is_error result);
+  List.iter
+    (fun sub ->
+      Alcotest.(check bool)
+        ("shows " ^ sub ^ "\n" ^ said)
+        true (contains ~sub said))
+    [
+      "0002_mailer.sql " ^ Keys.hash_of_bytes edited ^ "  CHANGED, WAS "
+      ^ Keys.hash_of_bytes "mailer";
+      "    | mailer, edited";
+      "a published migration is never edited";
+    ];
+  Alcotest.(check bool) "nothing uploaded" true (!(f.r_uploaded) = None);
+  Alcotest.(check int) "nothing published" 0 (List.length published)
+
+(* A migration the last published relay version listed and this one does not is shown, flagged. *)
+let test_sign_relay_shows_removed_migration () =
+  let bytes =
+    Release.relay_manifest_to_string
+      (relay_doc
+         ~migrations:
+           [
+             ("0001_init.sql", "init");
+             ("0003_relay_version.sql", migration_text);
+           ]
+         "0.3.0")
+  in
+  let _, result, said, _ = run_relay ~relay_bytes:bytes ~answers:[ "" ] () in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    ("shows the removed migration: " ^ said)
+    true
+    (contains
+       ~sub:("  0002_mailer.sql " ^ Keys.hash_of_bytes "mailer" ^ "  REMOVED")
+       said)
 
 (* gh's answer is read back: an attestation by another workflow, on another ref, at another
    commit, of another file, or on a self-hosted runner names no run. *)
@@ -5481,6 +5617,44 @@ let test_approve_declined_at_the_question () =
   ignore (Approve.sign ~api ~secret:roman ~ask:(fun _ -> "") ~say "sha256:inv");
   Alcotest.(check int) "nothing posted" 0 (List.length !posts)
 
+(* approve reads the key only once the signer answers y: a declined approval never reads it, and a
+   key that is not signer.json's public_key signs nothing. *)
+let test_approve_reads_the_key_after_yes () =
+  let a () =
+    ap_approval ~id:"sha256:inv" ~kind:"invite" ~document:admission_bytes
+      ~rows:[ (Keys.public roman, false) ]
+      ()
+  in
+  let reads = ref 0 in
+  let read_secret k () =
+    incr reads;
+    Ok k
+  in
+  let api, posts = fake_node [ a () ] in
+  let say, _ = said () in
+  ignore
+    (Approve.sign_as ~api ~me:(Keys.public roman)
+       ~read_secret:(read_secret roman)
+       ~ask:(fun _ -> "")
+       ~say "sha256:inv");
+  Alcotest.(check int) "declined: the key is never read" 0 !reads;
+  Alcotest.(check int) "nothing posted" 0 (List.length !posts);
+  let api, posts = fake_node [ a () ] in
+  (match
+     Approve.sign_as ~api ~me:(Keys.public roman)
+       ~read_secret:(read_secret carol)
+       ~ask:(fun _ -> "y")
+       ~say "sha256:inv"
+   with
+  | Ok () -> Alcotest.fail "signed with a key that is not public_key"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names both keys: " ^ e) true
+        (contains ~sub:(Keys.public carol) e
+        && contains ~sub:(Keys.public roman) e));
+  Alcotest.(check int) "read once, after y" 1 !reads;
+  Alcotest.(check int) "nothing posted" 0 (List.length !posts)
+
 let expect_error what = function
   | Ok () -> Alcotest.fail (what ^ ": expected an error")
   | Error e -> e
@@ -6013,6 +6187,10 @@ let () =
             test_sign_next_signs_only_attested;
           t "relay: refuses a migration that differs"
             test_sign_relay_refuses_migration;
+          t "sign --next refuses a changed relay migration"
+            test_sign_relay_refuses_changed_migration;
+          t "sign --next shows a removed relay migration"
+            test_sign_relay_shows_removed_migration;
           t "attestation: the certificate is read back"
             test_attestation_runs_of_json;
           t "leaves out my drafts" test_sign_next_leaves_out_my_drafts;
@@ -6032,6 +6210,10 @@ let () =
           t "relay-publish" test_relay_publish;
           t "relay-publish waits" test_relay_publish_waits;
           t "relay-publish other manifest" test_relay_publish_other_manifest;
+          t "relay-publish keeps the verified signature"
+            test_relay_publish_keeps_verified_signature;
+          t "relay-publish checks the channel's trust"
+            test_relay_publish_checks_the_channel_trust;
           t "relay-publish held line" test_relay_held_line;
           t "relay version of circle" test_relay_version_of_circle;
           t "signer.json" test_signer_config;
@@ -6088,6 +6270,7 @@ let () =
         [
           t "signs an invite" test_approve_signs_an_invite;
           t "no at the question" test_approve_declined_at_the_question;
+          t "the key is read after y" test_approve_reads_the_key_after_yes;
           t "refuses" test_approve_refuses;
           t "a promotion's first signature"
             test_approve_promotion_first_signature;
