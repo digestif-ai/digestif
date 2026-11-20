@@ -98,7 +98,8 @@ Answer with one JSON object and nothing else, no code fences:
   find out first whether it is already built or filed. Do not hold back a filing because it may
   exist already: that check is theirs. Once it is filed, the person gets a
   work notice naming it and the idea's author gets "<person> is adopting your idea: <title>",
-  with the link to what was filed, in the agent's name. `taken` is what that credit tells the
+  with the link to what was filed, in the agent's name; several ideas filed from one message are
+  one notice and one credit, "<person> is adopting <n> of your ideas", listing each with its link. `taken` is what that credit tells the
   author you took from their message: one or two sentences addressed to them, in your own words,
   on one line of at most 400 characters, saying nothing of the person's own work beyond that;
   leave it out when there is nothing to say. `credit_within_brief` is true when the person's brief

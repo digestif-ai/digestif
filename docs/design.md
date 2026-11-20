@@ -286,7 +286,14 @@ A filed idea also gets a `credit` to the author, "Mike is adopting your idea: <t
 detail names the author's message it came from, what was taken from it in a sentence or two
 the reading run wrote to the author (never handed to the filing run), and the filed link, sent
 like an answer, within the brief and Rules and through the deny layer and both checks, else a
-draft the member sends. When a check would cut what was taken, the credit goes without it. A work
+draft the member sends. When a check would cut what was taken, the credit goes without it. A run
+that files several ideas from one message is one event: the member gets one work notice for the
+message, its title counting them from the outcome it leads with ("Filed 3 of Ed's ideas") and its
+detail one line per idea with its outcome and link, and the author one credit, "Mike is adopting 3
+of your ideas", whose detail lists each idea on its own line with what was taken and its link. Each
+idea is judged as its own credit would be, so the ideas that pass go out as that one credit (sent
+only when the checks pass it whole too) and the rest wait as one draft. A later update about one
+idea is its own message. A work
 notice, a practice and a credit carry the words of the message the run took them from, and the
 item's page shows the paragraph holding them with them marked and the link to the full message
 beneath; where the run recorded none, or the message does not hold them, the link alone. Building the work happens in the member's own pipeline, never here. A practice is the
