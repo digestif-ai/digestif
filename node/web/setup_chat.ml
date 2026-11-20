@@ -70,7 +70,7 @@ let organizations_json (n : Node.t) =
        (R.organizations n.log))
 
 let authors_json (n : Node.t) =
-  Machine_scan.propose_authors ~now:(Unix.gettimeofday ()) n.log;
+  Machine_scan.propose_authors ~now:(Unix.gettimeofday ()) n;
   `List
     (List.map
        (fun (a : R.author) ->
@@ -310,9 +310,7 @@ let save_sources ?(choices = no_choices) (n : Node.t) ~all ~ids =
       in
       if chosen = [] then Error "Choose at least one source: they are required."
       else
-        let () =
-          Machine_scan.propose_authors ~now:(Unix.gettimeofday ()) n.log
-        in
+        let () = Machine_scan.propose_authors ~now:(Unix.gettimeofday ()) n in
         let* () = check_choices n choices in
         apply_choices n choices;
         Store.select_sources n.log chosen;

@@ -6363,6 +6363,66 @@ let author_proposal () =
     ]
     [ f.f_id; f.f_name; f.f_org_id; f.f_org_name ]
 
+(* DIG-237: a git that never answers (a clone on a mount that hangs) is killed at the proposal's
+   deadline and counts nothing, and the read that asks for the proposal waits at most its own bound,
+   answering from the store while the proposal is still being read. *)
+let author_proposal_bounded () =
+  let module R = Store.Repositories in
+  let bin = tmpdir () in
+  let git = Filename.concat bin "git" in
+  Out_channel.with_open_bin git (fun oc ->
+      output_string oc "#!/bin/sh\nexec sleep 60\n");
+  Unix.chmod git 0o755;
+  let n = fresh () in
+  let repo = tmpdir () in
+  R.apply_scan n.log ~at:"2026-01-01T00:00:00Z" [ found ~path:repo "hung" ];
+  let path = Sys.getenv "PATH" in
+  Unix.putenv "PATH" (bin ^ ":" ^ path);
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "PATH" path)
+    (fun () ->
+      let t = Unix.gettimeofday () in
+      let proposals =
+        Machine_scan.author_proposal ~global:None ~budget:1.
+          ~now:(Unix.gettimeofday ()) n.log
+      in
+      let took = Unix.gettimeofday () -. t in
+      Alcotest.(check (list (triple string (option string) string)))
+        "a git that never answers counts nothing" [] proposals;
+      Alcotest.(check bool)
+        (Printf.sprintf "within the deadline (%.1fs)" took)
+        true (took < 10.))
+
+let author_proposal_off_request () =
+  let module R = Store.Repositories in
+  let n = fresh () in
+  let proposal ~now:_ _ =
+    Thread.delay 0.5;
+    [ ("me@example.com", Some "Me", "yours") ]
+  in
+  let t = Unix.gettimeofday () in
+  Machine_scan.propose_authors ~wait:0.05 ~proposal ~now:t n;
+  let took = Unix.gettimeofday () -. t in
+  Alcotest.(check bool)
+    (Printf.sprintf "the read answers at its bound (%.2fs)" took)
+    true (took < 0.4);
+  Alcotest.(check bool)
+    "not proposed while it is read" false (R.authors_proposed n.log);
+  let until = Unix.gettimeofday () +. 10. in
+  while (not (R.authors_proposed n.log)) && Unix.gettimeofday () < until do
+    Thread.delay 0.02
+  done;
+  Alcotest.(check (list string))
+    "stored once read" [ "me@example.com" ]
+    (List.map (fun (a : R.author) -> a.email) (R.authors n.log));
+  let asked = ref false in
+  Machine_scan.propose_authors
+    ~proposal:(fun ~now:_ _ ->
+      asked := true;
+      [])
+    ~now:t n;
+  Alcotest.(check bool) "and never read again" false !asked
+
 let repositories_api () =
   let n = demo () in
   let c = session n in
@@ -14346,6 +14406,10 @@ let () =
             setup_chat_repositories;
           Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;
           Alcotest.test_case "author proposal" `Quick author_proposal;
+          Alcotest.test_case "author proposal bounded" `Quick
+            author_proposal_bounded;
+          Alcotest.test_case "author proposal off the request" `Quick
+            author_proposal_off_request;
           Alcotest.test_case "repositories api" `Quick repositories_api;
           Alcotest.test_case "repositories raise no ask" `Quick
             repositories_raise_no_ask;

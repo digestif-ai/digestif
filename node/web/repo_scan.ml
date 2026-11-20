@@ -180,12 +180,20 @@ let user_of entries =
   in
   Option.map (fun e -> (e, get "name")) (get "email")
 
+(* How long one read of git's own configuration may take: it reads one file, so a git that has not
+   answered by then is stuck on the file system, and the answer is None (DIG-237). *)
+let config_timeout = 10.
+
 let global_user () =
-  match Proc.run [| "git"; "config"; "--global"; "--get"; "user.email" |] with
+  match
+    Proc.run ~timeout:config_timeout
+      [| "git"; "config"; "--global"; "--get"; "user.email" |]
+  with
   | Ok { code = 0; stdout; _ } when String.trim stdout <> "" ->
       let name =
         match
-          Proc.run [| "git"; "config"; "--global"; "--get"; "user.name" |]
+          Proc.run ~timeout:config_timeout
+            [| "git"; "config"; "--global"; "--get"; "user.name" |]
         with
         | Ok { code = 0; stdout; _ } when String.trim stdout <> "" ->
             Some (String.trim stdout)
@@ -200,13 +208,14 @@ let frequent_min_commits = 10
 let frequent_max = 20
 
 (* Each identity's commits on a clone's HEAD in the window, as (email, name) per commit. A clone
-   whose HEAD has not moved in the window is not asked (Sources.head_moved_since). *)
-let committers ~now repo =
+   whose HEAD has not moved in the window is not asked (Sources.head_moved_since). A log that has not
+   answered in [timeout] seconds, a clone on a mount that hangs, counts nothing (DIG-237). *)
+let committers ?(timeout = 30.) ~now repo =
   let since = now -. (float_of_int frequent_window_days *. Sources.day) in
   if not (Sources.head_moved_since ~since repo) then []
   else
     match
-      Proc.run
+      Proc.run ~timeout
         [|
           "git";
           "-C";
@@ -234,8 +243,11 @@ let committers ~now repo =
 (* The authors setup proposes, as (email, name, label): every configured user of the clones and
    of the machine is Yours; every other identity with at least [frequent_min_commits] commits in
    the window across the clones is Your fleet, the most frequent [frequent_max] of them. The
-   fleet's share may include a coworker's identity, which the member removes on the page. *)
-let propose_authors ?(global = global_user ()) ~now repos =
+   fleet's share may include a coworker's identity, which the member removes on the page.
+   [committers_of] reads each clone's committers, in [repos]' order: one after another by default,
+   and Machine_scan.author_proposal reads them concurrently under one deadline. *)
+let propose_authors ?(global = global_user ()) ~now
+    ?(committers_of = List.map (fun r -> committers ~now r)) repos =
   let norm = Store.Repositories.normalize_email in
   let yours =
     Option.to_list global
@@ -250,17 +262,14 @@ let propose_authors ?(global = global_user ()) ~now repos =
   in
   let counts = Hashtbl.create 64 in
   List.iter
-    (fun r ->
-      List.iter
-        (fun (e, n) ->
-          let k = norm e in
-          if k <> "" then
-            let c, _ =
-              Option.value (Hashtbl.find_opt counts k) ~default:(0, n)
-            in
-            Hashtbl.replace counts k (c + 1, n))
-        (committers ~now r))
-    repos;
+    (List.iter (fun (e, n) ->
+         let k = norm e in
+         if k <> "" then
+           let c, _ =
+             Option.value (Hashtbl.find_opt counts k) ~default:(0, n)
+           in
+           Hashtbl.replace counts k (c + 1, n)))
+    (committers_of repos);
   let fleet =
     Hashtbl.fold (fun e (c, n) acc -> (e, n, c) :: acc) counts []
     |> List.filter (fun (e, _, c) ->

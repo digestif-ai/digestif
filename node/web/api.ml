@@ -1497,7 +1497,7 @@ module Repositories = struct
   let authors c =
     if scanned c && not (R.authors_proposed (log c)) then begin
       refresh c;
-      Machine_scan.propose_authors ~now:c.now (log c)
+      Machine_scan.propose_authors ~now:c.now c.node
     end;
     ok (`List (List.map author_json (R.authors (log c))))
 
