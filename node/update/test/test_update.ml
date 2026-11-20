@@ -3400,22 +3400,32 @@ let fake_git ?(calls = ref []) ?(paths = []) ?(files = []) ~shas ~logs () =
         | None -> Error ("unexpected git show " ^ spec))
     | _ -> Error ("unexpected git " ^ String.concat " " args)
 
-(* GitHub's artifact attestations as a fake gh answers `gh attestation verify` (Attestation): a file
-   is attested when [attested] holds its sha256, by the workflow, on the ref and at the commit the
-   question names, unless [at] names another commit the certificate carries. *)
+(* GitHub's artifact attestations as a fake gh answers `gh attestation verify` (Attestation): the
+   file asked about, a manifest, is attested when [attested] holds its sha256, by the workflow, on
+   the ref and at the commit the question names, unless [at] names another commit the certificate
+   carries; the statement names it and every sha256 the manifest names that [attested] holds, as
+   the release workflows attest every file of a draft in one statement. `gh attestation
+   trusted-root` answers a root. *)
 let attest_run = "https://github.com/o/r/actions/runs/77/attempts/1"
+
+let rec sha256s_in (json : Yojson.Safe.t) =
+  match json with
+  | `String s when String.starts_with ~prefix:Keys.sha256_prefix s -> [ s ]
+  | `Assoc l -> List.concat_map (fun (_, j) -> sha256s_in j) l
+  | `List l -> List.concat_map sha256s_in l
+  | _ -> []
 
 let fake_attest ?(attested = fun _ -> true) ?at args =
   match args with
+  | [ "attestation"; "trusted-root" ] -> Some (Ok "{\"mediaType\":\"root\"}\n")
   | "attestation" :: "verify" :: path :: flags ->
       let rec flag k = function
         | a :: b :: _ when a = k -> b
         | _ :: r -> flag k r
         | [] -> ""
       in
-      let sha =
-        Keys.hash_of_bytes (In_channel.with_open_bin path In_channel.input_all)
-      in
+      let bytes = In_channel.with_open_bin path In_channel.input_all in
+      let sha = Keys.hash_of_bytes bytes in
       if not (attested sha) then
         Some (Error "gh attestation exited 1: Error: no attestations found")
       else
@@ -3435,12 +3445,17 @@ let fake_attest ?(attested = fun _ -> true) ?at args =
               ("runInvocationURI", `String attest_run);
             ]
         in
-        let subject =
+        let subject sha =
           `Assoc
             [
-              ("name", `String (Filename.basename path));
+              ("name", `String sha);
               ("digest", `Assoc [ ("sha256", `String (Attestation.hex sha)) ]);
             ]
+        in
+        let named =
+          match Yojson.Safe.from_string bytes with
+          | json -> List.filter attested (sha256s_in json)
+          | exception Yojson.Json_error _ -> []
         in
         Some
           (Ok
@@ -3454,7 +3469,14 @@ let fake_attest ?(attested = fun _ -> true) ?at args =
                              [
                                ("signature", `Assoc [ ("certificate", cert) ]);
                                ( "statement",
-                                 `Assoc [ ("subject", `List [ subject ]) ] );
+                                 `Assoc
+                                   [
+                                     ( "subject",
+                                       `List
+                                         (List.map subject
+                                            (List.sort_uniq compare
+                                               (sha :: named))) );
+                                   ] );
                              ] );
                        ];
                    ])))
@@ -3540,7 +3562,7 @@ let fake_gh ?signed_by ?(manifest = manifest_json "0.2.1") ?archive ?attested
   (f, gh)
 
 let run_next ?signed_by ?manifest ?archive ?attested ?at ?(key = mike) ?ask
-    answer =
+    ?cache answer =
   let f, gh = fake_gh ?signed_by ?manifest ?archive ?attested ?at () in
   let said = Buffer.create 256 in
   let read_key () =
@@ -3563,8 +3585,8 @@ let run_next ?signed_by ?manifest ?archive ?attested ?at ?(key = mike) ?ask
         | Some ask -> ask ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
         | None -> fun _ -> answer)
       ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
-      ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay ~timer:Timing.none
-      ~listed:(listing gh)
+      ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay ~timer:Timing.none ?cache
+      ~listed:(listing gh) ()
   in
   (f, result, Buffer.contents said)
 
@@ -3876,7 +3898,7 @@ let run_relay ?node_draft ?relay_bytes ?(signed_by = []) ?(key = mike)
             a
         | [] -> "")
       ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
-      ~tmp:(temp_dir ()) ~relay ~timer:Timing.none ~listed:(listing gh)
+      ~tmp:(temp_dir ()) ~relay ~timer:Timing.none ~listed:(listing gh) ()
   in
   (f, result, Buffer.contents said, !published)
 
@@ -3982,7 +4004,7 @@ let test_sign_relay_shows () =
          | [ "api"; "-H"; "Accept: application/octet-stream"; a ] ->
              not (contains ~sub:"releases/assets/" a)
          | [ "api"; "repos/o/r/releases?per_page=50" ] -> false
-         | "attestation" :: "verify" :: _ -> false
+         | "attestation" :: ("verify" | "trusted-root") :: _ -> false
          | _ -> true)
        !(f.r_calls));
   Alcotest.(check bool)
@@ -4076,7 +4098,7 @@ let test_sign_unread_draft () =
       ~read_key:(fun () -> Alcotest.fail "read a key with nothing to sign")
       ~ask:(fun _ -> Alcotest.fail "asked with nothing to sign")
       ~say:ignore ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
-      ~timer:Timing.none ~listed:listing
+      ~timer:Timing.none ~listed:listing ()
   with
   | Ok () -> Alcotest.fail "an unread draft passed in silence"
   | Error e ->
@@ -4413,7 +4435,7 @@ let run_two ?(older_signed_by = []) ?newest_archive ?(on_archive = ignore)
         | [] -> "")
       ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
       ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay ~timer:Timing.none
-      ~listed:(listing gh)
+      ~listed:(listing gh) ()
   in
   (match result with Ok () -> () | Error e -> Alcotest.fail e);
   (!uploaded, !asked, !keys, Buffer.contents said)
@@ -4432,8 +4454,22 @@ let test_sign_next_offers_newest_and_completable () =
   Alcotest.(check int) "the key is read once" 1 keys;
   let uploaded, _, _, said = run_two ~older_signed_by:[ roman ] [ "s" ] in
   Alcotest.(check (list string))
-    "one s signs the newest and the one Roman signed, newest first"
-    [ "v0.2.2"; "v0.2.1" ] uploaded;
+    "one s signs the newest and the one Roman signed, uploaded at once"
+    [ "v0.2.1"; "v0.2.2" ] (List.sort compare uploaded);
+  Alcotest.(check bool)
+    ("said newest first: " ^ said)
+    true
+    (contains ~sub:"Signed v0.2.2" said
+    && contains ~sub:"Signed v0.2.1" said
+    &&
+    let at sub =
+      let n = String.length sub in
+      let rec go i =
+        if String.sub said i n = sub then i else go (i + 1)
+      in
+      go 0
+    in
+    at "Signed v0.2.2" < at "Signed v0.2.1");
   Alcotest.(check bool)
     ("the newest in full: " ^ said)
     true
@@ -4840,7 +4876,7 @@ let run_relays_result ?public_key ~published ~patches ~signed_by ~key answer =
         asked := !asked + 1;
         answer)
       ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
-      ~tmp:(temp_dir ()) ~relay ~timer:Timing.none ~listed:(listing gh)
+      ~tmp:(temp_dir ()) ~relay ~timer:Timing.none ~listed:(listing gh) ()
   in
   (result, !uploaded, !deleted, !published_, !asked, Buffer.contents said)
 
@@ -4931,7 +4967,7 @@ let test_sign_relay_offers_newest_and_completable () =
   Alcotest.(check (list string))
     "Mike signs the newest and the one Roman signed"
     [ "relay-v0.1.12"; "relay-v0.1.7" ]
-    uploaded;
+    (List.sort compare uploaded);
   Alcotest.(check (list string))
     "Mike's signature publishes 0.1.7" [ "0.1.7" ] published;
   Alcotest.(check (list string)) "nothing is dropped" [] deleted;
@@ -5274,7 +5310,7 @@ let test_sign_next_key_missing () =
         incr asked;
         "s")
       ~say:ignore ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
-      ~timer:Timing.none ~listed:(listing gh)
+      ~timer:Timing.none ~listed:(listing gh) ()
   in
   (match run "cat ~/Downloads/digestif-release.key" with
   | Ok () -> Alcotest.fail "a run with no key went on"
@@ -5318,7 +5354,7 @@ let test_sign_next_key_garbage () =
       ~read_key:(fun () -> Ok "not a key\n")
       ~ask:(fun _ -> "s")
       ~say:ignore ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
-      ~timer:Timing.none ~listed:(listing gh)
+      ~timer:Timing.none ~listed:(listing gh) ()
   with
   | Ok () -> Alcotest.fail "a run with no key went on"
   | Error e ->
@@ -5342,7 +5378,7 @@ let run_next_with ~timer ~read_key ~ask =
       ~config:
         { Sign_next.key_command = "unused"; repo = "o/r"; public_key = None }
       ~read_key ~ask ~say:ignore ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
-      ~timer ~listed:(listing gh)
+      ~timer ~listed:(listing gh) ()
   in
   (f, result)
 
@@ -5366,7 +5402,8 @@ let test_sign_next_key_after_answer () =
   Alcotest.(check bool) "and signed" true (!(f.uploaded) <> None)
 
 (* GitHub is asked for the manifest and the upload and nothing else: a tag's commit and the run
-   link never cost a request (DIG-148). *)
+   link never cost a request (DIG-148), and no archive is downloaded: the manifest's attestation,
+   verified once against a trusted root read once, names every file (DIG-305). *)
 let test_sign_next_github_only_for_releases () =
   let f, result, _ = run_next "s" in
   (match result with Ok () -> () | Error e -> Alcotest.fail e);
@@ -5394,16 +5431,18 @@ let test_sign_next_github_only_for_releases () =
       "--deny-self-hosted-runners";
       "--format";
       "json";
+      "--custom-trusted-root";
+      "trusted_root.jsonl";
     ]
   in
   Alcotest.(check (list (list string)))
-    "every gh call: the listing, the draft's files, and each file's attestation"
+    "every gh call: the listing, the manifest, the trusted root, and the \
+     manifest's attestation"
     (List.sort compare
        [
          [ "api"; "repos/o/r/releases?per_page=50" ];
          download "21";
-         download "25";
-         attest "v0.2.1/0.2.1";
+         [ "attestation"; "trusted-root" ];
          attest "v0.2.1/manifest.json";
        ])
     (List.sort compare
@@ -5416,9 +5455,88 @@ let test_sign_next_github_only_for_releases () =
                   :: Filename.concat
                        (Filename.basename (Filename.dirname path))
                        (Filename.basename path)
-                  :: rest)
+                  :: List.map
+                       (fun a ->
+                         if Filename.is_relative a then a
+                         else Filename.basename a)
+                       rest)
             | c -> Some c)
           !(f.calls)))
+
+(* WHAT ALREADY VERIFIED IS REMEMBERED (DIG-305): a second run over the same manifest of the same
+   tag at the same commit asks gh nothing about attestations and still shows the run that built
+   it; a remembered answer for another commit is verified again. *)
+let test_sign_next_remembers_attested () =
+  let path = Filename.concat (temp_dir ()) "attested.json" in
+  let cache = Attestation.file_cache path in
+  let attestation_calls (f : fake) =
+    List.filter
+      (function "attestation" :: _ -> true | _ -> false)
+      !(f.calls)
+  in
+  let f, result, _ = run_next ~cache "l" in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check int)
+    "the first run reads the root and verifies the manifest" 2
+    (List.length (attestation_calls f));
+  let f, result, said = run_next ~cache:(Attestation.file_cache path) "l" in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check (list (list string)))
+    "the second run asks gh nothing about attestations" []
+    (attestation_calls f);
+  Alcotest.(check bool)
+    ("and shows the run that built it: " ^ said)
+    true
+    (contains ~sub:("built   " ^ attest_run) said);
+  (* The same manifest remembered for another commit: the tag moved, so it is verified again. *)
+  let moved = Attestation.file_cache (Filename.concat (temp_dir ()) "a.json") in
+  let manifest = manifest_json "0.2.1" in
+  moved.add
+    {
+      Attestation.tag = "v0.2.1";
+      manifest = Keys.hash_of_bytes manifest;
+      workflow = "release.yml";
+      commit = "fff999";
+    }
+    [
+      {
+        Attestation.run = attest_run;
+        subjects = [ Attestation.hex (Keys.hash_of_bytes manifest) ];
+      };
+    ];
+  let f, _, _ = run_next ~cache:moved "l" in
+  Alcotest.(check bool)
+    "a manifest remembered at another commit is verified again" true
+    (List.exists
+       (function "attestation" :: "verify" :: _ -> true | _ -> false)
+       (attestation_calls f))
+
+(* The remembered answers survive a reread and keep only the newest. *)
+let test_attestation_file_cache () =
+  let path = Filename.concat (temp_dir ()) "attested.json" in
+  let c = Attestation.file_cache ~keep:2 path in
+  let key n =
+    {
+      Attestation.tag = "v0.0." ^ string_of_int n;
+      manifest = "sha256:" ^ string_of_int n;
+      workflow = "release.yml";
+      commit = "c";
+    }
+  in
+  let a = [ { Attestation.run = "r"; subjects = [ "s" ] } ] in
+  List.iter (fun n -> c.add (key n) a) [ 1; 2; 3 ];
+  let c = Attestation.file_cache path in
+  Alcotest.(check bool)
+    "the oldest is gone" true
+    (c.find ~tag:"v0.0.1" ~manifest:"sha256:1" = None);
+  Alcotest.(check bool)
+    "the newest is read back" true
+    (c.find ~tag:"v0.0.3" ~manifest:"sha256:3" = Some (key 3, a));
+  Alcotest.(check bool) "knows its tag" true (c.knows ~tag:"v0.0.2");
+  Out_channel.with_open_bin path (fun oc -> Out_channel.output_string oc "{");
+  Alcotest.(check bool)
+    "an unreadable file is empty" false
+    ((Attestation.file_cache path).knows ~tag:"v0.0.3")
 
 (* Every step of a run is a line of the timing log: run id, step, seconds (DIG-148). *)
 let test_sign_next_timing_log () =
@@ -6460,6 +6578,8 @@ let () =
           t "the key is read after the answer" test_sign_next_key_after_answer;
           t "GitHub only for releases" test_sign_next_github_only_for_releases;
           t "the timing log" test_sign_next_timing_log;
+          t "remembers what verified" test_sign_next_remembers_attested;
+          t "attestation: the remembered answers" test_attestation_file_cache;
           t "calls made at once" test_parallel_map;
           t "calls made at most a limit at once" test_parallel_map_limit;
           t "the versions offered are shown at once"

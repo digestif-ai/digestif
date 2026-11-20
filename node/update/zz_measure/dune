@@ -1,0 +1,4 @@
+(executable
+ (name measure)
+ (libraries digestif-node.core digestif_update unix threads.posix)
+ (flags (:standard -open Digestif_core -w -a)))

@@ -614,8 +614,10 @@ let signed_on ~(required : Release.signer list) (release : draft) =
   List.filter (fun (s : Release.signer) -> signed_with s.key release) required
 
 (* A file the manifest names, as [release]'s draft holds it: why it is not the manifest's (not on
-   the draft, no digest GitHub computed, a digest that differs), or how to download it. *)
-let draft_file ~gh ~repo (release : draft) ~name ~sha256 =
+   the draft, no digest GitHub computed, a digest that differs), or the file whose attestation is
+   checked. GitHub computes the digest of every file uploaded to a release, so the draft's file is
+   compared without downloading it. *)
+let draft_file (release : draft) ~name ~sha256 =
   match List.find_opt (fun a -> a.name = name) release.assets with
   | None -> Error (name ^ " is not on the draft")
   | Some { digest = None; _ } ->
@@ -624,35 +626,29 @@ let draft_file ~gh ~repo (release : draft) ~name ~sha256 =
       Error
         (Printf.sprintf "the draft's %s is %s, not the manifest's %s" name d
            sha256)
-  | Some a ->
-      Ok
-        {
-          Attestation.name;
-          sha256;
-          fetch = (fun () -> download_asset ~gh ~repo a);
-        }
+  | Some _ -> Ok { Attestation.name; sha256 }
+
+(* How a run checks attestations ({!Attestation}): the trusted root it fetched once, when it did,
+   and what earlier runs verified. *)
+type attest = { trusted_root : string option; cache : Attestation.cache }
+
+let no_attest = { trusted_root = None; cache = Attestation.no_cache }
 
 (* WHAT TIES A VERSION TO ITS BUILD (docs/releases.md, What ties a version to its build): every
    file [files] names on [release]'s draft, and the manifest's own [bytes], attested by [workflow]
    run on the tag at [commit] ({!Attestation}). The run that attests them all, or the composed link
    to the workflow's runs, and every reason the version cannot be signed. *)
-let provenance ~gh ~repo ~workflow ~tmp ~commit (release : draft) bytes files =
+let provenance ~gh ~attest ~repo ~workflow ~tmp ~commit (release : draft) bytes
+    files =
   let drafted =
-    List.map
-      (fun (name, sha256) -> draft_file ~gh ~repo release ~name ~sha256)
-      files
-  in
-  let manifest =
-    {
-      Attestation.name = "manifest.json";
-      sha256 = Keys.hash_of_bytes bytes;
-      fetch = (fun () -> Ok bytes);
-    }
+    List.map (fun (name, sha256) -> draft_file release ~name ~sha256) files
   in
   let checked =
-    Attestation.check ~gh ~repo ~workflow ~tag:release.tag ~commit
+    Attestation.check ~gh ?trusted_root:attest.trusted_root ~cache:attest.cache
+      ~repo ~workflow ~tag:release.tag ~commit
       ~dir:(Filename.concat tmp release.tag)
-      (manifest :: List.filter_map Result.to_option drafted)
+      ~manifest:bytes
+      (List.filter_map Result.to_option drafted)
   in
   let missing =
     List.filter_map (function Error e -> Some e | Ok _ -> None) drafted
@@ -662,11 +658,11 @@ let provenance ~gh ~repo ~workflow ~tmp ~commit (release : draft) bytes files =
     | None -> run_url ~repo ~workflow release.tag),
     missing @ checked.problems )
 
-let show ~gh ~git ~clone ~tmp ~signers ~repo ~releases (release : draft)
-    (bytes, (manifest : Release.manifest)) =
+let show ~gh ?(attest = no_attest) ~git ~clone ~tmp ~signers ~repo ~releases
+    (release : draft) (bytes, (manifest : Release.manifest)) =
   let* commit = tag_commit ~git ~clone release.tag in
   let run_url, problems =
-    provenance ~gh ~repo ~workflow:"release.yml" ~tmp ~commit release bytes
+    provenance ~gh ~attest ~repo ~workflow:"release.yml" ~tmp ~commit release bytes
       (List.map
          (fun (a : Release.artifact) -> (Filename.basename a.url, a.sha256))
          manifest.artifacts)
@@ -694,7 +690,8 @@ let show ~gh ~git ~clone ~tmp ~signers ~repo ~releases (release : draft)
 
 (* Sign [bytes] over [domain] with the key [read_key] prints, refusing a key that is not among
    [required], and a key that is not the public_key signer.json names (that key chose what was
-   shown); the signature is written into [tmp] under the asset name its key gives it. A [release]
+   shown); the signature is written into [tmp], in a directory of the release's own so versions
+   uploaded at once never share a file, under the asset name its key gives it. A [release]
    that already carries this key's signature is not signed again: None, and nothing to upload. *)
 let sign_to_file ~(config : config) ~domain ~required ~read_key ~tmp
     (release : draft) bytes =
@@ -726,7 +723,9 @@ let sign_to_file ~(config : config) ~domain ~required ~read_key ~tmp
   if signed_with pub release then Ok (me, None)
   else
     let sigs = Release.add_signature ~domain ~secret bytes [] in
-    let path = Filename.concat tmp (signature_asset_name pub) in
+    let dir = Filename.concat tmp (release.tag ^ "-signature") in
+    (try Sys.mkdir dir 0o700 with Sys_error _ when Sys.file_exists dir -> ());
+    let path = Filename.concat dir (signature_asset_name pub) in
     Out_channel.with_open_bin path (fun oc ->
         Out_channel.output_string oc (Release.signatures_to_string sigs));
     Ok (me, Some path)
@@ -898,8 +897,8 @@ let removed_migrations ~(before : Release.relay_manifest option)
     (previous_migrations before)
 
 (* [downloaded] answers the manifest of a relay release, downloaded once for the whole run. *)
-let show_relay ~gh ~git ~clone ~tmp ~signers ~repo ~relays ~releases ~downloaded
-    (release : draft) =
+let show_relay ~gh ?(attest = no_attest) ~git ~clone ~tmp ~signers ~repo
+    ~relays ~releases ~downloaded (release : draft) =
   let* bytes, (manifest : Release.relay_manifest) = downloaded release in
   let* () =
     if Version.equal manifest.relay_version release.version then Ok ()
@@ -911,7 +910,7 @@ let show_relay ~gh ~git ~clone ~tmp ~signers ~repo ~relays ~releases ~downloaded
   in
   let* commit = tag_commit ~git ~clone release.tag in
   let run_url, problems =
-    provenance ~gh ~repo ~workflow:"relay-release.yml" ~tmp ~commit release
+    provenance ~gh ~attest ~repo ~workflow:"relay-release.yml" ~tmp ~commit release
       bytes
       [
         ( Filename.basename manifest.bundle.bundle_url,
@@ -1143,37 +1142,49 @@ let missing ~signers ~(signed_by : Release.signer list) =
       not (List.exists (fun (y : Release.signer) -> y.key = x.key) signed_by))
     signers
 
-(* Upload the signature [sign_to_file] wrote to [tag]'s draft, or say the draft already holds it. *)
-let upload_signed ~gh ~(config : config) ~say ~tag ((me : Release.signer), path)
-    =
-  match path with
-  | None ->
+(* Upload every signature [sign_to_file] wrote, each to its tag's draft and all at once, each timed
+   as "sign <tag>", then say each in order: uploaded, or already on the draft. The first that
+   failed is the answer; otherwise the signer of each. *)
+let upload_signed ~gh ~(config : config) ~say ~time signed =
+  let uploaded =
+    Parallel.map
+      (fun (tag, (_, path)) ->
+        time ("sign " ^ tag) (fun () ->
+            match path with
+            | None -> Ok ()
+            | Some path -> upload ~gh ~repo:config.repo ~tag path))
+      signed
+  in
+  List.fold_left2
+    (fun acc (tag, ((me : Release.signer), path)) result ->
+      let* mes = acc in
+      let* () = result in
       say
-        (Printf.sprintf
-           "%s already carries your signature as %s; nothing was uploaded." tag
-           me.name);
-      Ok me
-  | Some path ->
-      let* () = upload ~gh ~repo:config.repo ~tag path in
-      say
-        (Printf.sprintf
-           "Signed %s as %s (%s) and uploaded %s to its draft release." tag
-           me.name me.key (Filename.basename path));
-      Ok me
+        (match path with
+        | None ->
+            Printf.sprintf
+              "%s already carries your signature as %s; nothing was uploaded."
+              tag me.name
+        | Some path ->
+            Printf.sprintf
+              "Signed %s as %s (%s) and uploaded %s to its draft release." tag
+              me.name me.key (Filename.basename path));
+      Ok (mes @ [ me ]))
+    (Ok []) signed uploaded
 
-(* Sign one node version and upload the signature. *)
-let sign_node ~gh ~signers ~(config : config) ~read_key ~say ~tmp v =
+(* Sign one node version into a file, its tag beside it. *)
+let sign_node ~signers ~(config : config) ~read_key ~tmp v =
   let s = v.node in
   let* signed = signature_file ~config ~signers ~read_key ~tmp s v.node_bytes in
-  upload_signed ~gh ~config ~say ~tag:s.release.tag signed
+  Ok (s.release.tag, signed)
 
-let sign_relay ~gh ~signers ~(config : config) ~read_key ~say ~tmp v =
+let sign_relay ~signers ~(config : config) ~read_key ~tmp v =
   let s = v.relay in
   let* signed =
     sign_to_file ~config ~domain:Release.relay_release_domain ~required:signers
       ~read_key ~tmp s.relay_release v.relay_bytes
   in
-  upload_signed ~gh ~config ~say ~tag:s.relay_release.tag signed
+  Ok (s.relay_release.tag, signed)
 
 let rec each f = function
   | [] -> Ok ()
@@ -1334,7 +1345,7 @@ let manifests_to_read ~relay_releases ~drafts ~relays =
    from that clone, and the key read once ({!once}), only after an s. Each step is timed into
    [timer]. Once the question is answered, every stale draft goes ({!drop_stale}). *)
 let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
-    ~relay ~timer ~listed =
+    ~relay ~timer ?(cache = Attestation.no_cache) ~listed () =
   let time step f = Timing.time timer step f in
   let read_key = once read_key in
   let repo = config.repo in
@@ -1365,17 +1376,41 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
           ~drafts:(node_drafts @ relay_offered)
           ~relays:relay_offered
       in
-      let synced, fetched =
+      (* The trusted root every attestation is verified against, fetched once, beside the clone
+         and the manifests, when a version to show has not verified before ({!Attestation}). *)
+      let trusted_root () =
+        if
+          List.for_all
+            (fun (r : draft) -> cache.knows ~tag:r.tag)
+            (node_drafts @ relay_offered)
+        then None
+        else
+          time "trusted-root" (fun () ->
+              match gh Attestation.trusted_root_args with
+              | Error _ -> None
+              | Ok bytes -> (
+                  let path = Filename.concat tmp "trusted_root.jsonl" in
+                  try
+                    Out_channel.with_open_bin path (fun oc ->
+                        Out_channel.output_string oc bytes);
+                    Some path
+                  with Sys_error _ -> None))
+      in
+      let synced, (fetched, trusted_root) =
         Parallel.both
           (fun () -> time "clone" (fun () -> sync_clone ~git ~say ~repo ~clone))
           (fun () ->
-            time "manifests" (fun () ->
-                Parallel.map
-                  (fun (r : draft) ->
-                    time ("manifest " ^ r.tag) (fun () ->
-                        fetch_manifest ~gh ~repo r))
-                  to_read))
+            Parallel.both
+              (fun () ->
+                time "manifests" (fun () ->
+                    Parallel.map
+                      (fun (r : draft) ->
+                        time ("manifest " ^ r.tag) (fun () ->
+                            fetch_manifest ~gh ~repo r))
+                      to_read))
+              trusted_root)
       in
+      let attest = { trusted_root; cache } in
       let fetched =
         List.combine (List.map (fun (r : draft) -> r.tag) to_read) fetched
       in
@@ -1426,7 +1461,7 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
               (fun ((r : draft), m) ->
                 time ("show " ^ r.tag) (fun () ->
                     let* node, node_bytes =
-                      show ~gh ~git ~clone ~tmp ~signers ~repo
+                      show ~gh ~attest ~git ~clone ~tmp ~signers ~repo
                         ~releases:node_releases r m
                     in
                     Ok { node; node_bytes }))
@@ -1440,7 +1475,7 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
               (fun (r : draft) ->
                 time ("show " ^ r.tag) (fun () ->
                     let* relay, relay_bytes =
-                      show_relay ~gh ~git ~clone ~tmp ~signers ~repo
+                      show_relay ~gh ~attest ~git ~clone ~tmp ~signers ~repo
                         ~relays:relays_read ~releases:relay_releases ~downloaded
                         r
                     in
@@ -1516,29 +1551,21 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
                     Result.map ignore (read_key ())
                   else check_key config read_key)
             in
-            let* () =
-              each
-                (fun v ->
-                  time ("sign " ^ v.node.release.tag) (fun () ->
-                      let* _ =
-                        sign_node ~gh ~signers ~config ~read_key ~say ~tmp v
-                      in
-                      Ok ()))
-                nodes
+            (* Every signature is made here, then all are uploaded at once: an upload is a
+               round trip to GitHub, the signing is not. *)
+            let* node_signed =
+              collect (sign_node ~signers ~config ~read_key ~tmp) nodes
             in
-            let* me =
-              match relays with
-              | [] -> Ok []
-              | _ ->
-                  let* mes =
-                    collect
-                      (fun v ->
-                        time ("sign " ^ v.relay.relay_release.tag) (fun () ->
-                            sign_relay ~gh ~signers ~config ~read_key ~say ~tmp
-                              v))
-                      relays
-                  in
-                  Ok (match mes with m :: _ -> [ m ] | [] -> [])
+            let* relay_signed =
+              collect (sign_relay ~signers ~config ~read_key ~tmp) relays
+            in
+            let* mes =
+              upload_signed ~gh ~config ~say ~time (node_signed @ relay_signed)
+            in
+            let me =
+              match List.filteri (fun i _ -> i >= List.length nodes) mes with
+              | m :: _ -> [ m ]
+              | [] -> []
             in
             let* () =
               if relays = [] then Ok ()

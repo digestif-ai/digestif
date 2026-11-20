@@ -179,7 +179,11 @@ let sign_next ~timer ~relay ~auto =
         Sign_next.run ~gh ~git:sign_git
           ~clone:(Sign_next.clone_path config.repo)
           ~signers ~config ~read_key ~ask ~say:print_endline ~tmp
-          ~relay:(relay config) ~timer ~listed
+          ~relay:(relay config) ~timer
+          ~cache:
+            (Attestation.file_cache
+               (Filename.concat (Sign_next.state_dir ()) "attested.json"))
+          ~listed ()
       with
       | Ok () -> 0
       | Error e -> exit_err e)
