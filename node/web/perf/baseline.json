@@ -49,6 +49,9 @@
     "notes/:id": 0.34,
     "notes/:id/log": 0.42,
     "notes/:id/versions": 0.47,
-    "items/:id": 2.13
+    "items/:id": 2.13,
+    "suggestions": 1.7,
+    "note_prompt": 1.59,
+    "suggestions/:hash": 1.61
   }
 }
