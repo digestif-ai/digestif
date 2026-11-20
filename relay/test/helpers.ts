@@ -13,6 +13,7 @@ export const RELAY = "http://relay.test";
 
 export interface SentMail {
   authorization: string | null;
+  idempotencyKey: string | null;
   body: { from: string; to: string[]; subject: string; text: string; html: string };
 }
 
@@ -29,7 +30,7 @@ export class FakeResend {
       const request = input instanceof Request ? input : new Request(input, init);
       if (request.url.startsWith(RELAY)) return SELF.fetch(request.url, init ?? request);
       if (request.url === RESEND_URL) {
-        this.sent.push({ authorization: request.headers.get("authorization"), body: await request.json<SentMail["body"]>() });
+        this.sent.push({ authorization: request.headers.get("authorization"), idempotencyKey: request.headers.get("idempotency-key"), body: await request.json<SentMail["body"]>() });
         return new Response(JSON.stringify(this.status < 300 ? { id: `fake-${this.sent.length}` } : { message: "fake failure" }), {
           status: this.status,
           headers: { "content-type": "application/json" },
