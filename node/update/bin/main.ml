@@ -179,7 +179,11 @@ let sign_next ~timer ~relay ~auto =
         Sign_next.run ~gh ~git:sign_git
           ~clone:(Sign_next.clone_path config.repo)
           ~signers ~config ~read_key ~ask ~say:print_endline ~tmp
-          ~relay:(relay config) ~timer ~listed
+          ~relay:(relay config) ~timer
+          ~cache:
+            (Attestation.file_cache
+               (Filename.concat (Sign_next.state_dir ()) "attested.json"))
+          ~listed ()
       with
       | Ok () -> 0
       | Error e -> exit_err e)
@@ -261,52 +265,102 @@ let post_to_circle ~data_dir (r : Release.recall Release.signed) =
       (Yojson.Safe.to_string body)
       Circle_recall.kind)
 
-(* Commit what [write] puts into a fresh clone of the channel branch and push it as one commit; a
-   write that changes nothing commits nothing, and answers false. *)
-let commit_if_changed ~repo ~branch ~message write =
+(* THE TOOL'S CHANNEL CHECKOUT: a shallow checkout of [repo]'s [branch] at
+   ~/.digestif/update/<owner>-<name>-<branch>.checkout, cloned on first use and on every later one
+   fetched and reset to the branch's tip, with every file the branch does not hold removed, so a
+   publish moves only what changed since the last one rather than cloning the branch again. A
+   checkout that cannot be brought to the tip (a fetch refused, a tree some other git left
+   half-written) is cloned again. A lock file beside it keeps two runs on this machine from writing
+   it at once. It is never a checkout anyone works in. *)
+let channel_checkout_path ~repo ~branch =
+  Filename.concat (Sign_next.state_dir ())
+    (String.map (fun c -> if c = '/' then '-' else c) repo
+    ^ "-" ^ branch ^ ".checkout")
+
+let clone_channel ~repo ~branch checkout =
+  (try Stage.remove_tree checkout with _ -> ());
+  git
+    [
+      "clone";
+      "--quiet";
+      "--depth";
+      "1";
+      "--branch";
+      branch;
+      "https://github.com/" ^ repo ^ ".git";
+      checkout;
+    ]
+
+let sync_channel ~repo ~branch checkout =
   let ( let* ) = Result.bind in
-  let dir = Filename.temp_dir "digestif-relay-publish" "" in
-  let checkout = Filename.concat dir "channel" in
+  let fetched () =
+    let* () =
+      git ~cwd:checkout [ "fetch"; "--quiet"; "--depth"; "1"; "origin"; branch ]
+    in
+    let* () =
+      git ~cwd:checkout [ "reset"; "--quiet"; "--hard"; "FETCH_HEAD" ]
+    in
+    git ~cwd:checkout [ "clean"; "--quiet"; "-fdx" ]
+  in
+  if Sys.file_exists (Filename.concat checkout ".git") then
+    match fetched () with
+    | Ok () -> Ok ()
+    | Error _ -> clone_channel ~repo ~branch checkout
+  else clone_channel ~repo ~branch checkout
+
+(* Run [f] holding the lock beside [checkout]. *)
+let with_checkout_lock checkout f =
+  Sign_next.mkdir_p (Filename.dirname checkout);
+  let fd =
+    Unix.openfile (checkout ^ ".lock") [ Unix.O_RDWR; Unix.O_CREAT ] 0o644
+  in
   Fun.protect
-    ~finally:(fun () -> try Stage.remove_tree dir with _ -> ())
+    ~finally:(fun () -> Unix.close fd)
     (fun () ->
-      let* () =
-        git
-          [
-            "clone";
-            "--quiet";
-            "--depth";
-            "1";
-            "--branch";
-            branch;
-            "https://github.com/" ^ repo ^ ".git";
-            checkout;
-          ]
-      in
+      Unix.lockf fd Unix.F_LOCK 0;
+      f ())
+
+(* Commit what [write] puts into the tool's channel checkout, brought to the tip of the channel
+   branch, and push it as one commit; a write that changes nothing commits nothing, and answers
+   false. The sync and the commit-and-push are timed into [timer] as "<step> sync" and
+   "<step> push". A push that fails
+   leaves the local commit behind, and the next run's reset drops it. *)
+let commit_if_changed ?(timer = Timing.none) ~step ~repo ~branch ~message write
+    =
+  let ( let* ) = Result.bind in
+  let time s f = Timing.time timer (step ^ " " ^ s) f in
+  let checkout = channel_checkout_path ~repo ~branch in
+  with_checkout_lock checkout (fun () ->
+      let* () = time "sync" (fun () -> sync_channel ~repo ~branch checkout) in
       let* () = write checkout in
-      let* () = git ~cwd:checkout [ "add"; "--all"; "." ] in
-      match
-        Proc.run ~timeout:60.
-          [| "git"; "-C"; checkout; "diff"; "--cached"; "--quiet" |]
-      with
-      | Ok { code = 0; _ } -> Ok false
-      | Ok { code = 1; _ } ->
-          let* () = git ~cwd:checkout [ "commit"; "--quiet"; "-m"; message ] in
-          let* () =
-            git ~cwd:checkout [ "push"; "--quiet"; "origin"; "HEAD:" ^ branch ]
-          in
-          Ok true
-      | Ok { code; stderr; _ } ->
-          Error
-            (Printf.sprintf "git diff exited %d: %s" code (String.trim stderr))
-      | Error e -> Error e)
+      time "push" (fun () ->
+          let* () = git ~cwd:checkout [ "add"; "--all"; "." ] in
+          match
+            Proc.run ~timeout:60.
+              [| "git"; "-C"; checkout; "diff"; "--cached"; "--quiet" |]
+          with
+          | Ok { code = 0; _ } -> Ok false
+          | Ok { code = 1; _ } ->
+              let* () =
+                git ~cwd:checkout [ "commit"; "--quiet"; "-m"; message ]
+              in
+              let* () =
+                git ~cwd:checkout
+                  [ "push"; "--quiet"; "origin"; "HEAD:" ^ branch ]
+              in
+              Ok true
+          | Ok { code; stderr; _ } ->
+              Error
+                (Printf.sprintf "git diff exited %d: %s" code
+                   (String.trim stderr))
+          | Error e -> Error e))
 
 (* sign --next's first write (docs/releases.md, The channel): every signer-set change this machine's
    node holds and the channel lacks, committed under signers/ with the signer's own gh login before
    any version is signed, so the channel and ci/release.sh hold the set the next release is signed
    by. A failure is said and signing goes on: a version signed by the new set still waits in the
    draft until the channel holds it. *)
-let publish_signer_sets () =
+let publish_signer_sets ~timer () =
   match held_signer_sets () with
   | [] -> ()
   | held -> (
@@ -317,8 +371,8 @@ let publish_signer_sets () =
       in
       let written = ref [] in
       match
-        commit_if_changed ~repo ~branch:"channel"
-          ~message:"Publish the signer set" (fun dir ->
+        commit_if_changed ~timer ~step:"publish-signer-sets" ~repo
+          ~branch:"channel" ~message:"Publish the signer set" (fun dir ->
             Result.map
               (fun w -> written := w)
               (Signers_channel.write_sets ~dir held))
@@ -386,29 +440,32 @@ let relay_publish_trust ~repo ~branch () =
        ~base:(channel_url ~repo ~branch)
        ~installed:(Trust_root.version ()))
 
-let relay_publish_env ~repo ~branch ~data_dir : Relay_publish.env =
+let relay_publish_env ?(timer = Timing.none) ~repo ~branch ~data_dir () :
+    Relay_publish.env =
   {
     gh;
     repo;
     trust = relay_publish_trust ~repo ~branch;
-    channel = commit_if_changed ~repo ~branch;
+    channel = commit_if_changed ~timer ~step:"settle channel" ~repo ~branch;
     announce = relay_announce ~data_dir;
     say = print_endline;
+    timer;
   }
 
 (* sign --next's relay line: the node at the default data directory, and relay-publish on the
    channel branch when a signature completes the signer set. A held announcement is said and is
    not a failure of the signing. *)
-let sign_next_relay (config : Sign_next.config) : Sign_next.relay =
+let sign_next_relay ~timer (config : Sign_next.config) : Sign_next.relay =
   let data_dir = Node.default_dir () in
   {
     relay_versions = relay_versions ~data_dir;
     publish =
-      (fun version ->
+      (fun ~manifest version ->
         Result.map_error Relay_publish.error_to_string
           (Result.map ignore
-             (Relay_publish.run
-                (relay_publish_env ~repo:config.repo ~branch:"channel" ~data_dir)
+             (Relay_publish.run ~manifest
+                (relay_publish_env ~timer ~repo:config.repo ~branch:"channel"
+                   ~data_dir ())
                 ~version)));
   }
 
@@ -448,8 +505,8 @@ let sign_cmd =
            paste it at a hidden prompt"
     | true, None, None ->
         let timer = sign_next_timer () in
-        Timing.time timer "publish-signer-sets" publish_signer_sets;
-        let code = sign_next ~timer ~relay:sign_next_relay ~auto in
+        Timing.time timer "publish-signer-sets" (publish_signer_sets ~timer);
+        let code = sign_next ~timer ~relay:(sign_next_relay ~timer) ~auto in
         Timing.mark timer "total";
         code
     | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
@@ -979,7 +1036,9 @@ let relay_publish_cmd =
     | Error e -> exit_err e
     | Ok version -> (
         match
-          Relay_publish.run (relay_publish_env ~repo ~branch ~data_dir) ~version
+          Relay_publish.run
+            (relay_publish_env ~repo ~branch ~data_dir ())
+            ~version
         with
         | Ok (Relay_publish.Held _) -> 75
         | Ok _ -> 0

@@ -754,15 +754,22 @@ signature in the channel's signatures format, so the two signers never write the
 drops every version offered: it deletes each draft release with every signature on it, and the tags
 stay. Anything else leaves them waiting. `sign --next --sign` answers `s` itself: it shows
 everything above, prints the question with its answer, and signs every version offered without
-reading the terminal. `--sign` goes only with `--next`.
+reading the terminal. `--sign` goes only with `--next`. Every signature is made first and then all
+are uploaded at once, each upload being a round trip to GitHub.
 
 GitHub is asked only for what git does not hold: one listing of the releases, read once for the
-whole run, then every waiting draft's `manifest.json` downloaded at once, while the clone fetches;
-the signatures go back as uploads. Every version offered, of both lines, is then shown at once (its
-files downloaded and their attestations checked), at most six of a line at a time, so the question
-comes after the slowest version rather than after all of them in turn. Every step's duration is appended to
+whole run, then every waiting draft's `manifest.json` downloaded at once, while the clone fetches
+and, when a version has not verified on an earlier run, the Sigstore trusted root is read once
+(`gh attestation trusted-root`); the signatures go back as uploads. No archive is downloaded. Every
+version offered, of both lines, is then shown at once (its manifest's attestation checked),
+at most six of a line at a time, so the question comes after the slowest version rather than after
+all of them in turn. Every step's duration is appended to
 `~/.digestif/update/sign-next-timings.log`, one line per step (the run id, the step, its seconds),
-and nothing extra is printed, so a slow run can be traced to the step that was slow.
+and nothing extra is printed, so a slow run can be traced to the step that was slow. Publishing a
+relay version (Publishing a relay release) is the step `settle`, and each of its parts a step of
+its own: `settle listing`, `settle trust`, `settle manifest`, `settle signatures`,
+`settle release-edit`, `settle channel` (with `settle channel sync` and `settle channel push`) and
+`settle announce`.
 
 The key command runs only once you answer `s` (Signing a release), so a leave or a drop never runs
 it: a key command that prompts, such as `op read` asking 1Password to unlock or the Keychain asking
@@ -780,12 +787,20 @@ before the draft is written. An attestation is a Sigstore certificate GitHub iss
 naming the workflow, the ref, the commit and the run; a repository writer cannot make one for a
 file the workflow did not build on that tag.
 
-Before it shows a version, `sign --next` downloads every file the manifest names from the draft,
-checks each against the manifest's sha256, and runs `gh attestation verify` on each and on the
-manifest itself, requiring the signer workflow to be the line's workflow, the source ref the tag,
-the source commit the one it shows, and a GitHub-hosted runner; it reads the certificate gh
-answers back and checks the same fields again. The version's `built` line is the one run that
-attests every file. A tag moved after the build therefore shows a commit no attestation names, and
+Each workflow attests every file of the draft, the manifest among them, in one statement listing
+every file's sha256. Before it shows a version, `sign --next` checks the sha256 GitHub holds for each
+file the manifest names against the manifest's, and runs `gh attestation verify` on the manifest's
+own bytes, against the trusted root it read once for the run (`--custom-trusted-root`), requiring
+the signer workflow to be the line's workflow, the source ref the tag, the source commit the one it
+shows, and a GitHub-hosted runner; it reads the certificate gh answers back and checks the same
+fields again, and requires every file's sha256, the manifest's included, to be named by an
+attestation that passed. The version's `built` line is the one run that attests every file. A file
+is never downloaded for this: a draft's file whose bytes differ from the manifest's has another
+digest on GitHub, and no attestation names it. What verified is remembered in
+`~/.digestif/update/attested.json` (the tag, the manifest's sha256, the workflow, the commit and the
+attestations that passed, the newest 200 kept), so a later run that reads the same manifest of the
+same tag at the same commit takes that answer without asking gh again; a manifest replaced on the
+draft has another sha256 and a moved tag another commit, and either is verified again. A tag moved after the build therefore shows a commit no attestation names, and
 the version is not offered. This needs a `gh` whose `attestation verify` takes `--source-digest`.
 
 A version is **not offered**, shown with every reason under NOT OFFERED and left out of the
@@ -1086,14 +1101,20 @@ for itself; `sign --next` runs the same steps in its own process
    (`Policy.check_relay`), against the set `sign --next` signs under: the build's set advanced by
    the channel's `signers/` and this machine's node, with every revocation the channel lists
    applied. Per signer, the signature kept is the one that verifies. A signer missing exits 75
-   having published nothing; a revoked key in the set fails it.
+   having published nothing; a revoked key in the set fails it. The releases listing and the
+   channel's trust are read at once, then the manifest and every signature downloaded at once;
+   `sign --next` hands over the manifest bytes it already downloaded, used while GitHub's digest of
+   the draft's `manifest.json` is still theirs.
 2. Publish the GitHub release, never as Latest (Latest is the node line to the install script and
    to the signing line), and write `relay/<version>/manifest.json`, its exact bytes,
    `relay/<version>/manifest.sig.json`, one signature per signer, and `relay/index.json` on the
    channel in one commit, with the signer's own `gh` login. `relay/index.json` has the node index's
    shape, format `digestif-relay-feed-v0`, every published relay version in version order and the
    channel's revocations named from `relay/`. A different manifest already under the version is
-   refused.
+   refused. The commit is made in the tool's own shallow checkout of the channel branch,
+   `~/.digestif/update/<owner>-<name>-channel.checkout`, fetched and reset to the branch's tip on
+   every publish rather than cloned again (cloned once, and again when it cannot be brought to the
+   tip); `sign --next`'s signer-set commit uses the same checkout.
 3. Write the `relay_release` announcement through this machine's node for its next sync to carry,
    as a recall posts a `release_recall`; with no node here it prints the
    `digestif post --kind relay_release` line that posts it from a machine running one. An

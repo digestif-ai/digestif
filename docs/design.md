@@ -301,12 +301,16 @@ other thing the run takes from the circle: one line, in the agent's own words, o
 agent should work, which it saw working for another member's agent (how it answers, what it
 drafts, what it remembers). While the member turned adopting on (setup's Inbox step, or Settings,
 Inbox agent), the node adds it to their practices, kept beside their prompt, and tells them in a
-`practice` notice; otherwise the node offers it as a choice of Adopt or Not now, Not now a week
+`practice` notice, one per message however many lines the run took from it; otherwise the node offers it as a choice of Adopt or Not now, Not now a week
 after the run, and Adopt adds it the same way. Either way its author gets the same `credit` a filed
 idea gets, its `adopted` saying `as_how_agent_works` and its title the line: the reading run writes
 and checks it as it does a filed idea's, and the node holds it beside the line and sends it only
 once it saves the line, so Not now, a lapsed offer, a line already held and a full list of 20 send
-nothing, and removing a line later retracts nothing. The node reads whose practice it was from the
+nothing, and removing a line later retracts nothing. Several lines one run adopts from one message
+are one event: the node sends their author one credit, "Mike is adopting 3 of your ideas", whose
+detail is the message's day and then each line saved, sent only when every line's own credit would
+have been and otherwise one draft; offers adopted one by one later stay one credit each, since each
+Adopt is its own event. The node reads whose practice it was from the
 message it names, never from the run, and refuses a link, the member's own message and a practice
 it holds already, which it never offers. Every later reading run reads the practices under the
 member's prompt and below the always-on rule; the filing run never does, so no practice can say
