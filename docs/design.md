@@ -130,6 +130,14 @@ acts on the default node. A second node founds its circle with `digestif init --
 `digestif circle found --circle <id>`, or joins with `digestif join --circle <id>`; only those two
 set up an id that names nothing yet, so a mistyped id is refused rather than set up empty.
 
+The parent holds circle nodes and links to them and nothing else. `~/digestif` is also where a
+member naturally clones this repository, and a node set up inside that working tree would put
+keys-scoped state where the repository's tools read, with an id like `node` or `ui` naming one of
+its folders. So every `--circle` command and `digestif circle link` refuse a parent holding
+anything other than a directory with a node, an id's directory still empty, a link, or Finder's
+`.DS_Store`, naming what it found and saying to set `DIGESTIF_CIRCLES` or move the folder;
+`digestif circle list` lists only the nodes and links and names the rest on stderr.
+
 A node set up before the parent existed (the default node in the platform's application data
 directory, holding the founding circle, or one under a `--data-dir` picked by hand) stays where it
 is, because its keys, its service and its `digestif://join` link name its path. `digestif circle

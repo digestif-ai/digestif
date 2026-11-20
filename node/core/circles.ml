@@ -71,6 +71,55 @@ let lstat_kind path =
   | { st_kind; _ } -> Some st_kind
   | exception Unix.Unix_error _ -> None
 
+(* Whether [path], an entry of the parent named [name], belongs there: a link (to a node, which
+   Circles.link checks), a directory named by an id that holds a node or nothing yet (a set-up that
+   stopped before its log), or Finder's .DS_Store. *)
+let belongs ~name path =
+  name = ".DS_Store"
+  ||
+  match lstat_kind path with
+  | Some Unix.S_LNK -> true
+  | Some Unix.S_DIR ->
+      is_id name
+      && (Sys.file_exists (Node.log_path path)
+         ||
+         match Sys.readdir path with
+         | [||] -> true
+         | _ -> false
+         | exception Sys_error _ -> false)
+  | _ -> false
+
+(* The parent, refused when it holds anything other than circle nodes and links: a git checkout of
+   the digestif repo at ~/digestif is the case this guards, where a node set up there would put
+   keys-scoped state inside a working tree and an id like node or ui would name one of its
+   folders. A parent that does not exist yet is fine; the first node creates it. *)
+let check_parent () =
+  let p = parent () in
+  match Sys.readdir p with
+  | exception Sys_error _ ->
+      if Sys.file_exists p then Error (p ^ " is not a directory") else Ok p
+  | names -> (
+      let foreign =
+        Array.to_list names |> List.sort compare
+        |> List.filter (fun name ->
+            not (belongs ~name (Filename.concat p name)))
+      in
+      match foreign with
+      | [] -> Ok p
+      | _ ->
+          let shown = List.filteri (fun i _ -> i < 3) foreign in
+          let more = List.length foreign - List.length shown in
+          Error
+            (Printf.sprintf
+               "%s holds %s%s, which is neither a circle's node nor a link to \
+                one: the parent of circle nodes holds nothing else, so a git \
+                checkout or another folder there is never taken for a circle. \
+                Set DIGESTIF_CIRCLES to a directory of its own, such as \
+                ~/digestif-circles, or move %s elsewhere"
+               p (String.concat ", " shown)
+               (if more > 0 then Printf.sprintf " and %d more" more else "")
+               (if List.length foreign = 1 then "it" else "them")))
+
 (* The data directory a link names, exactly as written; a relative target is read from the parent. *)
 let link_target path =
   let t = Unix.readlink path in
@@ -83,6 +132,7 @@ let link_target path =
 let dir ?(create = false) id =
   if not (is_id id) then refuse_id id
   else
+    let* _ = check_parent () in
     let path = Filename.concat (parent ()) id in
     match lstat_kind path with
     | Some Unix.S_LNK -> Ok (link_target path)
@@ -99,8 +149,9 @@ let dir ?(create = false) id =
 
 type entry = { id : string; dir : string; linked : bool }
 
-(* Every circle under the parent, by id: each directory, and each link with its target. Anything
-   whose name is not an id is not a circle and is left out. *)
+(* Every circle under the parent, by id: each directory holding a node, and each link with its
+   target. Anything else (a name that is not an id, a directory with no node) is not a circle and is
+   left out, so a parent check_parent refuses still lists only nodes. *)
 let entries () =
   let p = parent () in
   match Sys.readdir p with
@@ -116,7 +167,8 @@ let entries () =
                 match link_target path with
                 | d -> Some { id; dir = d; linked = true }
                 | exception Unix.Unix_error _ -> None)
-            | Some Unix.S_DIR -> Some { id; dir = path; linked = false }
+            | Some Unix.S_DIR when Sys.file_exists (Node.log_path path) ->
+                Some { id; dir = path; linked = false }
             | _ -> None)
 
 (* What a data directory holds, read from its log alone (no keystore is opened): its root and the
@@ -154,7 +206,7 @@ let link ~id ~target =
     if Sys.file_exists (Node.log_path target) then Ok ()
     else Error ("no node is set up in " ^ target)
   in
-  let p = parent () in
+  let* p = check_parent () in
   let path = Filename.concat p id in
   match lstat_kind path with
   | Some Unix.S_LNK when link_target path = target -> Ok path

@@ -1265,6 +1265,52 @@ let circles_under_one_parent () =
      | Error m -> Astring_contains.contains m "--circle second-circle init"
      | Ok _ -> false)
 
+(* DIG-284: the parent holds circle nodes and links and nothing else. A git checkout of the repo at
+   ~/digestif is refused for every id, a new one included, with the way out; a directory holding no
+   node is left out of the list. *)
+let circles_parent_holds_only_nodes () =
+  let parent = tmpdir () in
+  Unix.putenv "DIGESTIF_CIRCLES" parent;
+  let a = ok (Circles.dir ~create:true "a") in
+  let n = Node.open_ ~keystore:(Keystore.memory ()) a in
+  ignore (ok (Node.init n ~phrase:(Phrase.generate ())));
+  Node.close n;
+  Unix.mkdir (Filename.concat parent "pending") 0o700;
+  Out_channel.with_open_bin (Filename.concat parent ".DS_Store") ignore;
+  Alcotest.(check bool)
+    "nodes, an empty id's directory and .DS_Store are a parent" true
+    (Result.is_ok (Circles.check_parent ()));
+  Alcotest.(check (list string))
+    "a directory with no node is no circle" [ "a" ]
+    (List.map (fun (e : Circles.entry) -> e.id) (Circles.entries ()));
+  (* What a clone of the repo puts there. *)
+  Unix.mkdir (Filename.concat parent ".git") 0o700;
+  Unix.mkdir (Filename.concat parent "node") 0o700;
+  Out_channel.with_open_bin
+    (Filename.concat (Filename.concat parent "node") "dune")
+    ignore;
+  Out_channel.with_open_bin (Filename.concat parent "README.md") ignore;
+  let refused what r =
+    match r with
+    | Ok _ -> Alcotest.fail (what ^ " was not refused")
+    | Error m ->
+        List.iter
+          (fun needle ->
+            Alcotest.(check bool)
+              (what ^ " names " ^ needle)
+              true
+              (Astring_contains.contains m needle))
+          [ ".git"; "README.md"; "node"; "DIGESTIF_CIRCLES" ]
+  in
+  refused "the parent" (Circles.check_parent ());
+  refused "a new id" (Circles.dir ~create:true "relay");
+  refused "a folder of the checkout" (Circles.dir ~create:true "node");
+  refused "an existing node" (Circles.dir "a");
+  refused "a link" (Circles.link ~id:"b" ~target:a);
+  Alcotest.(check (list string))
+    "the list still names only nodes" [ "a" ]
+    (List.map (fun (e : Circles.entry) -> e.id) (Circles.entries ()))
+
 (* DIG-224: a record in invites.json that does not parse is the join watcher's problem, never the
    sync's. The sync still reaches every relay, the records that parse are still watched, and the
    bad record stays in the file exactly as written. *)
@@ -1337,6 +1383,8 @@ let () =
           Alcotest.test_case "codes no open invite names" `Quick refused;
           Alcotest.test_case "every circle's node under one parent" `Quick
             circles_under_one_parent;
+          Alcotest.test_case "a parent holding anything but nodes" `Quick
+            circles_parent_holds_only_nodes;
           Alcotest.test_case "a circle founded with no dinner and no guests"
             `Quick found_alone;
           Alcotest.test_case "ask store" `Quick asks_store;
