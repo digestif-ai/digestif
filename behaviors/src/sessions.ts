@@ -148,8 +148,8 @@ export function maxTranscriptBytes(env: NodeJS.ProcessEnv = process.env): number
 
 /**
  * How many bytes one source's reading may take in all, across its files: once it is reached the
- * source yields the oldest sessions it has read, the note says the reading was partial, and the
- * next note reads on from where it left off (DIG-361). The budget is checked between
+ * source yields the newest sessions it has read, and the note says the reading was partial and how
+ * many older sessions it left out (DIG-361, DIG-214). The budget is checked between
  * transcripts, so a reading can pass it by one transcript: at most DEFAULT_MAX_TRANSCRIPT_BYTES of
  * its tail and TITLE_HEAD_BYTES of its head, about 289 MB in all at the defaults. That is eight
  * full-size transcripts, or thousands of ordinary ones: a day of the member's own sessions fits
@@ -936,7 +936,8 @@ async function modifiedSinceAt(files: string[], since: number): Promise<{ file: 
   return recent;
 }
 
-const oldestFirst = (a: { file: string; at: number }, b: { file: string; at: number }): number => a.at - b.at || (a.file < b.file ? -1 : 1);
+// Ties by path from the last, so the reading, reversed, answers them by path.
+const newestFirst = (a: { file: string; at: number }, b: { file: string; at: number }): number => b.at - a.at || (a.file < b.file ? 1 : -1);
 
 export interface JudgingOptions {
   /** The system temp roots no judging lists or walks above; defaults to systemTempRoots(). */
@@ -968,11 +969,6 @@ export interface JudgingOptions {
   onUnreadableJudgement?: (dir: string, folder: string, why: string) => void;
   /** Told of each folder judging lists, as it lists it. */
   onListing?: (dir: string) => void;
-  /**
-   * Answer the transcripts oldest first, not by path: a reading that may stop early reads the
-   * oldest, so the next one can read on from where it stopped.
-   */
-  oldestFirst?: boolean;
   /** Project directories whose names start with these roots' encoded paths are the factory's, not the member's. */
   factoryRoots?: string[];
   /** Told of a project skipped before any of it was read, why, and how many transcripts of the window it held. */
@@ -1086,11 +1082,10 @@ async function sessionFilesAt(
   options: JudgingOptions,
   reading: Reading = newReading(),
 ): Promise<{ file: string; at: number }[]> {
-  const order = (fs: { file: string; at: number }[]): { file: string; at: number }[] =>
-    options.oldestFirst === true ? fs.sort(oldestFirst) : fs.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  const order = (fs: { file: string; at: number }[]): { file: string; at: number }[] => fs.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
   if (!(await isDir(path))) return [];
   const own = await jsonlFiles(path);
-  if (own.length > 0) return options.oldestFirst === true ? order(await modifiedSinceAt(own, since)) : modifiedSinceAt(own, since);
+  if (own.length > 0) return modifiedSinceAt(own, since);
   const found: { file: string; at: number }[] = [];
   const { seen, toldOf } = reading;
   // A temp root that is the home directory or encloses it is no root at all, as in skipRoots.
@@ -1190,11 +1185,10 @@ export interface SessionsOptions {
   budget?: Budget;
   onProgress?: (p: ReadingProgress) => void;
   /**
-   * Told once when a budget ended the reading before the last transcript, which budget, and what
-   * the window is read through (partialThrough), so the next reading starts there and reads what
-   * this one did not.
+   * Told once when a budget ended the reading before the last transcript: which budget, and what it
+   * left out (the oldest transcripts of the window, never read).
    */
-  onPartial?: (why: "time" | "bytes", through: number) => void;
+  onPartial?: (why: "time" | "bytes", left: LeftOut) => void;
   /** Told of every transcript read from its tail, and how much of it was left unread. */
   log?: (line: string) => void;
   /** The clock for elapsedMs, epoch milliseconds. */
@@ -1211,44 +1205,16 @@ export interface SessionsOptions {
   home?: string;
   /** The temp roots whose projects are skipped; defaults to systemTempRoots(). */
   tempRoots?: string[];
-  /** When a transcript was created, epoch milliseconds, or undefined where the file system does not record it; defaults to bornAt. */
-  bornAt?: (file: string) => Promise<number | undefined>;
   /** Told once judging is over, of the projects it left unjudged and the folders why; told with none when it skipped nothing (ISS-81609). */
   onUnjudged?: (u: Unjudged) => void;
 }
 
-/**
- * How long before its file's birthtime a transcript's first prompt may be stamped: Claude Code
- * stamps a prompt as it takes it and creates the file to write it, so the two are at most moments
- * apart. ISS-74108
- */
-export const BIRTH_MARGIN_MS = 5_000;
-
-/** When a file was created, where the file system records it: a birthtime of zero, or past its mtime, is none. */
-export async function bornAt(file: string): Promise<number | undefined> {
-  try {
-    const st = await stat(file);
-    return Number.isFinite(st.birthtimeMs) && st.birthtimeMs > 0 && st.birthtimeMs <= st.mtimeMs ? st.birthtimeMs : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Where a budget-cut reading's window ends: at the newest prompt it read, unless a transcript it did
- * not read was created before that, when it may hold older prompts. Each unread transcript's
- * prompts are bounded from below by its birthtime less BIRTH_MARGIN_MS, and the window ends at the
- * earliest bound, so the next reading, from there on, reads them. A bound at or before `since`
- * cannot move the window, and the reading ends at the newest prompt read so the next one goes on.
- * A transcript with no birthtime bounds nothing. ISS-74108
- */
-export async function partialThrough(newestRead: number, unread: string[], since: number, born: (file: string) => Promise<number | undefined> = bornAt): Promise<number> {
-  let through = newestRead;
-  for (const file of unread) {
-    const b = await born(file);
-    if (b !== undefined) through = Math.min(through, b - BIRTH_MARGIN_MS);
-  }
-  return through > since ? through : newestRead;
+/** What a budget-cut reading left out: the transcripts it never read, all older than every one it read. */
+export interface LeftOut {
+  /** How many transcripts of the window were not read. */
+  sessions: number;
+  /** The newest modification time among them, epoch milliseconds: nothing left out was active after it. */
+  lastActive: number;
 }
 
 const megabytes = (n: number): string => `${Math.round(n / (1024 * 1024))} MB`;
@@ -1293,13 +1259,14 @@ export function skippedLine(counts: Record<SkipReason, number>): string | undefi
  * the cap is read from its tail (readTranscript); one of a project that is not the member's (under
  * the factory's own directory or a temp root) is skipped by its path and never opened (DIG-361).
  *
- * When the time budget or the byte budget runs out after some sessions were yielded, the reading
- * ends with those and `onPartial` says why and where the window ends (partialThrough): at the
- * newest prompt yielded, or earlier where a transcript left unread was created before it and may
- * hold older prompts. A transcript left unread was modified after every one read, so the next
- * reading, from that end on, reads it; the prompts read past the end are left out of this one and
- * yielded by the next. When it runs out before any session was yielded, in judging or in reading,
- * it throws ReadingOverran and the source fails, so its window is read again. ISS-74092 ISS-74108
+ * Transcripts are read newest first, by modification time across every path, so a budget that runs
+ * out leaves out the oldest of the window, never the newest: a first note reaching back 30 days, or
+ * a note after a backlog of unapproved ones, describes the member's latest work. When the time
+ * budget or the byte budget runs out after some sessions were yielded, the reading ends with those
+ * and `onPartial` says why and what it left out (LeftOut). The window is read through all the same:
+ * what was left out is older than every transcript read, and no later reading goes back for it.
+ * When it runs out before any session was yielded, in judging or in reading, it throws
+ * ReadingOverran and the source fails, so its window is read again. ISS-74092 DIG-214
  */
 export async function sessionsSince(path: string | string[], since: number, until = Infinity, options: SessionsOptions = {}): Promise<Session[]> {
   const clock = options.clock ?? Date.now;
@@ -1345,7 +1312,8 @@ export async function sessionsSince(path: string | string[], since: number, unti
   // One reading across every path: a folder two paths' projects reach is listed and told of once.
   const reading = newReading();
   for (const p of typeof path === "string" ? [path] : path) listed.push(...(await sessionFilesAt(p, "/", since, home, options.budget, judging, reading)));
-  const files = [...new Map(listed.map((f) => [f.file, f])).values()].sort(oldestFirst).map((f) => f.file);
+  const listing = [...new Map(listed.map((f) => [f.file, f])).values()].sort(newestFirst);
+  const files = listing.map((f) => f.file);
   const line = skippedLine(skipped);
   if (line !== undefined) options.log?.(line);
   options.onUnjudged?.(unjudged);
@@ -1353,20 +1321,20 @@ export async function sessionsSince(path: string | string[], since: number, unti
   const maxTotal = options.maxTotalBytes ?? DEFAULT_MAX_SOURCE_BYTES;
   // The file a budget ran out at: with no session yielded before it, the source fails there.
   let stoppedAt = "";
-  // The transcripts a cut reading left unread: the one it stopped at and every one after it.
-  let unread: string[] = [];
+  // The transcripts a cut reading left unread: the one it stopped at and every older one.
+  let unread: { file: string; at: number }[] = [];
   for (const [i, file] of files.entries()) {
     if (partial !== undefined) break;
     if (total >= maxTotal) {
       partial = "bytes";
       stoppedAt = file;
-      unread = files.slice(i);
+      unread = listing.slice(i);
       break;
     }
     if (options.budget?.spent() === true) {
       partial = "time";
       stoppedAt = file;
-      unread = files.slice(i);
+      unread = listing.slice(i);
       break;
     }
     // Progress is reported at most once a megabyte of a file, not on every chunk the stream hands over.
@@ -1388,7 +1356,7 @@ export async function sessionsSince(path: string | string[], since: number, unti
       if (!(e instanceof ReadingOverran)) continue; // A transcript removed or unreadable since it was listed has nothing to read.
       partial = "time";
       stoppedAt = file;
-      unread = files.slice(i);
+      unread = listing.slice(i);
       break;
     }
     total += transcript.bytesRead + transcript.headBytes;
@@ -1402,13 +1370,10 @@ export async function sessionsSince(path: string | string[], since: number, unti
   }
   if (partial !== undefined) {
     // Counted in sessions yielded, not transcripts read: transcripts with nothing in the window
-    // move nothing, and a reading that yielded nothing fails rather than reading its window through.
+    // tell the member nothing, and a reading that yielded nothing fails rather than reading its window through.
     if (sessions.length === 0) throw new ReadingOverran(stoppedAt);
-    const inWindow = sessions.flatMap((s) => s.prompts.filter((p) => p.at > since && p.at <= until).map((p) => p.at));
-    const through = await partialThrough(Math.max(...inWindow), unread, since, options.bornAt);
-    options.onPartial?.(partial, through);
-    // A prompt after the window's end is the next reading's, so it is yielded once, by that one.
-    return sessions.map((s) => ({ ...s, prompts: s.prompts.filter((p) => p.at <= through) })).filter((s) => s.prompts.some((p) => p.at > since));
+    options.onPartial?.(partial, { sessions: unread.length, lastActive: Math.max(...unread.map((f) => f.at)) });
   }
-  return sessions;
+  // Read newest first, answered oldest first, as the record reads.
+  return sessions.reverse();
 }
