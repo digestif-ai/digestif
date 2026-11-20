@@ -18,6 +18,7 @@
   (env_var DIGESTIF_PERF_SUMMARIES)
   (env_var DIGESTIF_PERF_MEMBERS)
   (env_var DIGESTIF_PERF_APPROVALS)
+  (env_var DIGESTIF_PERF_ENDED_APPROVALS)
   (env_var DIGESTIF_PERF_SUGGESTIONS))
  (package digestif-node)
  (libraries

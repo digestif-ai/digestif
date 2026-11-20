@@ -29,6 +29,40 @@ type report = {
 
 let page_size = 500
 
+(* Keep one envelope a relay served: true when the log did not hold it. An envelope whose hash or
+   signature does not check is a fault against its author and is passed over, as is one that has no
+   canonical form (a string that is not UTF-8): it can never verify, and nothing it says is read. *)
+let store_served ~on_stored (node : Node.t) ~relay (s : Relay_client.stored) =
+  let e = s.signed.envelope in
+  let fault kind detail =
+    Log.add_fault node.log ~kind ~author:e.author ~seq:e.seq ~detail;
+    false
+  in
+  match Envelope.hash_result e with
+  | Error m -> fault "invalid_envelope" (relay ^ " " ^ s.hash ^ " " ^ m)
+  | Ok hash when hash <> s.hash ->
+      fault "relay_hash_mismatch" (relay ^ " " ^ s.hash)
+  | Ok hash -> (
+      match Envelope.verify s.signed with
+      | Error err ->
+          fault "invalid_envelope"
+            (relay ^ " " ^ hash ^ " " ^ Envelope.error_message err)
+      | Ok () ->
+          let result = Log.insert node.log ~hash s.signed in
+          Log.add_sighting node.log ~relay ~relay_id:s.relay_id ~hash
+            ~received_at:s.received_at;
+          let inserted = result = Log.Inserted in
+          if inserted then on_stored hash s.signed;
+          inserted)
+
+(* An entry the relay served that is no envelope at all names no author this node can hold it
+   against: the fault is the relay's, keyed by where the relay placed it. *)
+let record_malformed (node : Node.t) ~relay (m : Relay_client.malformed) =
+  Log.add_fault node.log ~kind:"malformed_entry" ~author:""
+    ~seq:(Option.value m.bad_relay_id ~default:0)
+    ~detail:
+      (String.concat " " ((relay :: Option.to_list m.bad_hash) @ [ m.reason ]))
+
 let fetch_relay ?(on_stored = fun _ _ -> ()) (node : Node.t) transport ~key
     (r : Log.relay_row) =
   let rec loop after fetched stored =
@@ -44,45 +78,31 @@ let fetch_relay ?(on_stored = fun _ _ -> ()) (node : Node.t) transport ~key
           Log.transaction node.log @@ fun () ->
           let stored =
             List.fold_left
-              (fun stored (s : Relay_client.stored) ->
-                let hash = Envelope.hash s.signed.envelope in
-                if hash <> s.hash then begin
-                  Log.add_fault node.log ~kind:"relay_hash_mismatch"
-                    ~author:s.signed.envelope.author ~seq:s.signed.envelope.seq
-                    ~detail:(r.url ^ " " ^ s.hash);
-                  stored
-                end
-                else
-                  match Envelope.verify s.signed with
-                  | Error e ->
-                      Log.add_fault node.log ~kind:"invalid_envelope"
-                        ~author:s.signed.envelope.author
-                        ~seq:s.signed.envelope.seq
-                        ~detail:
-                          (r.url ^ " " ^ hash ^ " " ^ Envelope.error_message e);
-                      stored
-                  | Ok () ->
-                      let result = Log.insert node.log ~hash s.signed in
-                      Log.add_sighting node.log ~relay:r.url
-                        ~relay_id:s.relay_id ~hash ~received_at:s.received_at;
-                      if result = Log.Inserted then begin
-                        on_stored hash s.signed;
-                        stored + 1
-                      end
-                      else stored)
+              (fun stored s ->
+                if store_served ~on_stored node ~relay:r.url s then stored + 1
+                else stored)
               stored page.envelopes
           in
+          List.iter (record_malformed node ~relay:r.url) page.malformed;
+          (* The cursor passes every entry the page placed, a bad one included: an entry this node
+             refused is refused on every read, and holding the cursor before it would stop this
+             relay's sync for good. DIG-222 *)
           let last =
-            List.fold_left
-              (fun m (s : Relay_client.stored) -> max m s.relay_id)
-              after page.envelopes
+            List.fold_left max after
+              (List.map
+                 (fun (s : Relay_client.stored) -> s.relay_id)
+                 page.envelopes
+              @ List.filter_map
+                  (fun (m : Relay_client.malformed) -> m.bad_relay_id)
+                  page.malformed)
           in
           Log.set_cursor node.log r.url last;
           (stored, last)
         in
-        let fetched = fetched + List.length page.envelopes in
+        let served = List.length page.envelopes + List.length page.malformed in
+        let fetched = fetched + served in
         match page.next with
-        | Some next when next > after && page.envelopes <> [] ->
+        | Some next when next > after && served > 0 ->
             loop (max next last) fetched stored
         | _ -> (fetched, stored, None))
   in
@@ -279,10 +299,8 @@ let push_relay ?(may_drop = true) (node : Node.t) transport (r : Log.relay_row)
     =
   let unpushed () =
     List.concat_map
-      (fun author -> Log.by_author node.log author)
+      (fun author -> Log.unheld_by node.log ~relay:r.url author)
       (Node.own_keys node)
-    |> List.filter (fun (row : Log.row) ->
-        not (Log.held_by node.log ~relay:r.url row.hash))
   in
   let rec go pushed dropped = function
     | [] -> { pushed; dropped; error = None }
@@ -346,11 +364,15 @@ let bootstrapped error pushed push_error =
    members this way, since the guest's own late join is judged at that relay's clock and refused. A
    device message another device of the identity wrote is not here: a relay takes it only from its
    author, whose node pushes it as its own once the join has admitted that device. *)
-let replicas (node : Node.t) (r : Log.relay_row) =
+let replicas ?(now = Unix.gettimeofday ()) (node : Node.t) (r : Log.relay_row) =
   let own = Node.own_keys node in
   let lacks (row : Log.row) =
     (not (List.mem row.signed.envelope.author own))
-    && not (Log.held_by node.log ~relay:r.url row.hash)
+    && (not (Log.held_by node.log ~relay:r.url row.hash))
+    &&
+    match Log.replica_refusal node.log ~relay:r.url row.hash with
+    | Some (_, retry_at) -> now >= retry_at
+    | None -> true
   in
   let dinners =
     List.filter lacks
@@ -376,6 +398,12 @@ let replicas (node : Node.t) (r : Log.relay_row) =
     in
     in_fold_order dinners @ in_fold_order joins @ in_fold_order devices
 
+(* How long a replica a relay refused [refusals] times waits before it is posted again: ten minutes,
+   doubling with each refusal, never more than a day. A refusal can lift (the dinner a join names
+   reaches the relay from its host), so it is retried, but never on every sync. *)
+let replica_backoff refusals =
+  Float.min 86_400. (600. *. (2. ** float_of_int (max 0 (refusals - 1))))
+
 (* Push [replicas] to a relay that admits this node. A join goes with this node's device key as the
    request signer, the one envelope a relay takes from a signer other than its author, and is judged
    there by its created_at; a dinner and a self-authored device message go unsigned, as their
@@ -383,7 +411,8 @@ let replicas (node : Node.t) (r : Log.relay_row) =
    behind a later envelope of its host device is a sequence_regression). A refusal is a replicate_refused fault naming the relay's reason, and the loop goes on: the
    envelope is someone else's, so it is never dropped. A transport failure ends the pass; the next
    sync tries again. *)
-let replicate_relay (node : Node.t) transport ~key (r : Log.relay_row) =
+let replicate_relay ?(now = Unix.gettimeofday ()) (node : Node.t) transport ~key
+    (r : Log.relay_row) =
   let rec go replicated = function
     | [] -> replicated
     | (row : Log.row) :: rest -> (
@@ -397,6 +426,7 @@ let replicate_relay (node : Node.t) transport ~key (r : Log.relay_row) =
               ~hash:row.hash ~received_at:None;
             Log.resolve_relay_faults node.log ~kind:"replicate_refused"
               ~author:e.author ~seq:e.seq ~relay:r.url;
+            Log.clear_replica_refusal node.log ~relay:r.url row.hash;
             go (if receipt.duplicate then replicated else replicated + 1) rest
         | Error (Relay_client.Transport _) -> replicated
         | Error err ->
@@ -405,9 +435,17 @@ let replicate_relay (node : Node.t) transport ~key (r : Log.relay_row) =
               ~detail:
                 (r.url ^ " refused the " ^ e.kind ^ " " ^ row.hash ^ ": "
                 ^ Relay_client.error_to_string err);
+            let refusals =
+              1
+              + Option.fold ~none:0 ~some:fst
+                  (Log.replica_refusal node.log ~relay:r.url row.hash)
+            in
+            Log.record_replica_refusal node.log ~relay:r.url ~hash:row.hash
+              ~refusals
+              ~retry_at:(now +. replica_backoff refusals);
             go replicated rest)
   in
-  go 0 (replicas node r)
+  go 0 (replicas ~now node r)
 
 (* Read, then push, then read again a relay the push admitted this node to. The second value says
    whether the relay read clean, so admits this node and may be replicated to (replicate_relays). *)

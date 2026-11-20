@@ -65,17 +65,23 @@ async function open(relay: Relay, id: string, secret: string | null): Promise<Op
 }
 
 /**
+ * The decisions on one item, read through envelopes_decision_item (migrations/0005_decision_item.sql)
+ * rather than every decision's body. INDEXED BY pins it, so a query the index cannot answer fails
+ * loud instead of scanning. DIG-234
+ */
+export const ANSWERED_SQL =
+  "SELECT 1 AS hit FROM envelopes e INDEXED BY envelopes_decision_item JOIN admitted_keys k ON k.key = e.author " +
+  "WHERE e.kind = 'decision' AND json_extract(e.body, '$.item') = ?1 AND e.body IS NOT NULL " +
+  "AND k.identity = (SELECT identity FROM admitted_keys WHERE key = ?2) LIMIT 1";
+
+/**
  * Whether the relay holds a decision on [item] by any key of the identity [author] belongs to: the
  * member answered it on their machine or their phone, or the machine closed it (docs/protocol.md,
  * Items, Picks), so no link answers it any more. [item] is a choice's or a notice's hash.
  */
 async function answeredElsewhere(relay: Relay, author: string, item: string): Promise<boolean> {
   const hit = await relay.db
-    .prepare(
-      "SELECT 1 AS hit FROM envelopes e JOIN admitted_keys k ON k.key = e.author " +
-        "WHERE e.kind = 'decision' AND e.body IS NOT NULL AND json_extract(e.body, '$.item') = ?1 " +
-        "AND k.identity = (SELECT identity FROM admitted_keys WHERE key = ?2) LIMIT 1",
-    )
+    .prepare(ANSWERED_SQL)
     .bind(item, author)
     .first<{ hit: number }>();
   return hit !== null;

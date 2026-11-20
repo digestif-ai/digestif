@@ -1595,7 +1595,7 @@ let relay_pass (n : Node.t) (r : Sync.report) (p : Digestif_daily.Daily.report)
         (fun o ->
           Printf.printf "%s relay: %s\n" (Time_fmt.now ())
             (Digestif_relay_deploy.Deploy.outcome_to_string o))
-        (Digestif_relay_deploy.Deploy.pass ~dir:n.dir n ~releases
+        (Digestif_relay_deploy.Deploy.pass ~fold:r.fold ~dir:n.dir n ~releases
            ~now:(Unix.gettimeofday ()))
 
 let report_daily (p : Daily.report) =
@@ -1637,7 +1637,7 @@ let report_daily (p : Daily.report) =
         (match s.result with
         | Ok Sent -> "sent"
         | Ok Already_sent -> "already sent"
-        | Error e -> "kept: " ^ e))
+        | Error e -> if s.kept then "kept: " ^ e else e))
     p.sent
 
 let digest_email =
@@ -2546,15 +2546,16 @@ let run =
           (* Sleep in short steps and compare wall clocks: a jump means the machine slept, so sync
              now and look for a release. *)
           let last = ref (Unix.gettimeofday ()) in
-          let tick = ref !last in
           while not !stop do
+            (* Measured across the sleep alone: a long pass or update check before it is not a
+               wake. *)
+            let slept_at = Unix.gettimeofday () in
             (try Unix.sleepf 5.0 with Unix.Unix_error (Unix.EINTR, _, _) -> ());
             (* What decides a pass reads the store too, and the reap and the update check can
                fail the same way. *)
             guarded "loop" @@ fun () ->
             let now = Unix.gettimeofday () in
-            let woke = now -. !tick >= wake_threshold in
-            tick := now;
+            let woke = now -. slept_at >= wake_threshold in
             if
               (not !stop)
               && (woke
@@ -3399,6 +3400,37 @@ let setup =
       setup_guard;
     ]
 
+(* The adapter's faults: every fork, and every envelope a relay served that did not verify, once per
+   hash. Sync records the latter as an invalid_envelope fault whose detail is "<relay> <hash> <reason>",
+   one per relay that served it. *)
+let conformance_faults log =
+  let fault kind author seq hashes =
+    `Assoc
+      [
+        ("kind", `String kind);
+        ("author", `String author);
+        ("seq", `Int seq);
+        ("hashes", `List (List.map (fun h -> `String h) hashes));
+      ]
+  in
+  let forks =
+    List.map
+      (fun (f : View.fork) -> fault "fork" f.author f.seq f.hashes)
+      (View.forks log)
+  in
+  let invalid =
+    List.filter_map
+      (fun (f : Log.fault) ->
+        match String.split_on_char ' ' f.detail with
+        | _relay :: hash :: _ -> Some (hash, (f.author, f.seq))
+        | _ -> None)
+      (Log.open_faults_of_kind log "invalid_envelope")
+    |> List.sort_uniq (fun (a, _) (b, _) -> compare a b)
+    |> List.map (fun (hash, (author, seq)) ->
+        fault "invalid_envelope" author seq [ hash ])
+  in
+  forks @ invalid
+
 (* The conformance suite's node adapter (conformance/README.md, The node adapter contract): a throwaway node
    with the given device seed syncs the given relays and prints what it folded and read. *)
 let conformance_sync =
@@ -3419,7 +3451,7 @@ let conformance_sync =
   in
   cmd "sync"
     "Sync a throwaway node holding the given device seed and print its fold, \
-     feed, forks and gaps as JSON."
+     feed, faults and gaps as JSON."
     Term.(
       const (fun home seed_file relays root ->
           let seed =
@@ -3481,20 +3513,7 @@ let conformance_sync =
                         (List.map
                            (fun (row : Log.row) -> `String row.hash)
                            (View.feed n.log fold)) );
-                    ( "faults",
-                      `List
-                        (List.map
-                           (fun (f : View.fork) ->
-                             `Assoc
-                               [
-                                 ("kind", `String "fork");
-                                 ("author", `String f.author);
-                                 ("seq", `Int f.seq);
-                                 ( "hashes",
-                                   `List
-                                     (List.map (fun h -> `String h) f.hashes) );
-                               ])
-                           (View.forks n.log)) );
+                    ("faults", `List (conformance_faults n.log));
                     ( "gaps",
                       `List
                         (List.map

@@ -76,6 +76,14 @@ function matches(id: string, patterns: string[] | undefined): boolean {
   });
 }
 
+/**
+ * The --case patterns no case id matches. A pattern that selects nothing is a mistyped one, and a run
+ * that selected nothing would print `1..0` and pass, so the runner refuses it before running anything.
+ */
+export function unmatchedPatterns(cases: Array<{ id: string }>, patterns: string[] | undefined): string[] {
+  return (patterns ?? []).filter((p) => !cases.some((c) => matches(c.id, [p])));
+}
+
 /** Runs cases in order, one at a time, printing TAP. */
 export async function runCases<Context>(options: RunOptions<Context>): Promise<Outcome[]> {
   const log = options.log ?? ((line: string) => console.log(line));

@@ -741,9 +741,10 @@ let clear_lead env n (r : Operate.record)
 
 (* One pass, run by `digestif run` after each sync with the relay releases that sync folded. It
    answers what it did; a pass with nothing due answers nothing. *)
-let pass ?(env = default_env) ~dir (n : Node.t)
+let pass ?(env = default_env) ?fold ~dir (n : Node.t)
     ~(releases : Digestif_update.Circle_relay_release.t) ~now : outcome list =
-  match Operate.standing n (Node.fold n) with
+  let fold = match fold with Some f -> f | None -> Node.fold n in
+  match Operate.standing n fold with
   | Error _ | Ok (Not_operator _ | Not_set_up) -> []
   | Ok (Operates r) -> (
       let r = clear_lead env n r ~releases in

@@ -87,6 +87,13 @@ CREATE TABLE IF NOT EXISTS faults (
   UNIQUE (kind, author, seq, detail)
 );
 CREATE INDEX IF NOT EXISTS faults_open ON faults (kind, id) WHERE resolved_at IS NULL;
+CREATE TABLE IF NOT EXISTS replica_refusals (
+  relay TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  refusals INTEGER NOT NULL,
+  retry_at REAL NOT NULL,
+  PRIMARY KEY (relay, hash)
+);
 DROP TABLE IF EXISTS pending_asks;
 DROP TABLE IF EXISTS ask_outcomes;
 CREATE TABLE IF NOT EXISTS config (
@@ -673,6 +680,41 @@ let held_by t ~relay hash =
     [ s relay; s hash ]
   <> []
 
+(* [author]'s envelopes [relay] holds no sighting of, in chain order: one anti-join on the sightings
+   key, so a push reads only what it has to send, never the whole chain and a query per envelope. *)
+let unheld_by t ~relay author =
+  List.map row_of
+    (rows t
+       ("SELECT " ^ envelope_columns
+      ^ " FROM envelopes e WHERE author = ? AND NOT EXISTS (SELECT 1 FROM \
+         sightings g WHERE g.relay = ? AND g.hash = e.hash) ORDER BY seq, hash"
+       )
+       [ s author; s relay ])
+
+(* A replica [relay] refused, held back until [retry_at] (Unix seconds): the refusals count doubles
+   the wait each time, so an envelope a relay will never take is not re-posted on every sync. *)
+let replica_refusal t ~relay hash =
+  match
+    rows t
+      "SELECT refusals, retry_at FROM replica_refusals WHERE relay = ? AND \
+       hash = ?"
+      [ s relay; s hash ]
+  with
+  | [ [| n; at |] ] ->
+      Some (int n, match at with D.FLOAT f -> f | d -> float_of_int (int d))
+  | _ -> None
+
+let record_replica_refusal t ~relay ~hash ~refusals ~retry_at =
+  exec t
+    "INSERT INTO replica_refusals (relay, hash, refusals, retry_at) VALUES (?, \
+     ?, ?, ?) ON CONFLICT (relay, hash) DO UPDATE SET refusals = \
+     excluded.refusals, retry_at = excluded.retry_at"
+    [ s relay; s hash; i refusals; D.FLOAT retry_at ]
+
+let clear_replica_refusal t ~relay hash =
+  exec t "DELETE FROM replica_refusals WHERE relay = ? AND hash = ?"
+    [ s relay; s hash ]
+
 (* Whether any relay holds [hash]: an envelope no relay holds is one no other node can have read. *)
 let sighted t hash =
   rows t "SELECT 1 FROM sightings WHERE hash = ? LIMIT 1" [ s hash ] <> []
@@ -684,6 +726,7 @@ let hash_columns : (string * string * [ `Null | `Delete | `Keep ]) list ref =
   ref
     [
       ("adopted_relay_messages", "hash", `Delete);
+      ("replica_refusals", "hash", `Delete);
       ("asks", "envelope", `Null);
       ("asks", "decision", `Null);
     ]

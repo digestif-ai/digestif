@@ -91,14 +91,34 @@ export function keyJson(state: KeyState): Json {
 
 /**
  * The circle row names the root this database serves. It is written on first use from the Worker's
- * configuration and must match it on every request: a database that served another circle is
- * refused. Two small statements per request; not cached, so a database swapped under a running
- * isolate (the tests do that) is seen at once.
+ * configuration and must match it: a database that served another circle is refused. An isolate
+ * checks it once per database binding and root (one read, two statements on first use); an append
+ * reads the row again in its check batch (checkedRoot), so a row cleared and re-rooted under a
+ * running isolate refuses that isolate's writes. DIG-234
  */
+const circleChecked = new WeakMap<D1Database, string>();
+
 export async function ensureCircle(db: D1Database, root: string): Promise<void> {
-  await db.prepare("INSERT OR IGNORE INTO circle (id, root, epoch) VALUES (1, ?, 0)").bind(root).run();
-  const row = await db.prepare("SELECT root FROM circle WHERE id = 1").first<{ root: string }>();
-  if (row?.root !== root) throw new ConfigError(`this database serves circle ${row?.root ?? "(none)"}, not CIRCLE_ROOT ${root}`);
+  if (circleChecked.get(db) === root) return;
+  let row = await db.prepare("SELECT root FROM circle WHERE id = 1").first<{ root: string }>();
+  if (row === null) {
+    const [, read] = await db.batch<{ root: string }>([
+      db.prepare("INSERT OR IGNORE INTO circle (id, root, epoch) VALUES (1, ?, 0)").bind(root),
+      db.prepare("SELECT root FROM circle WHERE id = 1"),
+    ]);
+    row = read?.results[0] ?? null;
+  }
+  checkedRoot(db, root, row?.root);
+}
+
+/** Refuses a database whose circle row names another root, and forgets the isolate's check of it. */
+export function checkedRoot(db: D1Database, root: string, held: string | undefined): void {
+  if (held === root) {
+    circleChecked.set(db, root);
+    return;
+  }
+  circleChecked.delete(db);
+  throw new ConfigError(`this database serves circle ${held ?? "(none)"}, not CIRCLE_ROOT ${root}`);
 }
 
 export async function circleEpoch(db: D1Database): Promise<number> {
@@ -141,6 +161,11 @@ export interface FoldScope {
    * invite keys alone, which a replay of an accepted log reaches either way.
    */
   signers?: string[];
+  /**
+   * The cutover and the circle-state ids below `before`, already read in the caller's own batch: the
+   * circle-state fold then reads only the envelopes its kept fold has not folded, if any.
+   */
+  read?: { cutover: number; ids: FoldedIdRow[] };
 }
 
 const CIRCLE_STATE_IN = CIRCLE_STATE_KINDS.map((k) => `'${k}'`).join(", ");
@@ -187,7 +212,15 @@ export async function foldLog(db: D1Database, root: string, scope: FoldScope = {
 /** One circle-state envelope as the kept fold names it: position, hash and the clock it was judged at. */
 type FoldedId = string;
 
-function foldedId(row: { relay_id: number; hash: string; received_at: string; judged_at: string | null }): FoldedId {
+/** What CIRCLE_STATE_IDS_SQL reads of one circle-state envelope. */
+export interface FoldedIdRow {
+  relay_id: number;
+  hash: string;
+  received_at: string;
+  judged_at: string | null;
+}
+
+function foldedId(row: FoldedIdRow): FoldedId {
   return `${row.relay_id} ${row.hash} ${row.judged_at ?? row.received_at}`;
 }
 
@@ -215,12 +248,12 @@ export function forgetKeptFold(): void {
 const handedOut = new WeakMap<Fold, { config: string; ids: FoldedId[] }>();
 
 /** The ids of the circle-state envelopes below a relay_id, through the same pinned index as CIRCLE_STATE_SQL. */
-const CIRCLE_STATE_IDS_SQL = `SELECT relay_id, hash, received_at, judged_at FROM envelopes INDEXED BY envelopes_kind_relay_id WHERE kind IN (${CIRCLE_STATE_IN}) AND relay_id < ?`;
+export const CIRCLE_STATE_IDS_SQL = `SELECT relay_id, hash, received_at, judged_at FROM envelopes INDEXED BY envelopes_kind_relay_id WHERE kind IN (${CIRCLE_STATE_IN}) AND relay_id < ?`;
 
 async function foldCircleState(db: D1Database, root: string, scope: FoldScope, below: number): Promise<Fold> {
-  const cutover = await admissionCutover(db);
+  const cutover = scope.read?.cutover ?? (await admissionCutover(db));
   const config = JSON.stringify({ root, cutover, signers: scope.signers ?? null });
-  const { results } = await db.prepare(CIRCLE_STATE_IDS_SQL).bind(below).all<{ relay_id: number; hash: string; received_at: string; judged_at: string | null }>();
+  const results = [...(scope.read?.ids ?? (await db.prepare(CIRCLE_STATE_IDS_SQL).bind(below).all<FoldedIdRow>()).results)];
   results.sort((a, b) => a.relay_id - b.relay_id);
   const ids = results.map(foldedId);
   const kept = foldCache;

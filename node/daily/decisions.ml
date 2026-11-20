@@ -57,31 +57,41 @@ let ours (fold : Fold.t) ~identity (r : Log.row) =
     { Fold.hash = r.hash; envelope = r.signed.envelope; body = r.signed.body }
   && Fold.identity_of fold r.signed.envelope.author = Some identity
 
-(* The member's asks with every decision read for each, oldest ask first. *)
-let read (node : Node.t) (fold : Fold.t) =
+(* Every decision of the member's identity the fold reads, opened with its encryption key: (the ask
+   envelope it answers, (the decision, the option)). A mail key's decision names its ask as prev
+   too, so one naming none of [awaited] is passed over unopened, and one that disagrees is not
+   one. *)
+let decisions_of (node : Node.t) (fold : Fold.t) ~identity ~priv ~awaited =
+  List.filter_map
+    (fun (r : Log.row) ->
+      if not (ours fold ~identity r) then None
+      else
+        let mail = Fold.is_chainless fold r.signed.envelope.author in
+        let named = Option.value r.signed.envelope.prev ~default:"" in
+        if mail && not (List.mem named awaited) then None
+        else
+          match r.signed.body with
+          | None -> None
+          | Some b -> (
+              match Ask.decision_of_body ~priv b with
+              | Ok (ask, option) ->
+                  if mail && r.signed.envelope.prev <> Some ask then None
+                  else Some (ask, (r, option))
+              | Error _ -> None))
+    (Log.of_kind node.log "decision")
+
+(* [asks] with every decision read for each, in the order given. Decisions are opened only when one
+   of [asks] has an envelope a decision could answer, so a pass with no ask waiting on one decrypts
+   nothing. *)
+let with_decisions (node : Node.t) (fold : Fold.t) (asks : Asks.t list) =
   match (Log.get_config node.log Node.k_identity, Node.encryption_key node) with
   | None, _ -> Error "no identity; run digestif init"
   | _, Error e -> Error e
   | Some identity, Ok enc ->
-      let priv = enc.secret in
+      let awaited = List.filter_map (fun (a : Asks.t) -> a.envelope) asks in
       let decisions =
-        List.filter_map
-          (fun (r : Log.row) ->
-            if not (ours fold ~identity r) then None
-            else
-              match r.signed.body with
-              | None -> None
-              | Some b -> (
-                  match Ask.decision_of_body ~priv b with
-                  | Ok (ask, option) ->
-                      (* A mail key's answer names its ask as prev too; one that disagrees is not one. *)
-                      let mail =
-                        Fold.is_chainless fold r.signed.envelope.author
-                      in
-                      if mail && r.signed.envelope.prev <> Some ask then None
-                      else Some (ask, (r, option))
-                  | Error _ -> None))
-          (Log.of_kind node.log "decision")
+        if awaited = [] then []
+        else decisions_of node fold ~identity ~priv:enc.secret ~awaited
       in
       Ok
         (List.map
@@ -106,7 +116,11 @@ let read (node : Node.t) (fold : Fold.t) =
                decisions = mine;
                revoke = None;
              })
-           (Asks.list ~all:true node.log))
+           asks)
+
+(* The member's asks, settled ones included, with every decision read for each, oldest ask first. *)
+let read (node : Node.t) (fold : Fold.t) =
+  with_decisions node fold (Asks.list ~all:true node.log)
 
 (* The device key may sign a join ask's revoke itself while the fold still lets the device key that
    wrote the dinner revoke the identity its join admitted. Past that window revoking takes the
@@ -165,10 +179,11 @@ let in_time (node : Node.t) (a : Asks.t) (d, _) =
           | _ -> false))
   | None -> false
 
-(* Record an outcome for every ask that has none and can get one now. Returns the newly settled.
+(* Record an outcome for every ask that has none and can get one now, reading only the open asks and
+   the decisions that could answer them. Returns the newly settled.
    An ask whose answer cannot be acted on yet (a join revoke past the device's window) stays open. *)
 let settle (node : Node.t) (fold : Fold.t) ~now =
-  match read node fold with
+  match with_decisions node fold (Asks.list node.log) with
   | Error e -> Error e
   | Ok asks ->
       let at = Time_fmt.of_unix now in

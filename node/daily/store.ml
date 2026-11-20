@@ -32,6 +32,7 @@ type mail_request = {
   digest : string;
   relay : string;
   request : Yojson.Safe.t;
+  created_at : string;
   last_error : string option;
 }
 
@@ -58,18 +59,19 @@ let mail_requests log =
   ensure log;
   List.map
     (function
-      | [| d; r; q; e |] ->
+      | [| d; r; q; c; e |] ->
           let digest = Log.text d in
           {
             digest;
             relay = Log.text r;
             request = naming digest (Yojson.Safe.from_string (Log.text q));
+            created_at = Log.text c;
             last_error = Log.text_opt e;
           }
       | _ -> assert false)
     (Log.rows log
-       "SELECT digest, relay, request, last_error FROM mail_requests ORDER BY \
-        created_at"
+       "SELECT digest, relay, request, created_at, last_error FROM \
+        mail_requests ORDER BY created_at"
        [])
 
 let drop_mail_request log digest =

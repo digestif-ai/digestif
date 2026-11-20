@@ -84,15 +84,23 @@ export async function itemAnswerBody(e: Enrollment, item: PhoneItem, text: strin
   return { item: item.hash, to: item.to, sealed: await seal(keys, { text: words, voice: 'person' }) };
 }
 
-/** Sign [body] as the next envelope on the phone's own chain and append it to the relay. */
+/**
+ * Sign [body] as the next envelope on the phone's own chain and append it to the relay. The chain's
+ * end is read from the relay as it stands now, not from the page's snapshot, so a write after one
+ * whose answer never arrived signs the seq after it rather than a fork of it; and an append that
+ * fails is looked for on the relay, since a lost response is a write that took.
+ */
 async function write(p: Extract<Phone, { stage: 'paired' }>, kind: string, body: object | string): Promise<string | undefined> {
   if (typeof body === 'string') return body;
   const c = await circle(p.keys);
   if (!c.ok) return c.message;
-  const { seq, prev } = chainEnd(p.keys, p.envelopes);
-  const { signed } = await signEnvelope(p.keys.signing, p.keys.ed25519, { seq, prev, epoch: c.data.epoch, kind }, body);
+  const now = await sync(p.keys);
+  const { seq, prev } = chainEnd(p.keys, now.ok ? now.data.map((h) => h.stored) : p.envelopes);
+  const { signed, hash } = await signEnvelope(p.keys.signing, p.keys.ed25519, { seq, prev, epoch: c.data.epoch, kind }, body);
   const r = await append(p.keys, signed);
-  return r.ok ? undefined : r.message;
+  if (r.ok) return undefined;
+  const after = await sync(p.keys);
+  return after.ok && after.data.some((h) => h.stored.hash === hash) ? undefined : r.message;
 }
 
 /** Write the member's pick on one choice, or their Acknowledge on one notice, from this phone. */

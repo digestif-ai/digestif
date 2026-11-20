@@ -1,7 +1,9 @@
 (* Reading relay versions and the lag lines (docs/releases.md, A relay left behind is named).
 
-   Every sync, this node asks each relay it read cleanly for GET /v0/circle and records the
-   relay_version it answers (absent on a Worker built before relay releases), beside the relay's url.
+   At most every [reread] (six hours), this node asks each relay it read cleanly for GET /v0/circle
+   and records the relay_version it answers (absent on a Worker built before relay releases), beside
+   the relay's url. A relay's version moves only when it is deployed, and the thresholds below are
+   days, so a read per sync per relay buys nothing.
 
    A relay is BEHIND when it reports a version older than the newest relay release, or none, and
    has for at least the threshold since that release's announcement first reached this node (the
@@ -26,6 +28,7 @@ let operator_days = 2.
 let signer_days = 7.
 let day = 86400.
 let fault_kind = "relay_version"
+let reread = 6. *. 3600.
 
 let ensure (log : Log.t) =
   Log.exec log
@@ -64,6 +67,20 @@ let reported (log : Log.t) url : string option option =
   with
   | [ [| v |] ] -> Some (Log.text_opt v)
   | _ -> None
+
+(* Whether [url]'s version was read within [reread] of [now]. A read time in the future (a clock
+   moved back) is stale, so a wrong clock never stops the reads. *)
+let fresh (log : Log.t) ~now url =
+  ensure log;
+  match
+    Log.rows log "SELECT read_at FROM relay_versions WHERE url = ?"
+      [ Log.s url ]
+  with
+  | [ [| at |] ] -> (
+      match Time_fmt.to_unix (Log.text at) with
+      | Some at -> at <= now && now -. at < reread
+      | None -> false)
+  | _ -> false
 
 (* A relay's reported version against the newest relay release. *)
 type standing =
@@ -166,16 +183,17 @@ let newest_version (t : U.Circle_relay_release.t) =
     (fun (r : U.Release.relay_manifest U.Release.signed) -> r.doc.relay_version)
     t.newest
 
-(* Record what each relay reported at this sync, and the fault of a relay ahead of every counting
-   announcement. A relay this sync could not read keeps what it last reported; so does one whose
-   GET /v0/circle fails. *)
-let record ?(transport = Relay_client.curl) (node : Node.t) (r : Sync.report) =
+(* Record what each relay reports, once its last read is older than [reread], and the fault of a
+   relay ahead of every counting announcement. A relay this sync could not read keeps what it last
+   reported; so does one whose GET /v0/circle fails. *)
+let record ?(transport = Relay_client.curl) ?(now = Unix.gettimeofday ())
+    (node : Node.t) (r : Sync.report) =
   match Node.device_key node with
   | Error _ -> ()
   | Ok key -> (
       List.iter
         (fun (rr : Sync.relay_report) ->
-          if rr.error = None then
+          if rr.error = None && not (fresh node.log ~now rr.relay) then
             match Relay_client.circle transport ~base:rr.relay ~key with
             | Ok j -> store node.log ~url:rr.relay (version_of_circle j)
             | Error _ -> ())

@@ -7,7 +7,7 @@
 
 import { homedir } from "node:os";
 import { commandLines, type CommandResult } from "./command.ts";
-import { isBookkeeping, messageLine, repositoryCommits, type Commit } from "./git.ts";
+import { GitFailed, isBookkeeping, messageLine, repositoryCommits, type Commit } from "./git.ts";
 import {
   authorKey,
   dateTimeWithOffset,
@@ -136,6 +136,9 @@ function startOf(st: Partial<Start> | undefined, o: { firstNote: boolean; now: n
   if (o.firstNote) return o.now - FIRST_NOTE_REACH_MS;
   return st?.start ?? o.now - FRESH_MS;
 }
+
+/** How many repositories a git source reads at once. */
+export const GIT_READS = 4;
 
 interface RepoRead {
   key: string;
@@ -267,22 +270,40 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
         const list = s.repositories ?? paths.map((p) => ({ id: p, name: p.split("/").pop() ?? p, paths: [p], recorded: false }));
         const reading = readingOf(s.label);
         const got: { items: Item[]; read: RepoRead }[] = [];
-        // A repository's commits come from one git call; the share is checked between them, and a
-        // source past it names the repository it spent it in.
+        // Repositories are read GIT_READS at a time; the share is checked between those groups, and
+        // a source past it names the last repository of the group it spent it in.
         let last: string | undefined;
         let stopped: string | undefined;
-        for (const r of list) {
+        let gitFailed: GitFailed | undefined;
+        for (let at = 0; at < list.length; at += GIT_READS) {
           if (last !== undefined && reading.spent()) {
             stopped = last;
             break;
           }
-          const rpaths = r.paths.map((p) => untilde(p, home));
-          last = rpaths[0] ?? r.name;
-          reading.onProgress?.({ file: last, bytes: 0, elapsedMs: 0 });
-          got.push(await gitItems(r, s.authors, o, rpaths));
+          const group = list.slice(at, at + GIT_READS).map((r) => ({ r, rpaths: r.paths.map((p) => untilde(p, home)) }));
+          last = group.map(({ r, rpaths }) => rpaths[0] ?? r.name).at(-1);
+          reading.onProgress?.({ file: last!, bytes: 0, elapsedMs: 0 });
+          const settled = await Promise.allSettled(group.map(({ r, rpaths }) => gitItems(r, s.authors, o, rpaths)));
+          // Every read of the group is waited for; a repository git could not read stops the source.
+          const reasons = settled.flatMap((x) => (x.status === "rejected" ? [x.reason as unknown] : []));
+          const thrown = reasons.find((e) => !(e instanceof GitFailed));
+          if (thrown !== undefined) throw thrown as Error;
+          const failed = reasons.find((e): e is GitFailed => e instanceof GitFailed);
+          if (failed !== undefined) {
+            gitFailed = failed;
+            break;
+          }
+          got.push(...settled.flatMap((x) => (x.status === "fulfilled" ? [x.value] : [])));
         }
         if (stopped !== undefined) {
           abandon(s.label, stopped);
+          break;
+        }
+        // A repository git could not read fails the source as a whole, like one past its share: it
+        // does not move, so the next note reads the window this one missed.
+        if (gitFailed !== undefined) {
+          failures.push(`${s.label}: ${gitFailed.message}`);
+          failedSources.push(s.label);
           break;
         }
         for (const g of got) {

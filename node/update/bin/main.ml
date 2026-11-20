@@ -370,11 +370,27 @@ let relay_announce ~data_dir signed =
         (Relay_publish.No_node
            (Relay_publish.post_line (Circle_relay_release.to_body signed)))
 
+(* The channel on [repo]'s [branch], as a node reads it. *)
+let channel_url ~repo ~branch =
+  Printf.sprintf "https://raw.githubusercontent.com/%s/%s/" repo branch
+
+(* What relay-publish checks a relay release against: the trust a node reading the channel holds,
+   the build's set advanced by the channel's signers/ and this machine's node with the channel's
+   revocations applied (Signers_channel.trust), the set sign --next signs under. *)
+let relay_publish_trust ~repo ~branch () =
+  Result.map
+    (fun feed ->
+      Signers_channel.trust ~build:(Trust_root.signers ()) ~channel:(Some feed)
+        ~held:(held_signer_sets ()))
+    (Feed.read Feed.default_fetch
+       ~base:(channel_url ~repo ~branch)
+       ~installed:(Trust_root.version ()))
+
 let relay_publish_env ~repo ~branch ~data_dir : Relay_publish.env =
   {
     gh;
     repo;
-    signers = Trust_root.signers ();
+    trust = relay_publish_trust ~repo ~branch;
     channel = commit_if_changed ~repo ~branch;
     announce = relay_announce ~data_dir;
     say = print_endline;
@@ -636,20 +652,11 @@ let verify_signatures ~manifest ~sig_files ~signers ~channel ~version ~out =
             else acc @ [ s ])
           [] (set @ next_signers)
       in
-      let msg = Release.signed_bytes ~domain bytes in
       let kept =
-        List.fold_left
-          (fun acc (s : Release.signature) ->
-            if
-              List.exists (fun (k : Release.signature) -> k.by = s.by) acc
-              || (not
-                    (List.exists
-                       (fun (w : Release.signer) -> w.key = s.by)
-                       wanted))
-              || not (Keys.verify ~pub:s.by ~signature:s.signature msg)
-            then acc
-            else acc @ [ s ])
-          [] sigs
+        Release.verified_signatures ~domain
+          ~wanted:(fun k ->
+            List.exists (fun (w : Release.signer) -> w.key = k) wanted)
+          bytes sigs
       in
       List.iter
         (fun (w : Release.signer) ->
@@ -1091,16 +1098,10 @@ let on_node f =
   | Error e -> exit_err e
 
 (* The release key, read the way sign --next reads it (Sign_next.key_reader): the command
-   signer.json names, else a hidden prompt on a terminal; into memory only. *)
-let release_secret () =
-  let prompt =
-    if Unix.isatty Unix.stdin then Some (Sign_next.read_hidden ?prompt:None)
-    else None
-  in
+   signer.json names, else a hidden prompt on a terminal; into memory only. A key that is not
+   signer.json's public_key signs nothing. *)
+let checked_secret (config : Sign_next.config) read_key =
   let ( let* ) = Result.bind in
-  let* config, read_key =
-    Sign_next.key_reader ~path:(Sign_next.config_path ()) ~prompt
-  in
   let* secret =
     Result.map_error
       (Sign_next.key_unread config)
@@ -1115,24 +1116,42 @@ let release_secret () =
            (Keys.public secret) named)
   | _ -> Ok secret
 
+(* Who approve acts as, and how it reads the key: signer.json's public_key, the key read only once
+   the signer answers y, as sign --next reads it only after s. Without a public_key the key itself
+   is the only way to know, so it is read first. *)
+let approver () =
+  let prompt =
+    if Unix.isatty Unix.stdin then Some (Sign_next.read_hidden ?prompt:None)
+    else None
+  in
+  let ( let* ) = Result.bind in
+  let* config, read_key =
+    Sign_next.key_reader ~path:(Sign_next.config_path ()) ~prompt
+  in
+  match config.public_key with
+  | Some me -> Ok (me, fun () -> checked_secret config read_key)
+  | None ->
+      let* secret = checked_secret config read_key in
+      Ok (Keys.public secret, fun () -> Ok secret)
+
 let approve_cmd =
   let id = Arg.(value & pos 0 (some string) None & info [] ~docv:"APPROVAL") in
   let go id =
-    match release_secret () with
+    match approver () with
     | Error e -> exit_err e
-    | Ok secret ->
+    | Ok (me, read_secret) ->
         on_node (fun api ->
             match id with
-            | None ->
-                Approve.list ~api ~me:(Keys.public secret) ~say:print_endline
-            | Some id -> Approve.sign ~api ~secret ~ask ~say:print_endline id)
+            | None -> Approve.list ~api ~me ~say:print_endline
+            | Some id ->
+                Approve.sign_as ~api ~me ~read_secret ~ask ~say:print_endline id)
   in
   Cmd.v
     (Cmd.info "approve"
        ~doc:
          "Sign APPROVAL with your release key and hand the signature to this \
           machine's node; with no APPROVAL, list the approvals waiting on your \
-          key.")
+          key. The key is read only once you answer y.")
     Term.(const go $ id)
 
 let signers_propose_cmd =

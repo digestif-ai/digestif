@@ -123,6 +123,15 @@ type source = {
 let json_strings l =
   Yojson.Safe.to_string (`List (List.map (fun s -> `String s) l))
 
+(* DIG-236: a condition on an index table's [hash], and its parameters: signed by one of [authors]
+   (keys), or every row for None. *)
+let signed_by = function
+  | None -> ("1", [])
+  | Some authors ->
+      ( "hash IN (SELECT hash FROM envelopes WHERE author IN (SELECT value \
+         FROM json_each(?)))",
+        [ Log.s (json_strings authors) ] )
+
 let strings_of_json s =
   match Yojson.Safe.from_string s with
   | `List l -> List.filter_map (function `String s -> Some s | _ -> None) l
@@ -1604,6 +1613,7 @@ CREATE TABLE IF NOT EXISTS ui_note_versions (
 );
 CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
 CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
+CREATE INDEX IF NOT EXISTS ui_notes_status ON ui_notes (status, posted_hash);
 |}
 
   (* ISS-51009: the suggestion a note judges, and the prompt that wrote each version. *)
@@ -1652,25 +1662,30 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
      the note [after] (ISS-41988), which starts nowhere when the store does not hold it. The first
      note's row, from the setup chat starting it until the run hands its first version over, is not
      one: it is [pending]. *)
-  let all ?after ?limit (log : Log.t) =
-    let cursor, cursor_params =
-      match after with
-      | None -> ("", [])
-      | Some id ->
-          ( " AND (written_at, rowid) < (SELECT written_at, rowid FROM \
-             ui_notes WHERE id = ?)",
-            [ Log.s id ] )
-    in
+  (* The handed-over notes matching [cond], newest first: [cond] is SQL over ui_notes' own columns. *)
+  let handed_over_sql cond =
+    "SELECT " ^ note_columns
+    ^ " FROM ui_notes WHERE EXISTS (SELECT 1 FROM ui_note_versions v WHERE \
+       v.note_id = ui_notes.id)" ^ cond
+    ^ " ORDER BY written_at DESC, rowid DESC"
+
+  let handed_over ?(cond = "") ?(params = []) ?limit (log : Log.t) =
     let lim, lim_params =
       match limit with None -> ("", []) | Some n -> (" LIMIT ?", [ Log.i n ])
     in
     List.map note_of
-      (Log.rows log
-         ("SELECT " ^ note_columns
-        ^ " FROM ui_notes WHERE EXISTS (SELECT 1 FROM ui_note_versions v WHERE \
-           v.note_id = ui_notes.id)" ^ cursor
-        ^ " ORDER BY written_at DESC, rowid DESC" ^ lim)
-         (cursor_params @ lim_params))
+      (Log.rows log (handed_over_sql cond ^ lim) (params @ lim_params))
+
+  let all ?after ?limit (log : Log.t) =
+    match after with
+    | None -> handed_over ?limit log
+    | Some id ->
+        handed_over
+          ~cond:
+            " AND (written_at, rowid) < (SELECT written_at, rowid FROM \
+             ui_notes WHERE id = ?)"
+          ~params:[ Log.s id ]
+          ?limit log
 
   let find (log : Log.t) id =
     match
@@ -1681,8 +1696,9 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
     | [ r ] -> Some (note_of r)
     | _ -> None
 
-  let waiting (log : Log.t) =
-    List.filter (fun n -> n.n_status = "waiting") (all log)
+  (* Read through ui_notes_status, so it costs the waiting notes and not every note written. *)
+  let waiting_cond = " AND status = 'waiting'"
+  let waiting (log : Log.t) = handed_over ~cond:waiting_cond log
 
   (* The first note (docs/design.md, The setup chat and the first note): the setup chat starting it
      makes its row, so its page has an id while the run reads, writes and checks; the run's hand-over
@@ -2084,12 +2100,10 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
       [ Log.s reason; Log.s note_id ]
 
   (* Approved and not yet signed: the send job's. A dismissed note is never sent. *)
-  let unsent (log : Log.t) =
-    List.filter
-      (fun n ->
-        (n.n_status = "approved" || n.n_status = "auto_approved")
-        && n.n_posted_hash = None)
-      (List.rev (all log))
+  let unsent_cond =
+    " AND status IN ('approved', 'auto_approved') AND posted_hash IS NULL"
+
+  let unsent (log : Log.t) = List.rev (handed_over ~cond:unsent_cond log)
 
   (* The member dismissed a waiting note: it is never sent, and nothing it read moves (Record): the
      next note starts where the last approved one ended. Whether it was waiting. ISS-47299 *)
@@ -2529,12 +2543,25 @@ CREATE TABLE IF NOT EXISTS ui_index_waiting (
       (Option.bind (Log.get_config log (key kind)) int_of_string_opt)
       ~default:0
 
-  let forget (log : Log.t) kinds =
+  (* The unreadable rows of [kinds], each [(kind, table, unreadable)], are about to be dropped so
+     the next pass opens them again. Without [authors] every one is: the watermark goes back to the
+     start. With [authors] only those they signed are (DIG-236): each waits, the watermark stays. *)
+  let forget ?authors (log : Log.t) kinds =
     List.iter
-      (fun kind ->
-        Log.unset_config log (key kind);
-        Log.exec log "DELETE FROM ui_index_waiting WHERE kind = ?"
-          [ Log.s kind ])
+      (fun (kind, table, unreadable) ->
+        match authors with
+        | None ->
+            Log.unset_config log (key kind);
+            Log.exec log "DELETE FROM ui_index_waiting WHERE kind = ?"
+              [ Log.s kind ]
+        | Some _ ->
+            let cond, p = signed_by authors in
+            Log.exec log
+              (Printf.sprintf
+                 "INSERT OR IGNORE INTO ui_index_waiting (kind, hash) SELECT \
+                  ?, hash FROM %s WHERE %s AND %s"
+                 table unreadable cond)
+              (Log.s kind :: p))
       kinds
 
   (* One pass's reading: the [kind] envelopes [table] has no row for, past the watermark or
@@ -3450,22 +3477,38 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       in_time
 
   (* DIG-554, DIG-101: the items, answers, closes and picks indexed as unreadable, which is how one
-     signed by a key the fold did not know yet is kept. Dropped so the next pass opens them again. *)
-  let forget_unread (log : Log.t) =
-    Index_mark.forget log kinds;
-    Log.exec log "DELETE FROM ui_items WHERE kind IS NULL AND local = 0" [];
+     signed by a key the fold did not know yet is kept. Dropped so the next pass opens them again:
+     those signed by [authors] (DIG-236), every one without. *)
+  let forget_unread ?authors (log : Log.t) =
+    let cond, p = signed_by authors in
+    let where = " AND " ^ cond in
+    Index_mark.forget ?authors log
+      [
+        ("item", "ui_items", "kind IS NULL AND local = 0");
+        ("item_answer", "ui_item_answers", "item IS NULL");
+        ("item_close", "ui_item_closes", "item IS NULL");
+        ("decision", "ui_item_picks", "item IS NULL");
+      ];
+    Log.exec log
+      ("DELETE FROM ui_items WHERE kind IS NULL AND local = 0" ^ where)
+      p;
     List.iter
       (fun table ->
         Log.exec log
-          (Printf.sprintf "DELETE FROM %s WHERE item IS NULL" table)
-          [])
+          (Printf.sprintf "DELETE FROM %s WHERE item IS NULL" table ^ where)
+          p)
       [ "ui_item_answers"; "ui_item_closes"; "ui_item_picks" ]
 
-  (* The rule changed: every stored result is undecided again. *)
-  let forget_decisions (log : Log.t) =
-    Log.exec log "UPDATE ui_item_answers SET counts = NULL, in_time = NULL" [];
-    Log.exec log "UPDATE ui_item_picks SET counts = NULL" [];
-    Log.exec log "UPDATE ui_item_closes SET counts = NULL" []
+  (* The rule changed, or the fold's reading of [authors] did (DIG-236): every stored result, or
+     those of the follow-ups [authors] signed, is undecided again. *)
+  let forget_decisions ?authors (log : Log.t) =
+    let cond, p = signed_by authors in
+    let where = " WHERE " ^ cond in
+    Log.exec log
+      ("UPDATE ui_item_answers SET counts = NULL, in_time = NULL" ^ where)
+      p;
+    Log.exec log ("UPDATE ui_item_picks SET counts = NULL" ^ where) p;
+    Log.exec log ("UPDATE ui_item_closes SET counts = NULL" ^ where) p
 
   (* DIG-535, DIG-554: SQL fragments for what counts as a follow-up, over the row [r] of [shown].
      Whether one counts is decided once, in OCaml (Api.Inbox.decide_follow_ups), when it and its
@@ -3731,10 +3774,18 @@ CREATE INDEX IF NOT EXISTS ui_approval_answers_approval ON ui_approval_answers (
 
   (* DIG-101: the approvals and answers kept as unreadable, which is how one signed by a key the
      fold did not know yet is kept. Dropped so the next pass opens them again. *)
-  let forget_unread (log : Log.t) =
-    Index_mark.forget log [ "approval"; "approval_answer" ];
-    Log.exec log "DELETE FROM ui_approvals WHERE readable = 0" [];
-    Log.exec log "DELETE FROM ui_approval_answers WHERE approval IS NULL" []
+  let forget_unread ?authors (log : Log.t) =
+    let cond, p = signed_by authors in
+    let where = " AND " ^ cond in
+    Index_mark.forget ?authors log
+      [
+        ("approval", "ui_approvals", "readable = 0");
+        ("approval_answer", "ui_approval_answers", "approval IS NULL");
+      ];
+    Log.exec log ("DELETE FROM ui_approvals WHERE readable = 0" ^ where) p;
+    Log.exec log
+      ("DELETE FROM ui_approval_answers WHERE approval IS NULL" ^ where)
+      p
 
   (* [opened] None: an approval this node cannot read. *)
   let put (log : Log.t) ~hash opened =
@@ -3817,6 +3868,20 @@ CREATE INDEX IF NOT EXISTS ui_approval_answers_approval ON ui_approval_answers (
           IS NOT NULL) ORDER BY created_at DESC, hash DESC LIMIT ?"
          columns)
       [ Log.i limit ]
+    |> List.filter_map row_of
+
+  (* DIG-220: the approvals a pass still has work on: every one that has not ended, and a signed one
+     whose effect is not taken yet. One that ended otherwise is left as the pass that ended it left
+     it. *)
+  let unsettled (log : Log.t) =
+    Log.rows log
+      (Printf.sprintf
+         "SELECT %s FROM ui_approvals a WHERE readable = 1 AND (ended IS NULL \
+          OR (ended = 'signed' AND effected_at IS NULL)) AND NOT EXISTS \
+          (SELECT 1 FROM envelopes e WHERE e.hash = a.hash AND e.retracted_by \
+          IS NOT NULL) ORDER BY created_at DESC, hash DESC"
+         columns)
+      []
     |> List.filter_map row_of
 
   let find (log : Log.t) hash =
@@ -4240,20 +4305,22 @@ module Search = struct
     |> List.filter_map Items.row_of
 
   (* At most [limit] notes whose shown version, the newest that passed its checks (what the Notes list
-     previews), matches [q], best first: an older version's words do not find the note. *)
+     previews), matches [q], best first: an older version's words do not find the note. A hit's doc
+     key is 'notes:' and the version's id, so the version is looked up by its primary key from the
+     key (substr from 7); joining on the key built from each version would make SQLite scan or index
+     every version per query. *)
+  let notes_sql =
+    "SELECT " ^ Notes.note_columns
+    ^ " FROM ui_notes JOIN (SELECT v.note_id AS nid, m.score AS score FROM \
+       (SELECT rowid AS doc, rank AS score FROM ui_search_notes WHERE \
+       ui_search_notes MATCH ?) m JOIN ui_search_docs d ON d.doc = m.doc JOIN \
+       ui_note_versions v ON v.id = substr(d.key, 7) WHERE v.pii = 'passed' \
+       AND v.rules = 'passed' AND v.number = (SELECT MAX(w.number) FROM \
+       ui_note_versions w WHERE w.note_id = v.note_id AND w.pii = 'passed' AND \
+       w.rules = 'passed')) h ON h.nid = ui_notes.id ORDER BY h.score LIMIT ?"
+
   let notes (log : Log.t) ~limit q =
-    List.map Notes.note_of
-      (Log.rows log
-         ("SELECT " ^ Notes.note_columns
-        ^ " FROM ui_notes JOIN (SELECT v.note_id AS nid, m.score AS score FROM \
-           (SELECT rowid AS doc, rank AS score FROM ui_search_notes WHERE \
-           ui_search_notes MATCH ?) m JOIN ui_search_docs d ON d.doc = m.doc \
-           JOIN ui_note_versions v ON d.key = 'notes:' || v.id WHERE v.pii = \
-           'passed' AND v.rules = 'passed' AND v.number = (SELECT \
-           MAX(w.number) FROM ui_note_versions w WHERE w.note_id = v.note_id \
-           AND w.pii = 'passed' AND w.rules = 'passed')) h ON h.nid = \
-           ui_notes.id ORDER BY h.score LIMIT ?")
-         [ Log.s q; Log.i limit ])
+    List.map Notes.note_of (Log.rows log notes_sql [ Log.s q; Log.i limit ])
 end
 
 (* The columns of these tables that name an envelope, moved with it when the node re-signs an own

@@ -59,6 +59,10 @@ let notes = knob "notes" 1100
 (* ISS-52609: Inbox items the circle sent over the same years, the questions answered. *)
 let inbox_items = knob "inbox_items" 600
 
+(* DIG-220: approvals the circle ran over the same years, every one ended, each with its answer. A
+   page of them folds each once and writes out only the page. *)
+let ended_approvals = knob "ended_approvals" 300
+
 (* Nights of this node's digests in the log: a member's node writes one a night, so this is eight
    years of them, or a circle's summaries over two. Every request folds the circle from the log, and
    the fold reads circle-state envelopes alone, so a page's floor holds as the log ages (ISS-42063). *)
@@ -270,6 +274,35 @@ let add_items (n : Node.t) =
                      ~keys:[] ~text:"An answer." ~voice:"person")))
       done)
 
+(* [ended_approvals] ended approvals this member started and declined, the newest first, as the
+   index holds them once the pass that ended each has run. *)
+let add_ended_approvals (n : Node.t) =
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let now = Unix.gettimeofday () in
+  Log.transaction n.log (fun () ->
+      for i = 1 to ended_approvals do
+        let at = now -. (float_of_int i *. 86400.) in
+        let hash = Printf.sprintf "approval-%04d" i in
+        Store.Approvals.put n.log ~hash
+          (Some
+             ( me,
+               [ me ],
+               {
+                 Approval.kind = Promotion;
+                 created_at = Time_fmt.of_unix at;
+                 member = Some me;
+                 document = None;
+                 removed_key = None;
+                 added_key = None;
+               } ));
+        Store.Approvals.put_answer n.log
+          ~hash:(Printf.sprintf "answer-%04d" i)
+          ~at:(at +. 60.)
+          (Some (hash, me, true, Approval.Decline));
+        Store.Approvals.set_ended n.log hash ~state:Declined ~at:(at +. 60.)
+          ~needed:[]
+      done)
+
 (* [digests] nights of this node's own digests and [summaries] of its summaries, the oldest first,
    behind everything the demo wrote. A digest's body is a digest's shape with a sealed mail of a
    digest's size, which nothing on a page reads; a summary's is a night's note in the agent's voice,
@@ -437,6 +470,7 @@ let node home =
   add_items n;
   add_members n;
   add_approvals n;
+  add_ended_approvals n;
   aged_log n;
   add_suggestions n;
   Log.exec n.log "DELETE FROM config WHERE key = ?" [ Log.s Sources.k_fixed ];
@@ -632,6 +666,9 @@ let routes n cookie =
     (* DIG-218: the rest of what the UI reads. *)
     ("approvals", "approvals");
     ("approvals?state", "approvals?state=waiting&state=expired&limit=50");
+    (* DIG-220: the approvals page, every state and one no approval is in. *)
+    ("approvals?limit", "approvals?limit=50");
+    ("approvals?state=waiting", "approvals?state=waiting");
     ("signers", "signers");
     ("note_prompt", "note_prompt");
     ("suggestions", "suggestions");
@@ -764,6 +801,7 @@ let write_baseline file measured =
                   ("transcripts", `Int transcripts);
                   ("notes", `Int notes);
                   ("inbox_items", `Int inbox_items);
+                  ("ended_approvals", `Int ended_approvals);
                   ("samples", `Int samples);
                   ("digests", `Int digests);
                   ("summaries", `Int summaries);

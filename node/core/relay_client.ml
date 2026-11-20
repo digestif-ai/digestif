@@ -12,6 +12,8 @@ type transport =
   body:string option ->
   (response, string) result
 
+let connect_timeout = 10
+
 let curl : transport =
  fun ~meth ~url ~headers ~body ->
   let hs = List.concat_map (fun (k, v) -> [ "-H"; k ^ ": " ^ v ]) headers in
@@ -29,6 +31,10 @@ let curl : transport =
          "=http,https";
          "--proto-redir";
          "=https";
+         (* A relay that does not answer the connection costs this many seconds of a sync, not the
+            whole minute an answering relay may take. *)
+         "--connect-timeout";
+         string_of_int connect_timeout;
          "--max-time";
          "60";
          "-X";
@@ -159,27 +165,48 @@ type stored = {
   received_at : string option;
 }
 
-type page = { envelopes : stored list; next : int option }
+type malformed = {
+  bad_relay_id : int option;
+      (** where the relay placed the entry, when it says so as a number *)
+  bad_hash : string option;  (** the hash the relay names, when it does *)
+  reason : string;
+}
+(** One entry of a page that is not a stored envelope. It is reported on its
+    own, so one bad entry neither hides the rest of its page nor keeps the
+    reader's cursor before it. *)
 
-let parse_stored j =
-  match
-    (to_int (field "relay_id" j), to_str (field "hash" j), field "envelope" j)
-  with
+type page = {
+  envelopes : stored list;
+  malformed : malformed list;
+  next : int option;
+}
+
+let malformed ?relay_id ?hash reason =
+  { bad_relay_id = relay_id; bad_hash = hash; reason }
+
+let parse_entry j =
+  let relay_id = to_int (field "relay_id" j)
+  and hash = to_str (field "hash" j) in
+  match (relay_id, hash, field "envelope" j) with
   | Some relay_id, Some hash, Some env -> (
       match Envelope.of_json env with
       | Ok envelope ->
           let body =
             match field "body" j with None | Some `Null -> None | b -> b
           in
-          Some
+          Ok
             {
               relay_id;
               hash;
               signed = { envelope; body };
               received_at = to_str (field "received_at" j);
             }
-      | Error _ -> None)
-  | _ -> None
+      | Error e -> Error (malformed ~relay_id ~hash (Envelope.error_message e)))
+  | _, _, None -> Error (malformed ?relay_id ?hash "no envelope")
+  | None, _, _ -> Error (malformed ?hash "no relay_id")
+  | _, None, _ -> Error (malformed ?relay_id "no hash")
+
+let parse_stored j = Result.to_option (parse_entry j)
 
 (* GET /v0/envelopes?after=&limit= *)
 let fetch transport ~base ~key ~after ~limit =
@@ -190,14 +217,15 @@ let fetch transport ~base ~key ~after ~limit =
       json_or 200 body (fun j ->
           match field "envelopes" j with
           | Some (`List l) ->
-              let parsed = List.map parse_stored l in
-              if List.exists Option.is_none parsed then None
-              else
-                Some
-                  {
-                    envelopes = List.filter_map Fun.id parsed;
-                    next = to_int (field "next" j);
-                  }
+              let envelopes, malformed =
+                List.partition_map
+                  (fun e ->
+                    match parse_entry e with
+                    | Ok s -> Either.Left s
+                    | Error m -> Either.Right m)
+                  l
+              in
+              Some { envelopes; malformed; next = to_int (field "next" j) }
           | _ -> None)
   | Ok { status = 401; body } -> Error (Refused (401, parse_errors body))
   | Ok { status; body } -> Error (Unexpected (status, body))

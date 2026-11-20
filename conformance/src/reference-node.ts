@@ -1,5 +1,6 @@
 // The reference node: what a node's sync must conclude from a set of relays, written once in the
-// plainest form so the OCaml node can be held to it. It reads every relay, verifies every envelope,
+// plainest form so the OCaml node can be held to it. It reads every relay, verifies every envelope
+// (one whose signature or body_hash does not verify is an invalid_envelope fault, never folded),
 // dedupes by hash, folds the union in the canonical order below, and reports the fold, the feed,
 // forks and gaps. It keeps no state between runs. Its one write is replication (docs/protocol.md, The
 // admission fold): it pushes each relay the dinners, joins and self-authored device messages it lacks.
@@ -24,12 +25,16 @@ export interface NodeState {
   keys: Array<{ key: string; role: string; identity: string; revoked: boolean }>;
   /** Content envelope hashes a person would see, in feed order: (created_at, hash). Retracts and their targets are absent. */
   feed: string[];
-  faults: Array<{ kind: "fork"; author: string; seq: number; hashes: string[] }>;
+  /**
+   * A fork names both hashes at one author's seq; an invalid_envelope names the one hash a relay served
+   * whose signature or body_hash does not verify, at the author and seq the envelope claims.
+   */
+  faults: Array<{ kind: "fork" | "invalid_envelope"; author: string; seq: number; hashes: string[] }>;
   gaps: Array<{ author: string; missing: number[] }>;
 }
 
 /** Rules the reference node can be told to get wrong, so the self-test can prove each node case catches it. */
-export type NodeBreak = "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "mail-cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order" | "self-device" | "device-signature" | "host-device-window" | "replicate";
+export type NodeBreak = "verify" | "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "mail-cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order" | "self-device" | "device-signature" | "host-device-window" | "replicate";
 
 interface Held {
   hash: string;
@@ -42,25 +47,34 @@ function byTimeThenHash(a: Held, b: Held): number {
   return a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : 0;
 }
 
-/** Keeps one copy per hash, preferring a copy that still carries a body that matches. */
-export function union(pages: StoredEnvelope[][], breaks: ReadonlySet<NodeBreak> = new Set()): Held[] {
+type Fault = NodeState["faults"][number];
+
+/**
+ * Keeps one copy per hash of every envelope that verifies, preferring a copy that carries its body.
+ * A copy whose signature does not verify against its author, or whose body is present and does not
+ * match body_hash, is never kept: it is an invalid_envelope fault, one per hash. A copy with no body
+ * (a relay dropped it for a retract) verifies by its envelope alone.
+ */
+export function union(pages: StoredEnvelope[][], breaks: ReadonlySet<NodeBreak> = new Set()): { envelopes: Held[]; invalid: Fault[] } {
   const held = new Map<string, Held>();
   const copies: Held[] = [];
+  const invalid = new Map<string, Fault>();
   for (const page of breaks.has("backfill") ? pages.slice(0, 1) : pages) {
     for (const stored of page) {
       const envelope = stored.envelope;
-      if (!verifyEnvelope(envelope)) continue;
       const hash = envelopeHash(envelope);
       const body = stored.body === null ? undefined : stored.body;
-      const bodyOk = body !== undefined && hashOf(body) === envelope.body_hash;
-      if (breaks.has("dedupe")) copies.push({ hash, envelope, body: bodyOk ? body : undefined });
-      const existing = held.get(hash);
-      if (existing === undefined || (existing.body === undefined && bodyOk)) {
-        held.set(hash, { hash, envelope, body: bodyOk ? body : undefined });
+      const verifies = breaks.has("verify") || (verifyEnvelope(envelope) && (body === undefined || hashOf(body) === envelope.body_hash));
+      if (!verifies) {
+        invalid.set(hash, { kind: "invalid_envelope", author: envelope.author, seq: envelope.seq, hashes: [hash] });
+        continue;
       }
+      if (breaks.has("dedupe")) copies.push({ hash, envelope, body });
+      const existing = held.get(hash);
+      if (existing === undefined || (existing.body === undefined && body !== undefined)) held.set(hash, { hash, envelope, body });
     }
   }
-  return breaks.has("dedupe") ? copies : [...held.values()];
+  return { envelopes: breaks.has("dedupe") ? copies : [...held.values()], invalid: [...invalid.values()] };
 }
 
 /** Folds the envelopes in canonical order, leaving out `excluded`. Returns the fold and what it folded, in order. */
@@ -121,7 +135,7 @@ function foldUnion(root: string, envelopes: Held[], breaks: ReadonlySet<NodeBrea
   }
 }
 
-export function computeState(root: string, envelopes: Held[], breaks: ReadonlySet<NodeBreak> = new Set()): NodeState {
+export function computeState(root: string, envelopes: Held[], invalid: Fault[], breaks: ReadonlySet<NodeBreak> = new Set()): NodeState {
   const { fold, folded } = foldUnion(root, envelopes, breaks);
 
   const roleOf = (key: string) => fold.keys.get(key)?.role;
@@ -134,7 +148,7 @@ export function computeState(root: string, envelopes: Held[], breaks: ReadonlySe
     chain.set(held.envelope.seq, (chain.get(held.envelope.seq) ?? new Set<string>()).add(held.hash));
     chains.set(held.envelope.author, chain);
   }
-  const faults: NodeState["faults"] = [];
+  const faults: Fault[] = [...invalid];
   const gaps: NodeState["gaps"] = [];
   const forked = new Set<string>();
   for (const [author, chain] of chains) {
@@ -167,7 +181,7 @@ export function computeState(root: string, envelopes: Held[], breaks: ReadonlySe
     epoch: fold.epoch,
     keys: fold.admittedKeys().map((k) => ({ key: k.key, role: k.role, identity: k.identity, revoked: k.revoked_at !== undefined })),
     feed,
-    faults: faults.sort((a, b) => (a.author + a.seq < b.author + b.seq ? -1 : 1)),
+    faults: faults.sort((a, b) => (`${a.author}/${a.seq}/${a.kind}` < `${b.author}/${b.seq}/${b.kind}` ? -1 : 1)),
     gaps: gaps.sort((a, b) => (a.author < b.author ? -1 : 1)),
   };
 }
@@ -214,7 +228,7 @@ export async function sync(device: Signer, relays: string[], breaks: ReadonlySet
     pages.push(await client.fetchAll());
   }
   if (root === undefined) throw new Error("no relays");
-  const envelopes = union(pages, breaks);
+  const { envelopes, invalid } = union(pages, breaks);
   if (!breaks.has("replicate")) await replicate(device, relays, pages, foldUnion(root, envelopes, breaks).folded);
-  return computeState(root, envelopes, breaks);
+  return computeState(root, envelopes, invalid, breaks);
 }

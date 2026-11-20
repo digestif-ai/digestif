@@ -202,6 +202,25 @@ test("a path that is a project directory, a missing path and a repository that i
   assert.deepEqual((await read(one)).lines, ["session: Why does the beta build fail on Linux?", "prompt: Try the Linux build with the older toolchain"]);
 });
 
+test("a repository git cannot read fails the source, which does not move, rather than reading as empty (DIG-239)", async () => {
+  const broken = join(fx.home, "code", "broken");
+  mkdirSync(broken, { recursive: true });
+  const g = (...args: string[]) => execFileSync("git", ["-C", broken, ...args], { encoding: "utf8" });
+  g("init", "-q");
+  g("-c", "user.email=m@example.com", "-c", "user.name=M", "commit", "-q", "--allow-empty", "-m", "One");
+  // The remote's HEAD names a branch that is gone: `git log` of it fails.
+  g("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone");
+  try {
+    const r = await read([git({ paths: [broken], repositories: [repo({ id: "github.com/member/broken", name: "broken", paths: [broken] })] })]);
+    assert.deepEqual(r.failedSources, ["Git repositories"]);
+    assert.deepEqual(r.readSources, []);
+    assert.match(r.failures[0] ?? "", /^Git repositories: git could not read /);
+    assert.equal(r.ends["repository:github.com/member/broken"], undefined);
+  } finally {
+    rmSync(broken, { recursive: true, force: true });
+  }
+});
+
 test("a project holding financial records is skipped under the projects directory (node/web/sources.ml, session_files)", async () => {
   const root = join(fx.home, "financial-root");
   const projects = join(root, "projects");

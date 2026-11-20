@@ -1,9 +1,10 @@
 // A local relay that implements spec/digestif-relay.json in memory, so the node and the suite can be
 // exercised before a real relay is deployed. Two modes:
 //   checked   (the default) enforces everything a relay must: the conformance relay cases pass on it.
-//   unchecked accepts any envelope whose own signature verifies and serves it to anyone. It plays a
+//   unchecked accepts any envelope that parses, verified or not, and serves it to anyone. It plays a
 //             relay that is lagging, buggy or hostile, which is what the node cases need to prove the
-//             node does not trust a relay's word.
+//             node does not trust a relay's word: not its admission rules, and not its verification of
+//             `signature` and `body_hash` either.
 import "./node-crypto.ts"; // installs the node:crypto SuiteCrypto: this module only runs on Node
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -90,6 +91,15 @@ class Refusal {
   }
 }
 
+/** A path segment decoded, or 400 malformed for an escape that decodes to nothing (relay/src/index.ts, decodePath). */
+function decodePath(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw new Refusal(400, "malformed", `the path segment ${segment} is not a valid percent-encoding`);
+  }
+}
+
 /** The longest a Digestif header may be (relay/src/auth.ts, MAX_HEADER_LENGTH). */
 const MAX_HEADER_LENGTH = 128;
 
@@ -157,7 +167,7 @@ export class FakeRelay {
       if (req.method === "GET" && url.pathname === "/v0/circle") return respond(res, 200, this.circle(req, url, raw));
       if (req.method === "GET" && url.pathname === "/v0/version") return respond(res, 200, this.version(req, url, raw));
       if (req.method === "GET" && url.pathname.startsWith("/v0/invites/")) {
-        const found = this.invite(req, url, raw, decodeURIComponent(url.pathname.slice("/v0/invites/".length)));
+        const found = this.invite(req, url, raw, decodePath(url.pathname.slice("/v0/invites/".length)));
         return found === undefined ? respond(res, 404, null) : respond(res, 200, found);
       }
       return respond(res, 404, { code: "malformed", message: `no route ${req.method} ${url.pathname}` });
@@ -261,8 +271,8 @@ export class FakeRelay {
     const { envelope } = signed;
     const bootstrap = envelope.kind === "circle" || envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
     const auth = this.authenticate(req, url, raw, bootstrap, !(envelope.kind === "join" && this.breaks.has("pushed-join-signer")));
-    if (!verifyEnvelope(envelope)) throw new Refusal(422, "bad_signature", "the envelope signature does not verify");
-    if (signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");
+    if (this.mode === "checked" && !verifyEnvelope(envelope)) throw new Refusal(422, "bad_signature", "the envelope signature does not verify");
+    if (this.mode === "checked" && signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");
     if (signed.body === undefined) throw new Refusal(422, "malformed", "an append carries its body");
     const hash = envelopeHash(envelope);
     if (this.mode === "checked" && auth.key === undefined) this.checkBootstrapAuthor(signed, hash);

@@ -56,7 +56,7 @@ export function normalize(state: NodeState): NodeState {
     feed: [...state.feed],
     faults: [...state.faults]
       .map((f) => ({ kind: f.kind, author: f.author, seq: f.seq, hashes: [...f.hashes].sort() }))
-      .sort((a, b) => cmp(`${a.author}/${a.seq}`, `${b.author}/${b.seq}`)),
+      .sort((a, b) => cmp(`${a.author}/${a.seq}/${a.kind}`, `${b.author}/${b.seq}/${b.kind}`)),
     gaps: [...state.gaps].map((g) => ({ author: g.author, missing: [...g.missing].sort((x, y) => x - y) })).sort((a, b) => cmp(a.author, b.author)),
   };
 }

@@ -1,9 +1,11 @@
 // The read behavior (docs/behaviors.md, the `read` hook): the node runs it when a message arrives.
 // Code reads the feed up to the cursor and the Inbox items no run has reviewed, drops what was
 // already seen, what a muted member sent and what is over budget, and hands the rest to one run of
-// the member's Inbox agent (src/inbox.ts, docs/design.md, The Inbox agent). A run that fails leaves
-// its batch unreviewed, and those messages are read again with the next sync's, at most MAX_READS
-// times in all.
+// the member's Inbox agent (src/inbox.ts, docs/design.md, The Inbox agent). A run hands the agent at
+// most MAX_BATCH messages, oldest first, and the cursor moves only past what it took, so the rest is
+// read by the next run. A run that fails leaves its batch unreviewed, and those messages are read
+// again with a later sync's, at most MAX_READS times in all and READ_RETRY_DELAYS_MS apart. What
+// arrives over the day's budget waits for a day with budget left, rather than being dropped.
 
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -77,13 +79,25 @@ export interface BudgetProblem {
   reported_day: string | null;
 }
 
-/** A message whose run failed: it is read again with the next batch, until it has been read MAX_READS times. */
+/**
+ * A message still to be read: one whose run failed, read again with a later batch until it has been
+ * read MAX_READS times, or one that arrived over budget (`reads` 0), read on a day with budget left.
+ */
 export interface Pending {
   hash: string;
   type: "note" | "item";
   created_at: string;
   reads: number;
+  /** Not read again before this time: a failed run's messages wait READ_RETRY_DELAYS_MS. */
+  after?: string;
 }
+
+/**
+ * How long a failed run's messages wait before each later read, by how often they were read: a run
+ * that failed (the model down, the machine offline) is not retried on every sync, so MAX_READS tries
+ * span hours rather than minutes. DIG-239
+ */
+export const READ_RETRY_DELAYS_MS = [30 * 60_000, 2 * 60 * 60_000];
 
 /** `state.json`: the behavior's own state. */
 export interface ReadState {
@@ -93,9 +107,9 @@ export interface ReadState {
   day: string;
   /** Per-day counters: `outbound` (answers and work notices sent) and `agent_runs`. Reset when `day` changes. */
   counters: Record<string, number>;
-  /** The messages of failed runs, read again with the next batch. */
+  /** The messages of failed runs, read again with a later batch, and those deferred over budget. */
   pending: Pending[];
-  /** Every message decided (kept, or dropped: an over_budget drop is final too, since the cursor moves past it), so it is decided once. */
+  /** Every message decided (kept, deferred over budget, or dropped), so it is decided once. */
   seen: Seen[];
   /** Kept items of the last 24 hours, for the dedupe of near-identical notes. */
   recent: Recent[];
@@ -175,7 +189,7 @@ export function loadState(stateDir: string, day: string): ReadState {
   const sameDay = j["day"] === day;
   const counters = sameDay && isRecord(j["counters"]) ? j["counters"] : {};
   const pending = Array.isArray(j["pending"])
-    ? (j["pending"] as Pending[]).filter((x) => isStr(x?.hash) && (x.type === "note" || x.type === "item") && isStr(x.created_at) && typeof x.reads === "number")
+    ? (j["pending"] as Pending[]).filter((x) => isStr(x?.hash) && (x.type === "note" || x.type === "item") && isStr(x.created_at) && typeof x.reads === "number" && (x.after === undefined || isStr(x.after)))
     : [];
   const recent = Array.isArray(j["recent"])
     ? (j["recent"] as Recent[]).filter((r) => isStr(r?.author) && isStr(r?.text) && isStr(r?.created_at))
@@ -224,6 +238,13 @@ interface InboxItem {
 
 export const FEED_LIMIT = 200;
 
+/**
+ * The most messages one run hands the Inbox agent, the failed ones read again included: a member back
+ * after weeks would otherwise hand it the whole backlog in one prompt, which fails every time and is
+ * dropped unread after MAX_READS. What is past the cap waits for the next run, oldest first.
+ */
+export const MAX_BATCH = 40;
+
 /** Why a message was dropped, or `kept`. */
 export type Reason = "kept" | "status_note" | "own" | "not_a_note" | "seen" | "muted" | "duplicate" | "over_budget" | "chain_depth";
 
@@ -239,6 +260,8 @@ export interface ReadOptions {
   log?: (line: string) => void;
   /** How long one call to the node may go unanswered, in milliseconds; tests shorten it. */
   requestTimeout?: number;
+  /** The most messages one run hands the agent; MAX_BATCH unless a test sets it. */
+  maxBatch?: number;
 }
 
 /** How long one call to the node may go unanswered before the run fails naming it. */
@@ -254,6 +277,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
   const now = options.now ?? new Date();
   const log = options.log ?? ((l: string) => console.log(`${new Date().toISOString()} ${l}`));
   const stateDir = readStateDir(ctx.dataDir);
+  const cap = options.maxBatch ?? MAX_BATCH;
   // The node measures the deadline in time the machine is awake: a sleep moves it later by as long.
   const clock = new AwakeClock(options.wall).start();
   const wall = options.wall ?? Date.now;
@@ -386,6 +410,13 @@ export async function runRead(options: ReadOptions): Promise<number> {
       state.seen.push({ hash, created_at });
       kept.push({ hash, type, created_at, reads: 0 });
     };
+    // Over budget, a message waits in pending, unread, for a day with budget left: the cursor moves
+    // past a note, so pending is the only place it is still held.
+    const defer = (hash: string, type: Pending["type"], created_at: string) => {
+      known.add(hash);
+      state.seen.push({ hash, created_at });
+      state.pending.push({ hash, type, created_at, reads: 0 });
+    };
     /** An item in the batch's shape, read in full. */
     const itemMessage = async (id: string): Promise<Omit<BatchMessage, "ref"> | null> => {
       const i = (await get(`items/${encodeURIComponent(id)}`, {}, true)) as InboxItem | null;
@@ -481,9 +512,25 @@ export async function runRead(options: ReadOptions): Promise<number> {
       return 0;
     }
 
-    // Notes: oldest first, so of two near-identical notes the earlier is the one kept.
+    // The failed messages read again come first in the batch; what is past the cap, and a failed
+    // run's messages not yet due again (READ_RETRY_DELAYS_MS), stay pending as they are.
+    const due = (p: Pending) => p.after === undefined || Date.parse(p.after) <= now.getTime();
+    const retried = over ? [] : state.pending.filter(due).slice(0, cap);
+    const waiting = state.pending.filter((p) => !retried.includes(p));
+    // Notes: oldest first, so of two near-identical notes the earlier is the one kept. Once the batch
+    // is full the rest are not looked at: the cursor stays on the last note looked at (`through`), and
+    // the next run reads on from there.
     const notes: { i: FeedItem; text: string }[] = [];
-    for (const i of [...fresh].reverse()) {
+    let through = newest;
+    let carried = 0;
+    const oldestFirst = [...fresh].reverse();
+    for (const [n, i] of oldestFirst.entries()) {
+      if (retried.length + notes.length >= cap) {
+        carried = oldestFirst.length - n;
+        through = oldestFirst[n - 1]?.hash ?? state.cursor ?? undefined;
+        if (options.plan) (options.out ?? console.log)(`${carried} feed items left for the next run: the batch holds ${cap}`);
+        break;
+      }
       let reason: Reason = "kept";
       let text = "";
       let own: Msg | null = null;
@@ -496,7 +543,8 @@ export async function runRead(options: ReadOptions): Promise<number> {
         reason = "muted";
         // The node filters muted members before any agent run; seeing one here means it no longer does.
         say(`a muted member's item ${i.hash} is in the feed; the node should have filtered it`);
-      } else {
+      } else if (over) reason = "over_budget";
+      else {
         // The feed's preview is only the first line; the dedupe compares the message's full text, fetched once.
         own = await message(i.hash);
         text = isStr(own?.text) ? own.text : (i.preview ?? "");
@@ -506,15 +554,18 @@ export async function runRead(options: ReadOptions): Promise<number> {
         /* decided above */
       } else if (folded !== "" && state.recent.some((r) => r.author === i.author.identity && r.text === folded && Math.abs(at - Date.parse(r.created_at)) < DEDUPE_WINDOW_MS)) {
         reason = "duplicate";
-      } else if (over) reason = "over_budget";
-      else if (await chainTooDeep(i, own)) reason = "chain_depth";
+      } else if (await chainTooDeep(i, own)) reason = "chain_depth";
       if (options.plan) {
         (options.out ?? console.log)(`${i.hash} ${reason === "kept" ? "keep" : "drop"} ${reason}`);
         if (reason === "kept") state.recent.push({ author: i.author.identity, text: folded, created_at: i.created_at });
         continue;
       }
       if (reason === "status_note" || reason === "own" || reason === "seen" || reason === "not_a_note") continue;
-      if (reason === "over_budget") overDrop = true;
+      if (reason === "over_budget") {
+        overDrop = true;
+        defer(i.hash, "note", i.created_at);
+        continue;
+      }
       if (reason !== "kept") {
         known.add(i.hash);
         state.seen.push({ hash: i.hash, created_at: i.created_at });
@@ -533,7 +584,11 @@ export async function runRead(options: ReadOptions): Promise<number> {
         continue;
       }
       if (reason === "seen") continue;
-      if (reason === "over_budget") overDrop = true;
+      if (reason === "over_budget") {
+        overDrop = true;
+        defer(i.hash!, "item", i.created_at);
+        continue;
+      }
       if (reason !== "kept") {
         known.add(i.hash!);
         state.seen.push({ hash: i.hash!, created_at: i.created_at });
@@ -546,22 +601,20 @@ export async function runRead(options: ReadOptions): Promise<number> {
       return 0;
     }
 
-    // The batch: what failed before, read again, then what is new.
+    // The batch: what failed before and is due again, or was deferred, then what is new, `cap` in all.
     const again: Pending[] = [];
-    if (!over) {
-      for (const p of state.pending) {
-        if (p.type === "item") {
-          const m = await itemMessage(p.hash);
-          if (m !== null) {
-            add(m);
-            again.push(p);
-          }
-        } else {
-          const m = await message(p.hash);
-          if (m !== null) {
-            add(noteMessage(p.hash, (m as { author?: { identity?: string } }).author?.identity ?? "", m.voice ?? "agent", p.created_at, m.text ?? ""));
-            again.push(p);
-          }
+    for (const p of retried) {
+      if (p.type === "item") {
+        const m = await itemMessage(p.hash);
+        if (m !== null) {
+          add(m);
+          again.push(p);
+        }
+      } else {
+        const m = await message(p.hash);
+        if (m !== null) {
+          add(noteMessage(p.hash, (m as { author?: { identity?: string } }).author?.identity ?? "", m.voice ?? "agent", p.created_at, m.text ?? ""));
+          again.push(p);
         }
       }
     }
@@ -569,6 +622,11 @@ export async function runRead(options: ReadOptions): Promise<number> {
       add(noteMessage(i.hash, i.author.identity, i.voice ?? "agent", i.created_at, text));
     }
     for (const i of newItems) {
+      // An item past the cap is neither seen nor reviewed, so the next run reads it from the node again.
+      if (batch.length >= cap) {
+        carried++;
+        continue;
+      }
       const m = await itemMessage(i.id);
       if (m === null) continue;
       add(m);
@@ -577,18 +635,20 @@ export async function runRead(options: ReadOptions): Promise<number> {
     if (batch.length > 0) {
       state.counters["agent_runs"] = (state.counters["agent_runs"] ?? 0) + 1;
       // The batch is decided once: the state is saved before the run, with every message pending.
-      state.pending = [...again, ...kept].map((p) => ({ ...p, reads: p.reads + 1 }));
+      const read = [...again, ...kept].map(({ after: _after, ...p }) => ({ ...p, reads: p.reads + 1 }));
+      state.pending = [...read, ...waiting];
       saveState(stateDir, state);
       const done = await runInbox({ ...(await agentArgs()), batch });
       if (done.status === "done") {
-        state.pending = [];
+        state.pending = waiting;
         const sent = done.sent + done.items;
         if (sent > 0) state.counters["outbound"] = (state.counters["outbound"] ?? 0) + sent;
         log(`the Inbox agent read ${batch.length}: ${done.sent} answered, ${done.kept} answers kept for the member, ${done.filed} ideas filed, ${done.adopted} practices adopted, ${done.items} items written`);
       } else {
         runProblem = true;
-        const dropped = state.pending.filter((p) => p.reads >= MAX_READS);
-        state.pending = state.pending.filter((p) => p.reads < MAX_READS);
+        const dropped = read.filter((p) => p.reads >= MAX_READS);
+        const retryAt = (reads: number) => new Date(now.getTime() + (READ_RETRY_DELAYS_MS[reads - 1] ?? READ_RETRY_DELAYS_MS.at(-1)!)).toISOString();
+        state.pending = [...read.filter((p) => p.reads < MAX_READS).map((p) => ({ ...p, after: retryAt(p.reads) })), ...waiting];
         log(`the Inbox agent's run over ${batch.length} failed: ${done.why}`);
         if (dropped.length > 0) log(`read ${MAX_READS} times without a run finishing, left unreviewed: ${dropped.map((p) => p.hash).join(", ")}`);
         const err = await reportProblem(ctx.digestif, "read_circle", done.problem, undefined, sentence(done.why));
@@ -600,10 +660,11 @@ export async function runRead(options: ReadOptions): Promise<number> {
       if (err === undefined) state.out_of_budget = { open: true, reported_day: state.day };
       else log(`could not report the out_of_budget problem: ${err}`);
     }
-    state.cursor = newest ?? state.cursor;
+    state.cursor = through ?? state.cursor;
     saveState(stateDir, state);
     await settle();
     log(`read ${fresh.length} new feed items and ${items.length} unreviewed items, ran over ${batch.length}`);
+    if (carried > 0) log(`${carried} past the batch of ${cap} are left for the next run`);
     return 0;
   } catch (e) {
     const why = e instanceof DeadlinePassed ? "the deadline passed before the feed was read" : `the run failed: ${(e as Error).message}`;
