@@ -99,13 +99,51 @@ let expect (node : Node.t) ~guest =
 (* What the watcher made of a join a sync stored. *)
 type seen = { join_hash : string; outcome : Host_watch.outcome }
 
+(* What a sync's join watcher could not do: read the ledger, save it, or raise an ask. The sync
+   ran regardless; each says what was skipped. *)
+type watch_problem =
+  | Unreadable_records of int
+      (** Records in invites.json that do not parse: skipped, and kept in the
+          file as written. *)
+  | Unreadable_ledger of string
+      (** invites.json is not a ledger: no join was watched and the file was
+          left alone. *)
+  | Not_saved of string  (** The ledger the joins changed was not written. *)
+  | Ask_not_raised of string  (** A join ask the store refused. *)
+
+let watch_problem_to_string = function
+  | Unreadable_records n ->
+      Printf.sprintf
+        "%d record%s in invites.json do%s not parse: skipped, and kept in the \
+         file as written"
+        n
+        (if n = 1 then "" else "s")
+        (if n = 1 then "es" else "")
+  | Unreadable_ledger e ->
+      "invites.json was not read, so no join was watched this sync: " ^ e
+  | Not_saved e -> "the invite ledger was not saved: " ^ e
+  | Ask_not_raised e -> "a join ask was not raised: " ^ e
+
 (* Sync, running Host_watch.observe on every join the sync stores for the first time, on every
    relay: the fold admits one join per invite, and the host still hears of a second one another
    relay accepted. Each ask goes to the ask store, keyed by its invite, so a second identity on one
-   invite re-raises the same ask. *)
+   invite re-raises the same ask. The ledger is the watcher's, never the sync's: a record that does
+   not parse is skipped and kept, a ledger that cannot be read at all is left alone, and either is
+   returned as a watch problem beside the sync's own report. The result is an Error only when the
+   sync itself failed. DIG-224 *)
 let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
-  let* ledger = Host_watch.load node.dir in
-  let ledger = ref ledger and seen = ref [] and failed = ref None in
+  let problems = ref [] in
+  let problem p = problems := p :: !problems in
+  let ledger, keep, savable =
+    match Host_watch.load_readable node.dir with
+    | Ok (ledger, keep) ->
+        if keep <> [] then problem (Unreadable_records (List.length keep));
+        (ledger, keep, true)
+    | Error e ->
+        problem (Unreadable_ledger e);
+        ([], [], false)
+  in
+  let ledger = ref ledger and seen = ref [] in
   let on_stored hash (sg : Envelope.signed) =
     if sg.envelope.kind = "join" && !ledger <> [] then
       match Join.verify sg with
@@ -117,15 +155,16 @@ let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
           | Host_watch.Asked (_, ask) -> (
               match Asks.raise_ node.log (Host_watch.to_store ask) with
               | Ok () -> ()
-              | Error e -> failed := Some e)
+              | Error e -> problem (Ask_not_raised e))
           | _ -> ());
           seen := { join_hash = hash; outcome } :: !seen
   in
   let* report = Sync.sync ?transport ~on_stored node in
-  let* () = if !seen = [] then Ok () else Host_watch.save node.dir !ledger in
-  match !failed with
-  | Some e -> Error ("raising a join ask: " ^ e)
-  | None -> Ok (report, List.rev !seen)
+  (if savable && !seen <> [] then
+     match Host_watch.save ~keep node.dir !ledger with
+     | Ok () -> ()
+     | Error e -> problem (Not_saved e));
+  Ok (report, List.rev !seen, List.rev !problems)
 
 (* An answer to a join ask: the person's, or one the daily pass settled from a decision or a lapse
    ([via]). Revoke asks [identity] for the key that signs the revoke (called only then): the

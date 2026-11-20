@@ -50,7 +50,7 @@ let host_circle () =
     List.map (fun url -> Fake_relay.create ~url ~root:inv.dinner_hash) urls
   in
   let net = Fake_relay.network relays in
-  let report, _ = ok (Invite_node.sync ~transport:net host) in
+  let report, _, _ = ok (Invite_node.sync ~transport:net host) in
   List.iter
     (fun (r : Sync.relay_report) ->
       Alcotest.(check int) ("the dinner reached " ^ r.relay) 1 r.pushed)
@@ -96,7 +96,7 @@ let flow () =
     "the guest's own node admits it" true
     (Fold.find (Node.fold roman) (identity_of roman_phrase) <> None);
   let _, phong_phrase, _ = guest_joins net inv 1 in
-  let _, seen = ok (Invite_node.sync ~transport:net host) in
+  let _, seen, _ = ok (Invite_node.sync ~transport:net host) in
   let outcomes = List.map (fun (s : Invite_node.seen) -> s.outcome) seen in
   Alcotest.(check bool)
     "the expected join is shown" true
@@ -117,7 +117,7 @@ let flow () =
         "not lapsed yet" false
         (Asks.lapsed ~now:(Time_fmt.now ()) a)
   | l -> Alcotest.failf "%d asks, want 1" (List.length l));
-  let _, again = ok (Invite_node.sync ~transport:net host) in
+  let _, again, _ = ok (Invite_node.sync ~transport:net host) in
   Alcotest.(check int)
     "a join seen once is not asked twice" 0 (List.length again);
   Alcotest.(check bool)
@@ -134,7 +134,7 @@ let flow () =
   Alcotest.(check int)
     "the ask is answered" 0
     (List.length (Asks.list host.log));
-  let report, _ = ok (Invite_node.sync ~transport:net host) in
+  let report, _, _ = ok (Invite_node.sync ~transport:net host) in
   List.iter
     (fun (r : Sync.relay_report) ->
       Alcotest.(check (option string)) ("pushed to " ^ r.relay) None r.error)
@@ -215,7 +215,7 @@ let found_alone () =
     List.map (fun url -> Fake_relay.create ~url ~root:inv.dinner_hash) urls
   in
   let net = Fake_relay.network relays in
-  let report, _ = ok (Invite_node.sync ~transport:net host) in
+  let report, _, _ = ok (Invite_node.sync ~transport:net host) in
   List.iter
     (fun (r : Sync.relay_report) ->
       Alcotest.(check (option string)) ("synced " ^ r.relay) None r.error;
@@ -1265,12 +1265,75 @@ let circles_under_one_parent () =
      | Error m -> Astring_contains.contains m "--circle second-circle init"
      | Ok _ -> false)
 
+(* DIG-224: a record in invites.json that does not parse is the join watcher's problem, never the
+   sync's. The sync still reaches every relay, the records that parse are still watched, and the
+   bad record stays in the file exactly as written. *)
+let unreadable_ledger_record () =
+  let host, _, inv, _, net = host_circle () in
+  let p = Host_watch.file host.dir in
+  let bad = `Assoc [ ("dinner", `Int 7) ] in
+  (match Yojson.Safe.from_file p with
+  | `List items -> Yojson.Safe.to_file p (`List (items @ [ bad ]))
+  | _ -> Alcotest.fail "the ledger is a list");
+  Alcotest.(check bool)
+    "the strict read refuses it" true
+    (Result.is_error (Host_watch.load host.dir));
+  let _ = guest_joins net inv 0 in
+  let report, seen, problems = ok (Invite_node.sync ~transport:net host) in
+  List.iter
+    (fun (r : Sync.relay_report) ->
+      Alcotest.(check (option string)) ("synced " ^ r.relay) None r.error)
+    report.relays;
+  Alcotest.(check bool)
+    "the join is still watched" true
+    (List.exists
+       (fun (s : Invite_node.seen) ->
+         match s.outcome with Host_watch.Asked _ -> true | _ -> false)
+       seen);
+  Alcotest.(check (list string))
+    "the bad record is reported"
+    [
+      "1 record in invites.json does not parse: skipped, and kept in the file \
+       as written";
+    ]
+    (List.map Invite_node.watch_problem_to_string problems);
+  let records, kept = ok (Host_watch.load_readable host.dir) in
+  Alcotest.(check bool)
+    "the join was recorded" true
+    (List.exists
+       (fun (r : Host_watch.record) ->
+         match r.state with Host_watch.Joined _ -> true | _ -> false)
+       records);
+  Alcotest.(check (list string))
+    "the bad record is kept as written"
+    [ Yojson.Safe.to_string bad ]
+    (List.map Yojson.Safe.to_string kept)
+
+(* A file that is not a ledger at all is left alone, and the sync runs. *)
+let unreadable_ledger_file () =
+  let host, _, _, _, net = host_circle () in
+  let p = Host_watch.file host.dir in
+  Out_channel.with_open_text p (fun oc -> output_string oc "{ not json");
+  let report, _, problems = ok (Invite_node.sync ~transport:net host) in
+  List.iter
+    (fun (r : Sync.relay_report) ->
+      Alcotest.(check (option string)) ("synced " ^ r.relay) None r.error)
+    report.relays;
+  Alcotest.(check int) "one problem" 1 (List.length problems);
+  Alcotest.(check string)
+    "the file is untouched" "{ not json"
+    (In_channel.with_open_text p In_channel.input_all)
+
 let () =
   Ci_alcotest.run "digestif-invite-flow"
     [
       ( "invite",
         [
           Alcotest.test_case "host, guest, watcher, revoke" `Quick flow;
+          Alcotest.test_case "a ledger record that does not parse" `Quick
+            unreadable_ledger_record;
+          Alcotest.test_case "a ledger file that does not parse" `Quick
+            unreadable_ledger_file;
           Alcotest.test_case "codes no open invite names" `Quick refused;
           Alcotest.test_case "every circle's node under one parent" `Quick
             circles_under_one_parent;
