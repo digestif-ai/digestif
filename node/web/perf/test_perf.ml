@@ -1,5 +1,6 @@
-(* ISS-41944: every node page answers within [budget_ms] at p95 on a heavy machine, and no page
-   grows meaningfully slower than the baseline it last recorded.
+(* ISS-41944: every node page answers within [budget_ms] of CPU at p95 on a heavy machine, and no
+   page grows meaningfully slower than the baseline it last recorded. Time is the CPU the request
+   spends, never wall time, so a runner busy with other builds fails nothing ([measure], DIG-172).
 
    The fixture is a member's machine after years of work: [clones] git clones under ~/code, spread
    over [organizations] organizations, and [transcripts] Claude Code transcripts across a project
@@ -457,12 +458,24 @@ let p95 times =
   let n = Array.length a in
   a.(max 0 (int_of_float (Float.ceil (0.95 *. float_of_int n)) - 1))
 
-(* Each route's p95 server time over [samples] calls, in milliseconds, after two calls to warm it. *)
+(* The CPU this process has spent, user and system, in seconds. Unix.times reads getrusage, which
+   counts microseconds. *)
+let cpu () =
+  let t = Unix.times () in
+  t.tms_utime +. t.tms_stime
+
+(* Each route's p95 server time over [samples] calls, in milliseconds of CPU, after two calls to warm
+   it. CPU, not wall time (DIG-172): a shared runner running five builds at once leaves a request
+   waiting for a core, which multiplies its wall time by however busy the box is, while the CPU it
+   spends is what the route costs. Nothing else runs in this process while a page is measured (the
+   handler is called directly, and a page's background rescan waits a day, Machine_scan.ensure), so
+   the process's CPU is the request's. A loaded box still moves CPU time a little, through shared
+   caches and clock speed, which the run's [machine_shift] absorbs. *)
 let measure n cookie (name, path) =
   let once () =
-    let t = Unix.gettimeofday () in
+    let t = cpu () in
     let r = get n cookie path in
-    let ms = (Unix.gettimeofday () -. t) *. 1000. in
+    let ms = (cpu () -. t) *. 1000. in
     if r.status <> 200 && r.status <> 404 then
       failwith (Printf.sprintf "GET %s answered %d: %s" path r.status r.body);
     ms

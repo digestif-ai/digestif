@@ -57,11 +57,13 @@ and Unpause.
 
 ## Page budget
 
-Every node page answers within 50ms at p95 on a heavy machine. `node/web/perf/test_perf.ml` builds
+Every node page answers within 50ms of CPU at p95 on a heavy machine. `node/web/perf/test_perf.ml` builds
 the machine (1,000 clones across 50 organizations and 5,000 Claude Code transcripts under a HOME
 of its own) and a node a few years old (1,100 notes, 600 Inbox items, questions with an answer each, and
 3,000 nights of digests and 3,000 summaries in its log), stores the machine scan, and calls every GET the UI reads through the server's own handler, the
-paged lists at their first page and the page after it. A route fails when its p95 is over 50ms, or when it is more than three times what
+paged lists at their first page and the page after it. A request's time is the CPU the process spends on it
+(user and system), never wall time: a shared runner busy with other builds leaves a request waiting
+for a core, which is the box's load and not the page's cost. A route fails when its p95 is over 50ms, or when it is more than three times what
 `node/web/perf/baseline.json` recorded and more than 5ms above it, the baseline first scaled by how
 much slower the run's machine is: the median, over every route the baseline names, of measured over
 recorded, never below one. A slow or loaded runner moves every route at once, so it moves the median
