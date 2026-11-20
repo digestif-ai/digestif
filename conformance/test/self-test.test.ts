@@ -116,6 +116,7 @@ const nodeBreaks: Array<[NodeBreak, string]> = [
   ["relay-order", "node.divergent.same-fold-and-feed"],
   ["backfill", "node.gap.backfilled-from-other-relay"],
   ["gap", "node.gap.reported-when-unfilled"],
+  ["join-floor", "node.gap.none-before-join"],
   ["dedupe", "node.duplicate.deduped"],
   ["fork", "node.fork.surfaced"],
   ["verify", "node.verify.bad-signature"],

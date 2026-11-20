@@ -51,7 +51,7 @@ let with_node ~transport ~data_dir f =
                       match
                         (transport : Relay_client.transport)
                           ~meth ~url:(base ^ path)
-                          ~headers:(Local_session.headers token)
+                          ~headers:(Local_session.headers ~url:base token)
                           ~body:(Option.map Yojson.Safe.to_string body)
                       with
                       | Error e ->

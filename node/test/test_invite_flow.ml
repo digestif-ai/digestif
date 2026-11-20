@@ -16,6 +16,15 @@ let tmpdir () =
 let new_node () = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ())
 let urls = [ "https://a.test"; "https://b.test" ]
 
+(* The founder's admin key every circle root names (protocol.md, circle). *)
+let admins =
+  [
+    {
+      Approval.name = "Founder";
+      key = Keys.public (Crypto.generate_signing_key ());
+    };
+  ]
+
 let guests =
   [
     { Dinner.name = "Roman Cherkasov"; email = "roman@example.com" };
@@ -29,7 +38,7 @@ let host_circle () =
   ignore (ok (Node.init host ~phrase:host_phrase));
   let inv =
     ok
-      (Invite_node.found host ~name:"AI Dinner 2" ~relays:urls
+      (Invite_node.found host ~admins ~name:"AI Dinner 2" ~relays:urls
          ~message:"  Great talking with you.\n" guests)
   in
   Alcotest.(check (option string))
@@ -192,11 +201,39 @@ let found_alone () =
   let host_identity = Option.get (Log.get_config host.log Node.k_identity) in
   Alcotest.(check bool)
     "a blank name is refused" true
-    (Result.is_error (Invite_node.found host ~name:"  " ~relays:urls []));
+    (Result.is_error
+       (Invite_node.found host ~admins ~name:"  " ~relays:urls []));
+  Alcotest.(check bool)
+    "a circle without admins is refused" true
+    (Result.is_error
+       (Invite_node.found host ~admins:[] ~name:"No admins" ~relays:urls []));
   Alcotest.(check (option string))
     "a refused founding leaves no root" None (Node.root host);
+  (* DIG-277: a circle root that names no admins is malformed, so no circle founded on its own is
+     ever judged by the release signers. *)
+  (let n = new_node () in
+   ignore (ok (Node.init n ~phrase:(Phrase.generate ())));
+   let identity = Option.get (Log.get_config n.log Node.k_identity) in
+   let body =
+     match
+       Bodies.circle_json ~admins ~host:identity ~name:"Unjudged" ~guests:[]
+         ~relays:urls ()
+     with
+     | `Assoc f -> `Assoc (List.remove_assoc "admins" f)
+     | j -> j
+   in
+   let root, _ = ok (Node.write n ~kind:"circle" body) in
+   Node.set_root n root;
+   Alcotest.(check bool)
+     "a circle root without admins is refused by the fold" true
+     (List.mem_assoc root (Node.fold n).rejected);
+   Alcotest.(check bool)
+     "and admits nobody" false
+     (Hashtbl.mem (Node.fold n).keys identity));
   let inv =
-    ok (Invite_node.found host ~name:"Auto dealership roll-up" ~relays:urls [])
+    ok
+      (Invite_node.found host ~admins ~name:"Auto dealership roll-up"
+         ~relays:urls [])
   in
   let row = Option.get (Log.find host.log inv.dinner_hash) in
   Alcotest.(check string)
@@ -232,13 +269,14 @@ let found_alone () =
     (Approved_invite.circle_label host);
   Alcotest.(check bool)
     "a node holds one circle: founding a second is refused" true
-    (Result.is_error (Invite_node.found host ~name:"Another" ~relays:urls []));
+    (Result.is_error
+       (Invite_node.found host ~admins ~name:"Another" ~relays:urls []));
   (* Any circle envelope but the root names another circle, and the fold refuses it. *)
   let stray, _ =
     ok
       (Node.write host ~kind:"circle"
-         (Bodies.circle_json ~host:host_identity ~name:"Stray" ~guests:[]
-            ~relays:urls ()))
+         (Bodies.circle_json ~admins ~host:host_identity ~name:"Stray"
+            ~guests:[] ~relays:urls ()))
   in
   Alcotest.(check bool)
     "a circle envelope that is not the root is refused" true
@@ -1219,7 +1257,8 @@ let circles_under_one_parent () =
   let node = Node.open_ ~keystore:(Keystore.memory ()) fresh in
   ignore (ok (Node.init node ~phrase:(Phrase.generate ())));
   let inv =
-    ok (Invite_node.found node ~name:"Luxury Car Roll Up" ~relays:urls [])
+    ok
+      (Invite_node.found node ~admins ~name:"Luxury Car Roll Up" ~relays:urls [])
   in
   Node.close node;
   Alcotest.(check string) "the id names it now" fresh (ok (Circles.dir "auto"));
@@ -1259,11 +1298,59 @@ let circles_under_one_parent () =
   Alcotest.(check bool)
     "founding a second circle names the command for its own node" true
     (let n = Node.open_ ~keystore:(Keystore.memory ()) fresh in
-     let r = Invite_node.found n ~name:"Second Circle" ~relays:urls [] in
+     let r =
+       Invite_node.found n ~admins ~name:"Second Circle" ~relays:urls []
+     in
      Node.close n;
      match r with
      | Error m -> Astring_contains.contains m "--circle second-circle init"
      | Ok _ -> false)
+
+(* DIG-284: the parent holds circle nodes and links and nothing else. A git checkout of the repo at
+   ~/digestif is refused for every id, a new one included, with the way out; a directory holding no
+   node is left out of the list. *)
+let circles_parent_holds_only_nodes () =
+  let parent = tmpdir () in
+  Unix.putenv "DIGESTIF_CIRCLES" parent;
+  let a = ok (Circles.dir ~create:true "a") in
+  let n = Node.open_ ~keystore:(Keystore.memory ()) a in
+  ignore (ok (Node.init n ~phrase:(Phrase.generate ())));
+  Node.close n;
+  Unix.mkdir (Filename.concat parent "pending") 0o700;
+  Out_channel.with_open_bin (Filename.concat parent ".DS_Store") ignore;
+  Alcotest.(check bool)
+    "nodes, an empty id's directory and .DS_Store are a parent" true
+    (Result.is_ok (Circles.check_parent ()));
+  Alcotest.(check (list string))
+    "a directory with no node is no circle" [ "a" ]
+    (List.map (fun (e : Circles.entry) -> e.id) (Circles.entries ()));
+  (* What a clone of the repo puts there. *)
+  Unix.mkdir (Filename.concat parent ".git") 0o700;
+  Unix.mkdir (Filename.concat parent "node") 0o700;
+  Out_channel.with_open_bin
+    (Filename.concat (Filename.concat parent "node") "dune")
+    ignore;
+  Out_channel.with_open_bin (Filename.concat parent "README.md") ignore;
+  let refused what r =
+    match r with
+    | Ok _ -> Alcotest.fail (what ^ " was not refused")
+    | Error m ->
+        List.iter
+          (fun needle ->
+            Alcotest.(check bool)
+              (what ^ " names " ^ needle)
+              true
+              (Astring_contains.contains m needle))
+          [ ".git"; "README.md"; "node"; "DIGESTIF_CIRCLES" ]
+  in
+  refused "the parent" (Circles.check_parent ());
+  refused "a new id" (Circles.dir ~create:true "relay");
+  refused "a folder of the checkout" (Circles.dir ~create:true "node");
+  refused "an existing node" (Circles.dir "a");
+  refused "a link" (Circles.link ~id:"b" ~target:a);
+  Alcotest.(check (list string))
+    "the list still names only nodes" [ "a" ]
+    (List.map (fun (e : Circles.entry) -> e.id) (Circles.entries ()))
 
 (* DIG-224: a record in invites.json that does not parse is the join watcher's problem, never the
    sync's. The sync still reaches every relay, the records that parse are still watched, and the
@@ -1337,6 +1424,8 @@ let () =
           Alcotest.test_case "codes no open invite names" `Quick refused;
           Alcotest.test_case "every circle's node under one parent" `Quick
             circles_under_one_parent;
+          Alcotest.test_case "a parent holding anything but nodes" `Quick
+            circles_parent_holds_only_nodes;
           Alcotest.test_case "a circle founded with no dinner and no guests"
             `Quick found_alone;
           Alcotest.test_case "ask store" `Quick asks_store;

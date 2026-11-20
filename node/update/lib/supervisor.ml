@@ -4,9 +4,10 @@
    restarts it. During a switch's trial it watches the child: once the new release writes
    health.json the switch is kept (good moves, update.json records the version); if the child
    crashes first, current moves back to good and the version is refused from then on. A child that
-   stays unhealthy for [health_bound] seconds of awake time, exits for its environment, or outlives
-   [max_starts] supervisor starts may be this machine rather than the release: current moves back
-   just the same, and the version counts a strike (State.strike), tried again after a backoff and
+   exits for its environment (its UI port held) is not the release's verdict: the trial starts it
+   again in place. A child that stays unhealthy for [health_bound] seconds of awake time, or that
+   outlives [max_starts] starts (supervisor starts and environment exits together), may be this
+   machine rather than the release: current moves back just the same, and the version counts a strike (State.strike), tried again after a backoff and
    refused only on the last strike. Every write of update.json here leaves the signer set as it is
    stored (State.load ~reconcile:false): the supervisor's binary is the oldest the node runs, and its
    build's set must never widen what a newer release adopted. Past the trial it counts the child's abnormal exits
@@ -57,6 +58,10 @@ type outcome =
   | Interrupted of Version.t
       (** The service manager stopped the supervisor mid-trial; the next start
           resumes it. *)
+  | Restarted of Version.t * string
+      (** The child exited for its environment before it reported healthy, for
+          the reason given; the trial stays on and starts it again, within
+          [max_starts]. DIG-240 *)
 
 let report dir lines = Report.note (Schedule.report_path dir) lines
 
@@ -143,9 +148,15 @@ let trial ops dir (t : Trial.t) =
       if healthy () then (Some pid, promote dir t)
       else
         match ops.poll pid with
+        | Some (Exited n as st) when n = environment_exit ->
+            (* The machine stopped it, not the release: the trial stays on and the next pass of
+               [run] starts it again; the starts counter bounds how often. DIG-240 *)
+            ( None,
+              Restarted (t.version, describe st ^ " before it reported healthy")
+            )
         | Some st ->
-            (* A crash is the release's; an exit for its environment (its UI port held) or a stop
-               somebody asked for is not, and counts a strike. DIG-223 *)
+            (* A crash is the release's; a stop somebody asked for is not, and counts a strike.
+               DIG-223 *)
             ( None,
               roll_back
                 ~verdict:(if abnormal st then Refuse else Strike)

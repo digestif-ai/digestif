@@ -7,7 +7,7 @@
    release signer set, in the update state, keeps judging releases, and never this circle's
    invites: its members need not learn who is in the circle.
 
-   A root that names none, a founding dinner included, is judged by the release signer set the
+   A dinner root (the founding circle's) names none, and is judged by the release signer set the
    update state holds, which every adopted signer-set change advances (Circle_signer_set). *)
 
 open Release

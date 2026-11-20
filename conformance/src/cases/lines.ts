@@ -18,7 +18,7 @@ export const LINES = {
     "Lost laptop: a `device` message authored by the new key itself is accepted when its identity signature verifies, and refused when it does not.",
   bootstrapRead:
     "Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one, or a request signed by any other key, is not answered.",
-  epoch: "Epoch: a newcomer fetches every circle-state envelope and no content from before their join.",
+  epoch: "Epoch: a newcomer fetches every circle-state envelope and no content from before their join, and their node reports no gap for that content.",
   releaseRevocation:
     "Release revocation: a relay serves it to every reader, a newcomer included, without checking its release signatures; a node records the key as revoked when a current release signer signed it and ignores it otherwise.",
   releaseRecall:

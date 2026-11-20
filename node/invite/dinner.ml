@@ -112,8 +112,8 @@ let body t : Yojson.Safe.t =
 
 (* A circle root's body: its name, founder, first guests and relays, and the admins who judge its
    later invites (protocol.md, circle). *)
-let circle_body ?admins t : Yojson.Safe.t =
-  Digestif_core.Bodies.circle_json ?admins ~host:t.host ~name:t.label
+let circle_body ~admins t : Yojson.Safe.t =
+  Digestif_core.Bodies.circle_json ~admins ~host:t.host ~name:t.label
     ~guests:(guests_json t) ~relays:t.relays ()
 
 (* The dinner envelope, signed by the host's device key. A node writes it with Node.write, which

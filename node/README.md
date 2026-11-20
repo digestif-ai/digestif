@@ -127,7 +127,8 @@ The data directory is `$DIGESTIF_HOME`, else `~/Library/Application Support/Dige
 `$XDG_DATA_HOME/digestif` on Linux; `--data-dir` overrides it. Every circle's node lives at
 `~/digestif/<circle id>` (`$DIGESTIF_CIRCLES` overrides the parent), and `--circle <id>` selects it
 instead of `--data-dir`; `init` and `join` set up an id that names nothing yet, and every other
-command refuses one (docs/design.md, Circles).
+command refuses one. The parent holds nodes and links only: one holding anything else, such as a
+clone of this repository at `~/digestif`, is refused with the way out (docs/design.md, Circles).
 
 The node at that standard place (`DIGESTIF_HOME` aside) is the machine's first: its service is
 `com.digestif.node` (launchd) or `digestif.service` (systemd), its UI answers on 7420, and the

@@ -34,7 +34,7 @@ export interface NodeState {
 }
 
 /** Rules the reference node can be told to get wrong, so the self-test can prove each node case catches it. */
-export type NodeBreak = "verify" | "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "mail-cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order" | "self-device" | "device-signature" | "host-device-window" | "replicate";
+export type NodeBreak = "verify" | "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "mail-cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order" | "self-device" | "device-signature" | "host-device-window" | "replicate" | "join-floor";
 
 interface Held {
   hash: string;
@@ -135,24 +135,42 @@ function foldUnion(root: string, envelopes: Held[], breaks: ReadonlySet<NodeBrea
   }
 }
 
-export function computeState(root: string, envelopes: Held[], invalid: Fault[], breaks: ReadonlySet<NodeBreak> = new Set()): NodeState {
+/**
+ * The first seq of `chain` an envelope at or past `floor` holds: below it a missing seq may be content
+ * written before the reader joined, which no relay serves it (relay/src/read.ts, page). An author's
+ * chain carries a non-decreasing epoch, so a missing seq above it is a gap. `undefined` when the
+ * whole chain is below the floor, which expects every hole.
+ */
+function firstServed(floor: number, chain: Map<number, Held[]>): number | undefined {
+  if (floor === 0) return 1;
+  let first: number | undefined;
+  for (const [seq, held] of chain) {
+    if (held.some((h) => h.envelope.epoch >= floor) && (first === undefined || seq < first)) first = seq;
+  }
+  return first;
+}
+
+/** Computes the state `reader` concludes: its join epoch floors the gap scan (0 for a founder, and for a key the fold has not admitted). */
+export function computeState(root: string, envelopes: Held[], invalid: Fault[], reader: string, breaks: ReadonlySet<NodeBreak> = new Set()): NodeState {
   const { fold, folded } = foldUnion(root, envelopes, breaks);
+  const floor = breaks.has("join-floor") ? 0 : (fold.keys.get(reader)?.join_epoch ?? 0);
 
   const roleOf = (key: string) => fold.keys.get(key)?.role;
-  const chains = new Map<string, Map<number, Set<string>>>();
+  const chains = new Map<string, Map<number, Held[]>>();
   for (const held of envelopes) {
     const role = roleOf(held.envelope.author);
     if (role !== "device" && !(role === "mail" && breaks.has("mail"))) continue;
     if (!breaks.has("cutoff") && fold.pastCutoff(held.envelope, held.hash)) continue;
-    const chain = chains.get(held.envelope.author) ?? new Map<number, Set<string>>();
-    chain.set(held.envelope.seq, (chain.get(held.envelope.seq) ?? new Set<string>()).add(held.hash));
+    const chain = chains.get(held.envelope.author) ?? new Map<number, Held[]>();
+    chain.set(held.envelope.seq, [...(chain.get(held.envelope.seq) ?? []), held]);
     chains.set(held.envelope.author, chain);
   }
   const faults: Fault[] = [...invalid];
   const gaps: NodeState["gaps"] = [];
   const forked = new Set<string>();
   for (const [author, chain] of chains) {
-    for (const [seq, hashes] of chain) {
+    for (const [seq, held] of chain) {
+      const hashes = new Set(held.map((h) => h.hash));
       if (hashes.size > 1 && !breaks.has("fork")) {
         faults.push({ kind: "fork", author, seq, hashes: [...hashes].sort() });
         for (const hash of hashes) forked.add(hash);
@@ -160,7 +178,7 @@ export function computeState(root: string, envelopes: Held[], invalid: Fault[], 
     }
     const max = Math.max(...chain.keys());
     const missing: number[] = [];
-    for (let seq = 1; seq <= max; seq++) if (!chain.has(seq)) missing.push(seq);
+    for (let seq = firstServed(floor, chain) ?? max + 1; seq <= max; seq++) if (!chain.has(seq)) missing.push(seq);
     if (missing.length > 0 && !breaks.has("gap")) gaps.push({ author, missing });
   }
 
@@ -230,5 +248,5 @@ export async function sync(device: Signer, relays: string[], breaks: ReadonlySet
   if (root === undefined) throw new Error("no relays");
   const { envelopes, invalid } = union(pages, breaks);
   if (!breaks.has("replicate")) await replicate(device, relays, pages, foldUnion(root, envelopes, breaks).folded);
-  return computeState(root, envelopes, invalid, breaks);
+  return computeState(root, envelopes, invalid, device.key, breaks);
 }

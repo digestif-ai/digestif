@@ -17,6 +17,9 @@ function input(signed: SignedEnvelope, position: number) {
   return { hash: envelopeHash(signed.envelope), envelope: signed.envelope, body: signed.body, position, now };
 }
 
+/** A circle's own admins, as `digestif circle found` names its founder's admin key. */
+const founderAdmins = [{ name: "Founder", key: Signer.random().key }];
+
 function root(founderDevice: Signer, body: Json): SignedEnvelope {
   return signEnvelope(founderDevice, { kind: "circle", body, seq: 1, epoch: 0, createdAt: now });
 }
@@ -26,7 +29,7 @@ test("a circle root admits its founder and records its first guests", () => {
   const device = Signer.random();
   const invite = Signer.random();
   const guest = { name: "Ashmer Aslam", invite_key: invite.key, expires_at: isoTime(new Date(now.getTime() + INVITE_TTL_MS)) };
-  const r = root(device, circleBody(founder, "Auto dealership roll-up", [guest], relays));
+  const r = root(device, circleBody(founder, "Auto dealership roll-up", [guest], relays, founderAdmins));
   const fold = new Fold(envelopeHash(r.envelope));
   assert.equal(fold.apply(input(r, 1)), null);
   assert.equal(fold.keyState(founder.key)?.role, "identity");
@@ -43,17 +46,17 @@ test("a circle root admits its founder and records its first guests", () => {
 test("a circle root needs no guests, and a circle envelope is only ever the root", () => {
   const founder = Signer.random();
   const device = Signer.random();
-  const r = root(device, circleBody(founder, "Alone", [], relays));
+  const r = root(device, circleBody(founder, "Alone", [], relays, founderAdmins));
   const fold = new Fold(envelopeHash(r.envelope));
   assert.equal(fold.apply(input(r, 1)), null);
-  const second = signEnvelope(device, { kind: "circle", body: circleBody(founder, "Another", [], relays), seq: 2, epoch: 0, createdAt: now });
+  const second = signEnvelope(device, { kind: "circle", body: circleBody(founder, "Another", [], relays, founderAdmins), seq: 2, epoch: 0, createdAt: now });
   assert.equal(fold.apply(input(second, 2)), "wrong_circle");
 });
 
 test("a circle root without a name is malformed", () => {
   const founder = Signer.random();
   const device = Signer.random();
-  const r = root(device, circleBody(founder, "  ", [], relays));
+  const r = root(device, circleBody(founder, "  ", [], relays, founderAdmins));
   assert.equal(new Fold(envelopeHash(r.envelope)).apply(input(r, 1)), "malformed");
 });
 
@@ -98,6 +101,19 @@ test("a circle's own signer_set promotes a second admin, whose signature is then
   assert.deepEqual(fold.signerSet?.keys, [admin.key, second.key]);
   assert.equal(fold.apply(input(laterDinner(device, founder, circle, Signer.random(), [admin], 3), 3)), "not_admitted", "one admin of two admits nobody");
   assert.equal(fold.apply(input(laterDinner(device, founder, circle, Signer.random(), [admin, second], 3), 3)), null);
+});
+
+// DIG-277: every circle root names its admins, so a circle founded on its own is never judged by the
+// release signers; a root written before roots named them is refused and admits nobody.
+test("a circle root without admins is malformed", () => {
+  const founder = Signer.random();
+  const device = Signer.random();
+  const body = circleBody(founder, "Unjudged", [], relays, founderAdmins) as { [key: string]: Json };
+  delete body["admins"];
+  const r = root(device, body);
+  const fold = new Fold(envelopeHash(r.envelope), { admission: { cutover: 0, signers: testReleaseSigners().map((s) => s.key) } });
+  assert.equal(fold.apply(input(r, 1)), "malformed");
+  assert.equal(fold.keyState(founder.key), undefined, "it admits nobody");
 });
 
 test("a circle root whose admins are not a list of named ed25519 keys is malformed", () => {

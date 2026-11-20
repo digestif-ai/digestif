@@ -2069,9 +2069,10 @@ let test_unhealthy_every_try_is_refused () =
        (fun (r : State.refused) -> Status.machine_may_be_why r.why)
        s.refused)
 
-(* A child that exits for its environment (its UI port held) before it reports healthy is rolled
-   back without refusing the release. DIG-223 *)
-let test_environment_exit_on_trial_is_a_strike () =
+(* A child that exits for its environment (its UI port held) before it reports healthy is not the
+   release's verdict: the trial stays on, current still names the new release, and nothing counts
+   against it. DIG-240 *)
+let test_environment_exit_on_trial_restarts_it () =
   let node = switched_node () in
   let sim = new_sim () in
   let outcome =
@@ -2081,11 +2082,47 @@ let test_environment_exit_on_trial_is_a_strike () =
       node
   in
   Alcotest.(check bool)
-    "rolled back" true
-    (match outcome with Supervisor.Rolled_back _ -> true | _ -> false);
+    "restarted" true
+    (match outcome with Supervisor.Restarted _ -> true | _ -> false);
+  Alcotest.(check string) "current still the new release" "0.2.0" (current node);
+  Alcotest.(check (option int))
+    "the trial is on, one start spent" (Some 1)
+    (Option.map (fun (t : Trial.t) -> t.starts) (Trial.load node));
   let s = loaded (Schedule.state_path node) in
   Alcotest.(check bool) "not refused" false (State.is_refused s (v "0.2.0"));
-  Alcotest.(check bool) "pending" true (s.pending <> None)
+  Alcotest.(check bool) "no strike" true (s.pending = None);
+  Alcotest.(check bool)
+    "the digest hears nothing yet" true
+    ((Report.load (Schedule.report_path node)).pending = [])
+
+(* A port held through every start: the starts run out and the release is rolled back with one
+   strike, never refused. DIG-240 *)
+let test_environment_exit_every_start_is_a_strike () =
+  let node = switched_node () in
+  let rec go n =
+    let outcome =
+      trial_outcome
+        (sim_ops ~exit_at:(Some 2)
+           ~status:(Supervisor.Exited Supervisor.environment_exit) node
+           (new_sim ()))
+        node
+    in
+    match outcome with
+    | Supervisor.Restarted _ when n < 10 -> go (n + 1)
+    | o -> (n, o)
+  in
+  let restarts, outcome = go 0 in
+  Alcotest.(check int)
+    "restarted until the starts ran out" Supervisor.max_starts restarts;
+  Alcotest.(check bool)
+    "rolled back" true
+    (match outcome with Supervisor.Rolled_back _ -> true | _ -> false);
+  Alcotest.(check string) "current moved back" "0.1.0" (current node);
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check bool) "not refused" false (State.is_refused s (v "0.2.0"));
+  Alcotest.(check (option int))
+    "one strike" (Some 1)
+    (Option.map (fun (p : State.pending) -> p.strikes) s.pending)
 
 (* Three hours of sleep in the window count as one step: health that arrives a few awake minutes
    later still keeps the release. *)
@@ -6443,8 +6480,10 @@ let () =
           t "unhealthy times out" test_unhealthy_times_out;
           t "unhealthy on every try is refused"
             test_unhealthy_every_try_is_refused;
-          t "an environment exit on trial is a strike"
-            test_environment_exit_on_trial_is_a_strike;
+          t "an environment exit on trial restarts it"
+            test_environment_exit_on_trial_restarts_it;
+          t "an environment exit on every start is a strike"
+            test_environment_exit_every_start_is_a_strike;
           t "sleep does not roll back" test_sleep_does_not_roll_back;
           t "trial starts are bounded" test_trial_starts_are_bounded;
           t "whole loop" test_supervisor_loop;

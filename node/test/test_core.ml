@@ -1902,6 +1902,25 @@ let service_per_data_directory () =
   Alcotest.(check int)
     "the same directory, spelled with a trailing slash, is the same node" port
     (Service.ui_port (second ^ "/"));
+  (* DIG-275: a browser keeps cookies by host, so each node's session cookie is named for its port. *)
+  let cookie url = Local_session.cookie_name_of url in
+  check_str "the standard node's cookie" "digestif_session"
+    (cookie (Some "http://127.0.0.1:7420"));
+  check_str "no port recorded yet: the standard cookie" "digestif_session"
+    (cookie None);
+  check_str "a second node's cookie names its port"
+    ("digestif_session_" ^ string_of_int port)
+    (cookie (Some (Printf.sprintf "http://127.0.0.1:%d" port)));
+  check_str "a path after the port" "digestif_session_7421"
+    (cookie (Some "http://127.0.0.1:7421/api/v0/"));
+  check_str "an IPv6 loopback with a port" "digestif_session_7421"
+    (cookie (Some "http://[::1]:7421"));
+  check_str "an IPv6 loopback without one" "digestif_session"
+    (cookie (Some "http://[::1]"));
+  Alcotest.(check (list (pair string string)))
+    "the headers a second node is sent"
+    [ ("Cookie", "digestif_session_7421=t"); ("Digestif-Local", "1") ]
+    (Local_session.headers ~url:"http://127.0.0.1:7421" "t");
   let other = Filename.concat home "elsewhere/Second Circle" in
   Node.mkdir_p other;
   Alcotest.(check bool)

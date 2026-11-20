@@ -142,7 +142,7 @@ something; a new case lands with the break that fails it.
 | Pushed join | `relay.bootstrap.pushed-late-join-accepted`, `relay.bootstrap.pushed-join-after-expiry-refused`, `relay.bootstrap.pushed-join-revoked-pusher-refused` | `node.bootstrap.join-replicated-after-expiry` |
 | Lost laptop | `relay.device.self-authored-accepted`, `relay.device.self-authored-bad-signature-refused` | `node.device.self-authored` |
 | Bootstrap read | `relay.bootstrap-read.open-invite`, `relay.bootstrap-read.closed-invites-unanswered` | |
-| Epoch | `relay.epoch.newcomer-reads-from-join` | |
+| Epoch | `relay.epoch.newcomer-reads-from-join` | `node.gap.none-before-join` |
 | Release revocation | `relay.release-revocation.served-to-newcomer` | |
 | Release recall | `relay.release-recall.served-to-newcomer` | |
 | Relay release | `relay.relay-release.served-to-newcomer` | |
@@ -150,7 +150,7 @@ something; a new case lands with the break that fails it.
 | Retract | `relay.retract.author-retracts`, `relay.retract.other-identity-refused` | `node.retract.author-only` |
 | Limits | `relay.limits.oversized-refused`, `relay.limits.daily-append-cap` | |
 
-Clock drift, epoch filtering and limits are relay rules a node has no half of.
+Clock drift and limits are relay rules a node has no half of.
 
 ## Where the protocol is silent, the suite chooses
 

@@ -117,14 +117,15 @@ is not blank. `guests` lists the circle's first guests exactly as a dinner does,
 invite keys alone, and may be empty or absent: the founder invites everyone else later, with the
 admins' signed admission, in a dinner message. A circle root carries no date and no dinner.
 
-`admins` is the circle's own signer set: a non-empty list of `{ name, key }`, each key an ed25519
-admin key, none twice. `digestif circle found` names the founder's (the `public_key` of their
-`signer.json`, or `--admin-key`). Those admins, and not the release signers, sign every later
-invite's `digestif-admission-v0` and every change of their own set (Approvals), so the release
-signers never sign for, or learn who is in, a circle they are not in. A circle root without
-`admins` (one written before it was defined), like a founding dinner, is judged by the release
-signer set. The set may start from one key, its founder's; a change of it names at least two, as
-every signer-set change does. A malformed `admins` makes the root malformed.
+`admins` is the circle's own signer set, and every circle root names it: a non-empty list of
+`{ name, key }`, each key an ed25519 admin key, none twice. `digestif circle found` names the
+founder's (the `public_key` of their `signer.json`, or `--admin-key`). Those admins, and not the
+release signers, sign every later invite's `digestif-admission-v0` and every change of their own set
+(Approvals), so the release signers never sign for, or learn who is in, a circle they are not in.
+Only a founding dinner is judged by the release signer set. The set may start from one key, its
+founder's; a change of it names at least two, as every signer-set change does. A missing or
+malformed `admins` makes the root malformed, so a circle root written before the field was defined
+admits nobody and its circle is founded again.
 
 **dinner**, written by the host's device key:
 
@@ -286,8 +287,8 @@ Appending an announcement the circle already carries is harmless.
 ```
 
 It carries a change of the signer set that holds the circle's admins to every node and to the
-relay: the release signer set ([releases.md](releases.md), "Changing the signer set"), or, in a
-circle whose root names its own `admins`, that circle's own set, which no release, channel or other
+relay: the release signer set ([releases.md](releases.md), "Changing the signer set") in a circle
+founded at a dinner, or, in a circle whose root is a `circle`, that circle's own `admins`, which no release, channel or other
 circle reads, and whose changes no node adopts into its update state or posts to the channel. `document` is the new set exactly as
 the signers signed it, and each signature is over `DIGESTIF-SIGNERS-V0\n<decoded document bytes>`.
 It is accepted under the three conditions of a signer-set change: every key of the set it replaces
@@ -357,15 +358,15 @@ A relay and every node compute the admitted set the same way, in relay order:
 
 1. Start from the root, a `circle` or, for a circle founded at a dinner, a `dinner`: admit its host
    identity and the authoring device key, and record its guests' invite keys and expiries. A
-   `circle` anywhere else is refused `wrong_circle`. A `circle` root that names `admins` sets the
-   signer set step 2 judges by to those keys.
+   `circle` anywhere else is refused `wrong_circle`. A `circle` root sets the signer set step 2
+   judges by to the keys its `admins` names.
 2. `dinner` from an admitted device: record its guests' invite keys and expiries. A dinner after
    the circle's admission cutover records a guest only when its `admission` is a
    `digestif-admission-v0` naming this circle and that invite key, signed by every key of the signer
    set the fold holds at that point, and records none while a revoked key is in that set. A relay
    refuses such a dinner whole, `not_admitted`, so its writer learns at once that it admitted nobody.
    The relay's fold starts from the `release-signers.json` its own build carries, unless the root
-   names its own `admins`, and changes by each `signer_set` and `release_revocation` that verifies
+   is a `circle`, whose own `admins` it starts from, and changes by each `signer_set` and `release_revocation` that verifies
    against the set it holds. The root is unchanged: its host is admitted by the message itself, and
    its guests by their invite keys.
 3. `join` signed by a recorded, unspent, unexpired invite key: admit the identity and device key,
@@ -757,8 +758,8 @@ A reader's status is their node's alone, and nothing about it travels:
 
 An **approval** is a request every admin must sign: an invite or a change of the signer set
 ([releases.md](releases.md), "Approvals"). The admins are the keys of the signer set that judges the
-circle's admissions: the circle root's own `admins` when it names them, else the release signer
-set. Each signs with their admin key (a release signer's is their release key), never their device key, so the approval is counted by the same
+circle's admissions: a circle root's own `admins`, or, for a circle founded at a dinner, the
+release signer set. Each signs with their admin key (a release signer's is their release key), never their device key, so the approval is counted by the same
 rule as a release: every key signed.
 
 **approval**, written by the starting admin's device key:
@@ -1184,7 +1185,7 @@ The repo's conformance suite runs these against any relay and any node:
   signature verifies, and refused when it does not.
 - Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one,
   or a request signed by any other key, is not answered.
-- Epoch: a newcomer fetches every circle-state envelope and no content from before their join.
+- Epoch: a newcomer fetches every circle-state envelope and no content from before their join, and their node reports no gap for that content.
 - Release revocation: a relay serves it to every reader, a newcomer included, without checking its
   release signatures; a node records the key as revoked when a current release signer signed it and
   ignores it otherwise.

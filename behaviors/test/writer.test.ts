@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { AwakeClock, holdAwake, SLEEP_GAP_MS } from "../src/awake.ts";
-import { agentOf, ALWAYS_ON_RULES, buildSystemPrompt, CODEX_CATALOG_NO_TOOLS, CODEX_FILING_FEATURES, CODEX_TOOL_FEATURES, codexArgs, codexCatalog, FILING_TOOLS, codexResult, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
+import { agentOf, ALWAYS_ON_RULES, buildSystemPrompt, CODEX_CATALOG_NO_TOOLS, CODEX_FILING_FEATURES, CODEX_TOOL_FEATURES, codexArgs, codexCatalog, FILING_TOOLS, codexResult, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, sessionCookieName, writeNote } from "../src/writer.ts";
 import { noLoopback } from "./loopback.ts";
 import { assertGone } from "./processes.ts";
 
@@ -310,7 +310,7 @@ test("with a node and a session, the brief and rules are read from the node's lo
     const node = `http://127.0.0.1:${addr.port}`;
     // Learnings the node does not serve yet read as empty; the deny list keeps only its entries.
     assert.deepEqual(await fetchContext({ node, session: "s1" }), { brief: "API-BRIEF", rules: "API-RULES", learnings: "", deny: [{ kind: "domain", value: "acme.example" }] });
-    assert.deepEqual(seen[0], { url: "/api/v0/brief", cookie: "digestif_session=s1", local: "1" });
+    assert.deepEqual(seen[0], { url: "/api/v0/brief", cookie: `digestif_session_${addr.port}=s1`, local: "1" });
     assert.equal(seen[1]?.url, "/api/v0/rules");
     await assert.rejects(fetchContext({ node: "https://relay.example.org", session: "s1" }), /loopback/);
     assert.equal(seen.length, 4, "the cookie goes to no other host");
@@ -352,4 +352,11 @@ test("a context read that fails rejects, Learnings included, and never reads as 
   } finally {
     server.close();
   }
+});
+
+test("each node's session cookie is named for its port, so two nodes on one machine keep two (DIG-275)", () => {
+  assert.equal(sessionCookieName(new URL("http://127.0.0.1:7420")), "digestif_session");
+  assert.equal(sessionCookieName(new URL("http://127.0.0.1:7421/api/v0/")), "digestif_session_7421");
+  assert.equal(sessionCookieName(new URL("http://[::1]:7533")), "digestif_session_7533");
+  assert.equal(sessionCookieName(new URL("http://127.0.0.1")), "digestif_session");
 });
