@@ -7888,6 +7888,39 @@ let question ?(kind = "question") ?(options = []) ?default ?deadline title :
     link = None;
   }
 
+(* DIG-219: the Inbox's index reads past its watermark, and still opens an item whose body arrives
+   after a pass read past it, and one at a local order a removed envelope held. *)
+let inbox_index_mark () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let titles () = List.map (s "title") (list (snd (call "items"))) in
+  let has t = List.mem t (titles ()) in
+  ignore (peer_item n pia (question "First?"));
+  Alcotest.(check bool) "an item that arrived" true (has "First?");
+  let late, _ =
+    peer_sign n pia "item" (peer_item_body pia ~to_:`Circle (question "Late?"))
+  in
+  ignore (ok (Node.import n { late with body = None }));
+  ignore (peer_item n pia (question "After?"));
+  Alcotest.(check (pair bool bool))
+    "read past the one without its body" (true, false)
+    (has "After?", has "Late?");
+  ignore (ok (Node.import n late));
+  Alcotest.(check bool) "opened once its body arrives" true (has "Late?");
+  let newest = Store.Stages.newest_order n.log in
+  let prev = pia.p_prev in
+  let last = peer_item n pia (question "Removed?") in
+  Log.delete n.log last;
+  pia.p_seq <- pia.p_seq - 1;
+  pia.p_prev <- prev;
+  let again = peer_item n pia (question "Again?") in
+  Alcotest.(check bool)
+    "a removed envelope's order is not given again" true
+    ((Option.get (Log.find n.log again)).local_order > newest + 1);
+  Alcotest.(check bool) "read after a removal" true (has "Again?")
+
 (* DIG-179: the count beside Inbox is one for each bold row, and the Inbox lists threads: every
    item about one message is one row, bold while any of them is Draft or New. *)
 let inbox_count_threads () =
@@ -14347,6 +14380,8 @@ let () =
           Alcotest.test_case "sync health" `Quick sync_health;
           Alcotest.test_case "the Inbox count is one per thread" `Quick
             inbox_count_threads;
+          Alcotest.test_case "inbox: the index's watermark" `Quick
+            inbox_index_mark;
           Alcotest.test_case "a check that cannot finish" `Quick
             check_could_not_finish;
           Alcotest.test_case "command sources" `Quick command_sources;

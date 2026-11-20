@@ -605,7 +605,9 @@ type insert = Inserted | Already_held | Body_restored
 
 (* Store a verified envelope. Idempotent by hash; a body arriving for an envelope held without one
    is kept unless the envelope was retracted. Its local_order is one past the highest held, which
-   envelopes_local_order answers from the index's end rather than a scan of the log (ISS-47475).
+   envelopes_local_order answers from the index's end rather than a scan of the log (ISS-47475),
+   and past the highest one [delete] removed: a local order is never given twice, so a reader that
+   kept one (a read mark, an index's watermark) reads past it safely (DIG-219).
    [signed_here] marks an envelope this node signed, which envelopes_signed_here_seq holds to one
    per seq of its author's chain. *)
 let insert ?(signed_here = false) t ~hash (sg : Envelope.signed) =
@@ -624,7 +626,9 @@ let insert ?(signed_here = false) t ~hash (sg : Envelope.signed) =
         "INSERT INTO envelopes (hash, author, seq, prev, kind, epoch, \
          created_at, envelope, body, reply_to, local_order, stored_at, \
          signed_here) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT \
-         COALESCE(MAX(local_order), 0) + 1 FROM envelopes), ?, ?)"
+         MAX(COALESCE(MAX(local_order), 0), COALESCE((SELECT CAST(value AS \
+         INTEGER) FROM config WHERE key = 'log_order_removed'), 0)) + 1 FROM \
+         envelopes), ?, ?)"
         [
           s hash;
           s e.author;
@@ -703,6 +707,12 @@ let each_hash_column t f =
    until a relay takes it, so nothing else on the wire names it; the local rows that do are moved to
    the new hash, or let go with the removed one. *)
 let delete t hash =
+  exec t
+    "INSERT INTO config (key, value) SELECT 'log_order_removed', \
+     CAST(local_order AS TEXT) FROM envelopes WHERE hash = ? ON CONFLICT (key) \
+     DO UPDATE SET value = CAST(MAX(CAST(config.value AS INTEGER), CAST( \
+     excluded.value AS INTEGER)) AS TEXT)"
+    [ s hash ];
   exec t "DELETE FROM envelopes WHERE hash = ?" [ s hash ];
   each_hash_column t (fun table column on_delete ->
       match on_delete with
