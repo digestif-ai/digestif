@@ -4423,6 +4423,10 @@
           "responses": {
             "202": {
               "type": "unit"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "The run could not start: writing is paused (code paused), a note is waiting for approval (note_waiting), or a run is writing already (running)."
             }
           }
         }
