@@ -47,27 +47,73 @@ type env = {
   announce :
     Release.relay_manifest Release.signed -> (announced, string) result;
   say : string -> unit;
+  timer : Timing.t;
+      (** Where each step's time goes (sign --next's timing log), or
+          [Timing.none]. *)
 }
 
 let tag_of version = Sign_next.relay_tag_prefix ^ Version.to_string version
 let failed r = Result.map_error (fun e -> Failed e) r
 
-(* Step 1: the draft's manifest and the signature of every signer, checked; the signatures kept
-   are, per signer, the one that verified, as manifest.sig.json carries them. *)
-let verified env ~version =
-  let tag = tag_of version in
+(* Each step of the run timed into [env.timer] as "settle <step>": sign --next times the whole run
+   as its "settle" step, and these lines say which part of it the time went to. *)
+let time env step f = Timing.time env.timer ("settle " ^ step) f
+
+(* The draft named [tag] in a fresh read of the releases listing: its assets as they are now, the
+   signature just uploaded included. *)
+let listed_draft env ~tag =
   let* listed = failed (env.gh [ "api"; Sign_next.releases_path env.repo ]) in
   let* releases = failed (Sign_next.relay_releases_of_string listed) in
-  let* release =
-    match List.find_opt (fun (r : Sign_next.draft) -> r.tag = tag) releases with
-    | Some r -> Ok r
-    | None -> Error (Failed ("the release " ^ tag ^ " is gone"))
+  match List.find_opt (fun (r : Sign_next.draft) -> r.tag = tag) releases with
+  | Some r -> Ok r
+  | None -> Error (Failed ("the release " ^ tag ^ " is gone"))
+
+(* The draft's manifest.json: [known], the bytes the caller already downloaded from it, when the
+   draft's manifest.json is still those bytes by the digest GitHub computed, else downloaded now. *)
+let manifest_bytes env ~known (release : Sign_next.draft) =
+  match (known, Sign_next.manifest_asset release) with
+  | Some b, Ok { Sign_next.digest = Some d; _ } when d = Keys.hash_of_bytes b ->
+      Ok b
+  | _ -> Sign_next.fetch_manifest ~gh:env.gh ~repo:env.repo release
+
+(* Every signature asset on the draft, downloaded at once. *)
+let signature_assets env (release : Sign_next.draft) =
+  let assets =
+    List.filter
+      (fun (a : Sign_next.asset) -> Sign_next.is_signature_asset a.name)
+      release.assets
   in
-  let* bytes, doc =
-    failed
-      (let* b = Sign_next.fetch_manifest ~gh:env.gh ~repo:env.repo release in
-       Sign_next.relay_manifest_of release b)
+  Release.all Fun.id
+    (Parallel.map
+       (fun (a : Sign_next.asset) ->
+         let* b = Sign_next.download_asset ~gh:env.gh ~repo:env.repo a in
+         Result.map_error
+           (fun e -> a.name ^ ": " ^ e)
+           (Release.signatures_of_string b))
+       assets)
+
+(* Step 1: the draft's manifest and the signature of every signer, checked; the signatures kept
+   are, per signer, the one that verified, as manifest.sig.json carries them. The listing and the
+   channel's trust are read at once, then the manifest and the signatures at once. *)
+let verified env ?manifest ~version () =
+  let tag = tag_of version in
+  let release, trust =
+    Parallel.both
+      (fun () -> time env "listing" (fun () -> listed_draft env ~tag))
+      (fun () -> time env "trust" (fun () -> failed (env.trust ())))
   in
+  let* release = release in
+  let* trust = trust in
+  let bytes, sigs =
+    Parallel.both
+      (fun () ->
+        time env "manifest" (fun () ->
+            failed (manifest_bytes env ~known:manifest release)))
+      (fun () ->
+        time env "signatures" (fun () -> failed (signature_assets env release)))
+  in
+  let* bytes = bytes in
+  let* bytes, doc = failed (Sign_next.relay_manifest_of release bytes) in
   let* () =
     if Version.equal doc.relay_version version then Ok ()
     else
@@ -77,19 +123,7 @@ let verified env ~version =
               "%s's manifest names version %s; nothing was published" tag
               (Version.to_string doc.relay_version)))
   in
-  let* sigs =
-    failed
-      (Release.all
-         (fun (a : Sign_next.asset) ->
-           let* b = Sign_next.download_asset ~gh:env.gh ~repo:env.repo a in
-           Result.map_error
-             (fun e -> a.name ^ ": " ^ e)
-             (Release.signatures_of_string b))
-         (List.filter
-            (fun (a : Sign_next.asset) -> Sign_next.is_signature_asset a.name)
-            release.assets))
-  in
-  let* trust = failed (env.trust ()) in
+  let* sigs = sigs in
   let kept =
     Release.verified_signatures ~domain:Release.relay_release_domain
       ~wanted:(fun k ->
@@ -315,9 +349,11 @@ let announced_line = function
   | No_node line ->
       "No node runs here; announce it from a machine running one:\n  " ^ line
 
-let run env ~version =
+(* [manifest]: the draft's manifest.json as the caller already downloaded it (sign --next), used
+   when the draft still holds those bytes. *)
+let run ?manifest env ~version =
   let tag = tag_of version in
-  let* release, signed, trust = verified env ~version in
+  let* release, signed, trust = verified env ?manifest ~version () in
   env.say
     (Printf.sprintf "%s: signed by %s." tag
        (String.concat ", "
@@ -325,6 +361,7 @@ let run env ~version =
   let* () =
     if release.draft then (
       let* _ =
+        time env "release-edit" @@ fun () ->
         failed
           (env.gh
              [
@@ -345,6 +382,7 @@ let run env ~version =
       Ok ())
   in
   let* changed =
+    time env "channel" @@ fun () ->
     failed
       (env.channel
          ~message:
@@ -358,6 +396,8 @@ let run env ~version =
      else
        Printf.sprintf "The channel already holds relay/%s/."
          (Version.to_string version));
-  let* announced = failed (env.announce signed) in
+  let* announced =
+    time env "announce" (fun () -> failed (env.announce signed))
+  in
   env.say (announced_line announced);
   Ok announced
