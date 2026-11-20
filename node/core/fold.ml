@@ -125,11 +125,14 @@ let author_in_force t entry key =
           else None)
 
 (* A node must not read this envelope: its author is revoked and it is outside the cutoff. *)
-let past_cutoff t entry =
-  match find t entry.envelope.author with
-  | Some ({ revoked_by = Some _; _ } as k) ->
-      not (within_cutoff k ~seq:entry.envelope.seq ~hash:entry.hash)
+let past_cutoff_at t ~author ~seq ~hash =
+  match find t author with
+  | Some ({ revoked_by = Some _; _ } as k) -> not (within_cutoff k ~seq ~hash)
   | _ -> false
+
+let past_cutoff t entry =
+  past_cutoff_at t ~author:entry.envelope.author ~seq:entry.envelope.seq
+    ~hash:entry.hash
 
 let admit t ~key ~role ~identity ~admitted_by ~join_epoch =
   if not (Hashtbl.mem t.keys key) then

@@ -1096,6 +1096,47 @@ let fork_surfaced () =
        (fun (r : Log.row) -> r.hash)
        (View.feed c.roman.log (Node.fold c.roman)))
 
+(* The chain check reads only each envelope's (seq, hash, prev, epoch): a hole past the floor is a
+   gap, two hashes at one seq a fork, a prev naming another envelope a broken chain, and an open gap
+   is resolved once its seq is held or falls below the floor. A gap already open is not recorded
+   again. DIG-210 *)
+let chain_faults_from_links () =
+  let link ?prev ?(epoch = 0) seq hash =
+    { Log.author = "k"; seq; hash; prev; epoch }
+  in
+  let links =
+    [
+      link 1 "a";
+      link ~prev:"zz" 2 "b";
+      link ~prev:"b" 3 "c1";
+      link ~prev:"b" 3 "c2";
+      link ~prev:"d" 5 "e";
+    ]
+  in
+  let faults, resolved =
+    Sync.chain_faults ~floor:0 ~author:"k" ~open_gaps:[ 2 ] links
+  in
+  Alcotest.(check (list (pair string int)))
+    "a broken chain, a fork, a gap"
+    [ ("broken_chain", 2); ("fork", 3); ("gap", 4) ]
+    (List.map (fun (k, _, seq, _) -> (k, seq)) faults);
+  Alcotest.(check (list int)) "the held seq's gap resolves" [ 2 ] resolved;
+  let faults, _ =
+    Sync.chain_faults ~floor:0 ~author:"k" ~open_gaps:[ 4 ] links
+  in
+  Alcotest.(check bool)
+    "an open gap is not recorded again" false
+    (List.exists (fun (k, _, _, _) -> k = "gap") faults);
+  (* Below the floor a hole is content written before the join, never a gap. *)
+  let faults, resolved =
+    Sync.chain_faults ~floor:2 ~author:"k" ~open_gaps:[ 1 ]
+      [ link ~epoch:1 2 "b"; link ~epoch:2 ~prev:"b" 3 "c" ]
+  in
+  Alcotest.(check (list string))
+    "no gap below the floor" []
+    (List.map (fun (k, _, _, _) -> k) faults);
+  Alcotest.(check (list int)) "a gap below the floor resolves" [ 1 ] resolved
+
 let duplicates_idempotent () =
   let c = make_circle () in
   let _, sg = ok (Node.write c.host ~kind:"summary" (summary "once")) in
@@ -2155,6 +2196,8 @@ let () =
           Alcotest.test_case "gap backfill" `Quick gap_backfill;
           Alcotest.test_case "no gap before the join" `Quick no_gap_before_join;
           Alcotest.test_case "fork surfaced" `Quick fork_surfaced;
+          Alcotest.test_case "chain faults from links" `Quick
+            chain_faults_from_links;
           Alcotest.test_case "device publish resumes, refuses admitted" `Quick
             device_publish_resumes;
           Alcotest.test_case "a refused own envelope is dropped" `Quick
