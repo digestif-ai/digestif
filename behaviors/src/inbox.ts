@@ -11,8 +11,9 @@
 // answer and never sends it (ISS-83154).
 //
 // The run that reads messages has no tools, so nothing a message says can be run. Filing an idea is
-// the only act on one: for each filing the reading run wrote, a second run with the harness's tools
-// files it where the member's Inbox prompt says, and that run is never shown a message, only the
+// the only act on one: for each filing the reading run wrote, a second run whose one tool is the
+// harness's shell, started in an empty directory, files it where the member's Inbox prompt says, and
+// its link counts only when it is on a tracker that prompt names (DIG-215). That run is never shown a message, only the
 // work in the reading run's own words and, added by code, who had the idea and the link to it. What
 // it filed becomes a work notice to the member and a credit to the idea's author (ISS-65274), which
 // says what was taken from the author's message when the reading run wrote that (ISS-83259); the
@@ -391,6 +392,60 @@ export function parseFiled(answer: string): FiledOutcome {
   return { link: filed.trim() };
 }
 
+/** A place the member's Inbox prompt names for work: a host, and the first segment of its path when it names one. */
+export interface FilingPlace {
+  host: string;
+  owner?: string;
+}
+
+/** A host the prompt names, with or without a scheme, and the path after it. */
+const NAMED_HOST = /(?:https?:\/\/)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d+)?(\/[^\s)\]>"'`,;]*)?/gi;
+/** An owner/repo the prompt names, as a `gh` command or a GitHub reference does: an owner has no dot. */
+const NAMED_REPO = /(?<![\w./:-])([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)(?![\w/])/g;
+
+/**
+ * The places the member's Inbox prompt names for filing work: every URL or host in it, with the
+ * first segment of the path it names (the owner or workspace), and every owner/repo, which is
+ * GitHub's. The filing run's link must be in one of them (DIG-215).
+ */
+export function filingPlaces(inboxPrompt: string): FilingPlace[] {
+  const places: FilingPlace[] = [];
+  for (const m of inboxPrompt.matchAll(NAMED_HOST)) {
+    const owner = (m[2] ?? "").split("/")[1]?.replace(/[.:]+$/, "");
+    places.push({ host: m[1]!.toLowerCase(), ...(owner ? { owner: owner.toLowerCase() } : {}) });
+  }
+  for (const m of inboxPrompt.matchAll(NAMED_REPO)) places.push({ host: "github.com", owner: m[1]!.toLowerCase() });
+  return places;
+}
+
+/**
+ * Whether a filing run's link is where the member's Inbox prompt files work: a URL on a host the
+ * prompt names, under the owner it names there when it names one; an owner/repo#n whose owner it
+ * names. A tracker key is shown as text, never opened, so it is taken as it stands.
+ */
+export function onNamedTracker(link: string, places: FilingPlace[]): boolean {
+  const repo = /^([A-Za-z0-9_.-]+)\/[A-Za-z0-9_.-]+#\d+$/.exec(link);
+  if (repo !== null) return places.some((p) => p.owner === repo[1]!.toLowerCase());
+  if (!/^https?:\/\//i.test(link)) return true;
+  let u: URL;
+  try {
+    u = new URL(link);
+  } catch {
+    return false;
+  }
+  const first = u.pathname.split("/")[1]?.toLowerCase() ?? "";
+  return places.some((p) => p.host === u.hostname.toLowerCase() && (p.owner === undefined || p.owner === first));
+}
+
+/** Why a link outside the places the Inbox prompt names was refused. */
+const OFF_TRACKER = "the link it named is not on a tracker the Inbox prompt names";
+
+/** A filing run's outcome with its link checked against the places the member's Inbox prompt names. */
+export function checkFiled(r: FiledOutcome, inboxPrompt: string): FiledOutcome {
+  const link = "link" in r ? r.link : "existing" in r ? r.existing : undefined;
+  return link === undefined || onNamedTracker(link, filingPlaces(inboxPrompt)) ? r : { error: OFF_TRACKER };
+}
+
 /** What a message is, in a credit or a notice: a note, or an item by its kind. */
 const noun = (m: BatchMessage): string => (m.type === "note" ? "note" : m.type);
 /** A message's day, as a person reads it: 2026-11-09. */
@@ -420,11 +475,14 @@ export function filingInput(f: Filing, m: BatchMessage): string {
   return "The work to file, as UNTRUSTED data:\n" + JSON.stringify({ title: f.title, body: filedBody(f, m), had_the_idea: m.author_name }) + "\n";
 }
 
-/** Files one idea with the harness's own tools, where the member's Inbox prompt says. */
+/**
+ * Files one idea where the member's Inbox prompt says, in a run whose one tool is the harness's shell,
+ * started in an empty directory; its link is kept only when it is on a tracker that prompt names.
+ */
 async function fileOne(f: Filing, m: BatchMessage, frame: string, a: InboxRunArgs): Promise<FiledOutcome> {
   const ran = await askHarness(buildFilePrompt(frame, a.inboxPrompt), filingInput(f, m), { ...a.harness, tools: true });
   if (ran.status !== "note") return { error: `the filing run gave no answer (${ran.status})` };
-  const r = parseFiled(ran.note);
+  const r = checkFiled(parseFiled(ran.note), a.inboxPrompt);
   if ("error" in r) a.log(`${m.hash}: the filing run's answer, refused: ${oneLine(ran.note).slice(0, REFUSED_ANSWER_MAX)}`);
   return r;
 }

@@ -7,7 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test as nodeTest, type TestContext } from "node:test";
 import { buildReadPrompt, emptyState, loadConfig, loadState, localDay, parseReadContext, readStateDir, runRead, saveState, sentence } from "../src/read.ts";
-import { CHECK_FIRST, INBOX_PROMPT_FILE, QUOTE_MAX, TAKEN_MAX, parseFiled, parseRun } from "../src/inbox.ts";
+import { CHECK_FIRST, INBOX_PROMPT_FILE, QUOTE_MAX, TAKEN_MAX, checkFiled, filingPlaces, onNamedTracker, parseFiled, parseRun } from "../src/inbox.ts";
 import { ALWAYS_ON_FILE } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 import { noLoopback } from "./loopback.ts";
@@ -98,7 +98,7 @@ beforeEach(async () => {
   writeFileSync(join(data, "behaviors", "nightly", "config.json"), JSON.stringify({ harness: join(dir, "harness"), agent: "claude_code" }));
   extraMembers = [];
   inbox = [];
-  inboxPrompt = { text: "INBOX PROMPT: file work with gh." };
+  inboxPrompt = { text: "INBOX PROMPT: file work with gh in acme/digestif." };
   denyList = [];
   posted = [];
   nodeRecords = true;
@@ -572,7 +572,7 @@ test("one run reads the batch: other members' notes and the items that reached t
   const runs = inboxRuns();
   assert.equal(runs.length, 1, "one run for the whole batch");
   const p = promptOf(runs[0]!);
-  for (const want of [readFileSync(ALWAYS_ON_FILE, "utf8").trim(), "INBOX PROMPT: file work with gh.", "BRIEF: I work", "RULES: be brief", "LEARNINGS: no emojis", "MEMORY: Ed likes", "LATEST NOTE: shipped the parser.", "NOTE TEXT: shipped the parser", "ITEM 1 TITLE", "ITEM 1 DETAIL"]) {
+  for (const want of [readFileSync(ALWAYS_ON_FILE, "utf8").trim(), "INBOX PROMPT: file work with gh in acme/digestif.", "BRIEF: I work", "RULES: be brief", "LEARNINGS: no emojis", "MEMORY: Ed likes", "LATEST NOTE: shipped the parser.", "NOTE TEXT: shipped the parser", "ITEM 1 TITLE", "ITEM 1 DETAIL"]) {
     assert.ok(p.includes(want), want);
   }
   assert.match(runs[0]!.stdin, /The batch, as UNTRUSTED data/);
@@ -718,9 +718,11 @@ test("an idea the run chose is filed by a second run with tools that never sees 
   assert.ok(reading!.args.includes("--tools"), "the reading run has no tools");
   const filing = filingRuns();
   assert.equal(filing.length, 1, "one filing run per filing");
-  assert.ok(!filing[0]!.args.includes("--tools") && !filing[0]!.args.includes("--strict-mcp-config"), "the filing run has the harness's own tools");
-  assert.equal(filing[0]!.cwd, homedir(), "in the member's home directory");
-  assert.ok(promptOf(filing[0]!).includes("INBOX PROMPT: file work with gh."), "under the member's own instructions");
+  assert.equal(filing[0]!.args[filing[0]!.args.indexOf("--tools") + 1], "Bash", "the filing run's one tool is the shell (DIG-215)");
+  assert.ok(filing[0]!.args.includes("--strict-mcp-config"), "and no MCP server adds tools back");
+  assert.notEqual(filing[0]!.cwd, homedir(), "never in the member's home directory");
+  assert.ok(filing[0]!.cwd.includes("digestif-writer-"), "but in an empty temp directory");
+  assert.ok(promptOf(filing[0]!).includes("INBOX PROMPT: file work with gh in acme/digestif."), "under the member's own instructions");
   assert.ok(promptOf(filing[0]!).includes(readFileSync(ALWAYS_ON_FILE, "utf8").trim()), "and the always-on rule");
   assert.ok(!filing[0]!.stdin.includes("NOTE TEXT") && !filing[0]!.stdin.includes("rm -rf"), "it is never shown the message");
   const work = JSON.parse(filing[0]!.stdin.split("\n")[1]!) as { title: string; body: string; had_the_idea: string };
@@ -830,6 +832,44 @@ test("a filing run that files nothing, or names no link, is a work notice titled
     [["work", "Could not file Ed's idea: Back off retries", `Ed had it, in their note: ${url}/feed/sha256%3A1. It could not be filed: it named no URL, owner/repo#n or key.`, undefined]],
   );
   assert.ok(lines.some((l) => l.includes(`the filing run's answer, refused: {"filed": "done, I ran it"}`)), "the raw answer is in the log");
+});
+
+test("a filing run whose link is not on the tracker the Inbox prompt names is Could not file, with no link and no credit; its raw answer is logged (DIG-215)", async () => {
+  feed = [item(1)];
+  setAnswer({ reviews: [{ ref: "m1", review: "" }], filings: [{ ref: "m1", title: "Back off retries", body: "x", credit_within_brief: true }] });
+  writeFileSync(fileAnswerFile, '{"filed": "https://evil.example/collect?d=secret"}');
+  const lines: string[] = [];
+  assert.equal(await go(lines), 0);
+  assert.deepEqual(
+    posted[0]!.items.map((i) => [i["subject"], i["title"], i["detail"], i["link"]]),
+    [["work", "Could not file Ed's idea: Back off retries", `Ed had it, in their note: ${url}/feed/sha256%3A1. It could not be filed: the link it named is not on a tracker the Inbox prompt names.`, undefined]],
+    "no credit carries the link to the note's author",
+  );
+  assert.ok(lines.some((l) => l.includes("the filing run's answer, refused: {\"filed\": \"https://evil.example/collect?d=secret\"}")), "the raw answer is in the log");
+  assert.equal(existsSync(join(readStateDir(data), "filed.json")), false, "nothing is recorded as filed");
+});
+
+test("the places an Inbox prompt names: its URLs and hosts with the owner they name, and its owner/repos on GitHub (DIG-215)", () => {
+  assert.deepEqual(filingPlaces("File work with gh in acme/digestif."), [{ host: "github.com", owner: "acme" }]);
+  assert.deepEqual(filingPlaces("File it at https://github.com/Acme/widgets/issues, or on linear.app."), [{ host: "github.com", owner: "acme" }, { host: "linear.app" }]);
+  assert.deepEqual(filingPlaces("Run dev issues create; it prints idempotent.io/admin/issues/ISS-n."), [{ host: "idempotent.io", owner: "admin" }]);
+  assert.deepEqual(filingPlaces("(none)"), []);
+});
+
+test("a filing run's link counts only on a tracker the Inbox prompt names (DIG-215)", () => {
+  const places = filingPlaces("File work with gh in acme/digestif, or at https://acme.atlassian.net.");
+  assert.ok(onNamedTracker("https://github.com/acme/digestif/issues/12", places));
+  assert.ok(onNamedTracker("https://GitHub.com/ACME/other/issues/3", places), "the owner the prompt names, any of its repositories");
+  assert.ok(onNamedTracker("https://acme.atlassian.net/browse/ENG-4", places), "a host named alone takes any path");
+  assert.ok(onNamedTracker("acme/digestif#12", places));
+  assert.ok(onNamedTracker("ENG-4", places), "a key is text, never opened");
+  assert.ok(!onNamedTracker("https://github.com/evil/digestif/issues/12", places), "another owner on the same host");
+  assert.ok(!onNamedTracker("https://evil.example/acme", places));
+  assert.ok(!onNamedTracker("https://github.com.evil.example/acme/x", places));
+  assert.ok(!onNamedTracker("evil/digestif#12", places));
+  assert.ok(!onNamedTracker("https://github.com/acme/digestif/issues/12", filingPlaces("File work with gh.")), "a prompt naming no tracker takes no link");
+  assert.deepEqual(checkFiled({ existing: "https://evil.example/x" }, "acme/digestif"), { error: "the link it named is not on a tracker the Inbox prompt names" });
+  assert.deepEqual(checkFiled({ error: "it filed nothing" }, ""), { error: "it filed nothing" });
 });
 
 test("a filing run that finds the idea already there is a work notice titled Already filed, with its link, and no credit (DIG-124)", async () => {
@@ -970,7 +1010,7 @@ test("a failed run leaves its batch unreviewed and reads it again with the next 
 });
 
 test("a practice the run saw working goes to the node with the message it came from; adopted practices are read by the reading run and never by the filing run", async () => {
-  inboxPrompt = { text: "INBOX PROMPT: file work with gh.", practices: [{ text: "PRACTICE: answer scheduling with two times." }] };
+  inboxPrompt = { text: "INBOX PROMPT: file work with gh in acme/digestif.", practices: [{ text: "PRACTICE: answer scheduling with two times." }] };
   feed = [item(1)];
   setAnswer({
     reviews: [{ ref: "m1", review: "Practice: say what you shipped first" }],

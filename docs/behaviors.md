@@ -226,7 +226,8 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   brief and the member's own recent notes, and recording what the Inbox agent did (its review lines,
   its answers, its drafts, its work notices and the credits for what it filed). Every outbound
   message passes the deny layer there too. The run that reads the batch has no tools; only the
-  filing run, handed the work and never a message, runs with the harness's own.
+  filing run, handed the work and never a message, runs with the harness's shell alone, in an empty
+  directory, and its link counts only on a tracker the Inbox prompt names.
 
 The writer is the coding agent the member chose at install (docs/design.md, Flows), recorded in the
 node's config with `digestif writer set <program>`, which is what a node running as the service

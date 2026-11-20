@@ -260,10 +260,14 @@ goes either way: someone needs something the member could do, or someone has wha
 (they solved what the member is stuck on), and then it recommends reaching out, with one sentence
 of why and the link to their message; how is the member's call. Filing is where the member's Inbox
 prompt says, never a product setting: the run that reads the batch has no tools, so nothing a
-message says is ever run, and a second run with the harness's tools is handed only the work in the
+message says is ever run, and a second run, whose one tool is the harness's shell (no file, web,
+MCP or sub-agent tool) and which starts in an empty directory, is handed only the work in the
 agent's own words, with code opening the body with who had the idea, the link to it and the check
 whoever takes the work runs first (whether it is already built or filed), and files it under the
-member's instructions without searching for it. An answer to a note past the brief and Rules waits as a draft reply, on the
+member's instructions without searching for it. Its link counts only on a tracker the Inbox
+prompt names, by a URL or host (and the owner or workspace it names there) or an owner/repo on
+GitHub; any other is refused and the work reads Could not file, so no steered run can hand an
+author a link of its own. An answer to a note past the brief and Rules waits as a draft reply, on the
 note and on a work notice about it, which the member edits and sends as their own; on a work notice
 or a note with none, Draft a reply runs the agent on that one note at the next pass, and its draft
 is never sent. Code, never the agent's words, writes what came of each filing: a work notice to the
