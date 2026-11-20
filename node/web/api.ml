@@ -3210,17 +3210,22 @@ module Inbox = struct
         if Log.get_config l k_fold <> Some (fold_signature c.fold) then
           I.forget_unread l;
         let each kind f =
-          I.unindexed l kind
-          |> List.concat_map (fun hash ->
-              match Log.find l hash with
-              | Some r when r.signed.body <> None || r.retracted_by <> None ->
-                  let body =
-                    if r.retracted_by = None then r.signed.body else None
-                  in
-                  f c ~priv r
-                    (identity_of c r.signed.envelope.author)
-                    r.signed.envelope.created_at body
-              | _ -> [])
+          let pass = I.unindexed l kind in
+          let x =
+            pass.hashes
+            |> List.concat_map (fun hash ->
+                match Log.find l hash with
+                | Some r when r.signed.body <> None || r.retracted_by <> None ->
+                    let body =
+                      if r.retracted_by = None then r.signed.body else None
+                    in
+                    f c ~priv r
+                      (identity_of c r.signed.envelope.author)
+                      r.signed.envelope.created_at body
+                | _ -> [])
+          in
+          Store.Index_mark.settle l pass;
+          x
         in
         (* An item indexed in this pass is not freshened by a follow-up of the same pass: it is
            New or Read as it arrived (the follow-ups are indexed first, when its row does not
@@ -6403,6 +6408,7 @@ module Approvals = struct
           A.forget_unread l;
           Log.set_config l k_fold signature);
         let each kind f =
+          let pass = A.unindexed l kind in
           List.iter
             (fun hash ->
               match Log.find l hash with
@@ -6412,7 +6418,8 @@ module Approvals = struct
                   in
                   f r (identity_of c r.signed.envelope.author) body
               | _ -> ())
-            (A.unindexed l kind)
+            pass.hashes;
+          Store.Index_mark.settle l pass
         in
         each "approval" (fun r author body ->
             A.put l ~hash:r.hash

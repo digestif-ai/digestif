@@ -2488,6 +2488,93 @@ CREATE TABLE IF NOT EXISTS ui_note_readable (
       | _ -> None
 end
 
+(* DIG-219: how far an index of the log has read, per envelope kind, so an Inbox read costs what
+   arrived since its last pass rather than a probe of every envelope of the kind. The watermark is
+   the newest local order a pass read (local orders are never given twice, Log.insert); an
+   envelope at or under it whose body had not arrived waits in ui_index_waiting until its body
+   does, and is read from there. A kind's index that drops rows to open them again ([forget]) reads
+   from the start once. *)
+module Index_mark = struct
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_index_waiting (
+  kind TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  PRIMARY KEY (kind, hash)
+);
+|}
+
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+  let key kind = "ui_index_mark_" ^ kind
+
+  let mark (log : Log.t) kind =
+    Option.value
+      (Option.bind (Log.get_config log (key kind)) int_of_string_opt)
+      ~default:0
+
+  let forget (log : Log.t) kinds =
+    List.iter
+      (fun kind ->
+        Log.unset_config log (key kind);
+        Log.exec log "DELETE FROM ui_index_waiting WHERE kind = ?"
+          [ Log.s kind ])
+      kinds
+
+  (* One pass's reading: the [kind] envelopes [table] has no row for, past the watermark or
+     waiting, oldest first, and the newest local order it read up to. *)
+  type pass = {
+    kind : string;
+    table : string;
+    upto : int;
+    hashes : string list;
+  }
+
+  let missing table =
+    Printf.sprintf "NOT EXISTS (SELECT 1 FROM %s i WHERE i.hash = e.hash)" table
+
+  let read (log : Log.t) ~table kind =
+    let upto =
+      match Log.rows log "SELECT MAX(local_order) FROM envelopes" [] with
+      | [ [| v |] ] -> Log.int v
+      | _ -> 0
+    in
+    let hashes =
+      Log.rows log
+        (Printf.sprintf
+           "SELECT hash, local_order FROM envelopes e WHERE local_order > ?2 \
+            AND local_order <= ?3 AND kind = ?1 AND %s UNION SELECT e.hash, \
+            e.local_order FROM ui_index_waiting w JOIN envelopes e ON e.hash = \
+            w.hash WHERE w.kind = ?1 AND %s ORDER BY 2"
+           (missing table) (missing table))
+        [ Log.s kind; Log.i (mark log kind); Log.i upto ]
+      |> List.map (fun r -> Log.text r.(0))
+    in
+    { kind; table; upto; hashes }
+
+  (* After the pass has indexed what it could: what it read and left without a row waits, what
+     waited and now has one stops waiting, and the watermark moves to what it read up to. *)
+  let settle (log : Log.t) p =
+    List.iter
+      (fun h ->
+        let indexed =
+          Log.rows log
+            (Printf.sprintf "SELECT 1 FROM %s WHERE hash = ?" p.table)
+            [ Log.s h ]
+          <> []
+        in
+        if indexed then
+          Log.exec log
+            "DELETE FROM ui_index_waiting WHERE kind = ? AND hash = ?"
+            [ Log.s p.kind; Log.s h ]
+        else
+          Log.exec log
+            "INSERT OR IGNORE INTO ui_index_waiting (kind, hash) VALUES (?, ?)"
+            [ Log.s p.kind; Log.s h ])
+      p.hashes;
+    if p.upto > mark log p.kind then
+      Log.set_config log (key p.kind) (string_of_int p.upto)
+end
+
 (* ISS-52609: the member's Inbox (docs/protocol.md, Items). One row per item this node holds: a
    draft the member or their agent wrote, an item sent, and an item that reached them, indexed
    from the log once per envelope. What is the member's alone lives here and never
@@ -2573,6 +2660,11 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      brought under that rule. *)
   let k_items_z = "ui_items_created_z"
 
+  (* An item's rank: 0 for a Draft or New one ([status_sql]), 1 for a Read one. *)
+  let rank_sql =
+    "CASE WHEN sent_at IS NULL OR read_at IS NULL OR fresh = 1 THEN 0 ELSE 1 \
+     END"
+
   (* ISS-85004: a credit's [adopted]. ISS-85463: the [quote] of the message an item came from.
      DIG-124: [link], where a work notice's or a credit's idea was filed.
      ISS-88476: [archived_at], when the member archived it out of their Inbox, and [clock_due], set
@@ -2622,6 +2714,24 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
               [ h; h; at ]
         | _ -> ());
       Log.set_config log k_items_z "1");
+    (* DIG-219: an item's place in the Inbox, Draft and New first ([rank_sql]), stored beside the
+       columns it reads, so a page walks ui_items_inbox in its order and stops at its limit rather
+       than ranking and sorting every row; the index leaves out the rows this node cannot read.
+       table_xinfo, since table_info does not list a generated column. *)
+    if
+      not
+        (Log.rows log "PRAGMA table_xinfo(ui_items)" []
+        |> List.exists (fun r ->
+            Array.length r > 1 && Log.text r.(1) = "inbox_rank"))
+    then
+      Log.exec log
+        ("ALTER TABLE ui_items ADD COLUMN inbox_rank INTEGER GENERATED ALWAYS \
+          AS (" ^ rank_sql ^ ") VIRTUAL")
+        [];
+    Log.exec log
+      "CREATE INDEX IF NOT EXISTS ui_items_inbox ON ui_items (inbox_rank, \
+       created_at DESC, id DESC) WHERE kind IS NOT NULL"
+      [];
     (* DIG-554: the follow-ups still to decide, found without a scan. After add_columns, which an
        older store needs before the column exists. *)
     Log.exec log
@@ -2695,12 +2805,11 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      shut: closed by a close or a pick, or by the clock at [now]. *)
   let shown =
     Printf.sprintf
-      "WITH s AS (SELECT %s, %s AS status, CASE WHEN closed = 1 OR \
+      "WITH r AS (SELECT %s, %s AS status, CASE WHEN closed = 1 OR \
        (closes_unix IS NOT NULL AND closes_unix <= ?1) THEN 1 ELSE 0 END AS \
-       shut FROM ui_items i WHERE kind IS NOT NULL AND NOT EXISTS (SELECT 1 \
-       FROM envelopes e WHERE e.hash = i.hash AND e.retracted_by IS NOT \
-       NULL)), r AS (SELECT *, CASE WHEN status IN ('draft', 'new') THEN 0 \
-       ELSE 1 END AS rank FROM s) "
+       shut, inbox_rank AS rank FROM ui_items i WHERE kind IS NOT NULL AND NOT \
+       EXISTS (SELECT 1 FROM envelopes e WHERE e.hash = i.hash AND \
+       e.retracted_by IS NOT NULL)) "
       columns status_sql
 
   let row_of = function
@@ -2985,8 +3094,10 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
               Log.int retracted = 1 )
       | _ -> None)
 
-  (* The [kind] envelopes ("item", "item_answer", "item_close" or "decision") the index has no row
-     for yet. *)
+  let kinds = [ "item"; "item_answer"; "item_close"; "decision" ]
+
+  (* The [kind] envelopes (one of [kinds]) the index has no row for yet, read past its watermark
+     (Index_mark); [Index_mark.settle] once the pass has indexed them. *)
   let unindexed (log : Log.t) kind =
     let table =
       match kind with
@@ -2995,13 +3106,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       | "item_close" -> "ui_item_closes"
       | _ -> "ui_item_picks"
     in
-    Log.rows log
-      (Printf.sprintf
-         "SELECT hash FROM envelopes e WHERE kind = ? AND NOT EXISTS (SELECT 1 \
-          FROM %s i WHERE i.hash = e.hash)"
-         table)
-      [ Log.s kind ]
-    |> List.map (fun r -> Log.text r.(0))
+    Index_mark.read log ~table kind
 
   let counts_of = function Sqlite3.Data.INT i -> Some (i = 1L) | _ -> None
 
@@ -3207,6 +3312,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   (* DIG-554, DIG-101: the items, answers, closes and picks indexed as unreadable, which is how one
      signed by a key the fold did not know yet is kept. Dropped so the next pass opens them again. *)
   let forget_unread (log : Log.t) =
+    Index_mark.forget log kinds;
     Log.exec log "DELETE FROM ui_items WHERE kind IS NULL AND local = 0" [];
     List.iter
       (fun table ->
@@ -3372,9 +3478,10 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
             voices;
           Option.map
             (fun id ->
-              ( "EXISTS (SELECT 1 FROM r c WHERE c.id = ? AND (r.rank > c.rank \
-                 OR (r.rank = c.rank AND (r.created_at < c.created_at OR \
-                 (r.created_at = c.created_at AND r.id < c.id)))))",
+              ( "EXISTS (SELECT 1 FROM ui_items c WHERE c.id = ? AND c.kind IS \
+                 NOT NULL AND (r.rank > c.inbox_rank OR (r.rank = c.inbox_rank \
+                 AND (r.created_at < c.created_at OR (r.created_at = \
+                 c.created_at AND r.id < c.id)))))",
                 [ Log.s id ] ))
             after;
         ]
@@ -3454,21 +3561,18 @@ CREATE INDEX IF NOT EXISTS ui_approval_answers_approval ON ui_approval_answers (
     effected_at : string option;
   }
 
+  (* The [kind] envelopes ("approval" or "approval_answer") the index has no row for yet, read past
+     its watermark (Index_mark). *)
   let unindexed (log : Log.t) kind =
     let table =
       if kind = "approval" then "ui_approvals" else "ui_approval_answers"
     in
-    Log.rows log
-      (Printf.sprintf
-         "SELECT hash FROM envelopes e WHERE kind = ? AND NOT EXISTS (SELECT 1 \
-          FROM %s a WHERE a.hash = e.hash)"
-         table)
-      [ Log.s kind ]
-    |> List.map (fun r -> Log.text r.(0))
+    Index_mark.read log ~table kind
 
   (* DIG-101: the approvals and answers kept as unreadable, which is how one signed by a key the
      fold did not know yet is kept. Dropped so the next pass opens them again. *)
   let forget_unread (log : Log.t) =
+    Index_mark.forget log [ "approval"; "approval_answer" ];
     Log.exec log "DELETE FROM ui_approvals WHERE readable = 0" [];
     Log.exec log "DELETE FROM ui_approval_answers WHERE approval IS NULL" []
 
@@ -4016,6 +4120,7 @@ let register_hash_columns () =
       ("ui_approvals", "item", `Keep);
       ("ui_approval_answers", "hash", `Delete);
       ("ui_approval_answers", "approval", `Keep);
+      ("ui_index_waiting", "hash", `Delete);
     ]
 
 let init (log : Log.t) =
@@ -4031,6 +4136,7 @@ let init (log : Log.t) =
   Settings.init log;
   Stages.init log;
   Pause.init log;
+  Index_mark.init log;
   Items.init log;
   Approvals.init log;
   Reviews.init log;
