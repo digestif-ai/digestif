@@ -6178,9 +6178,9 @@ module Approvals = struct
      the set it ended with, rebuilt from the keys it needed, since a set change it made is then the
      set this node holds. A promotion or a replacement needed the old set and the key that signed
      first; everything else needed the old set alone. *)
-  let judged_by c (a : A.row) answers =
+  let judged_by ~set (a : A.row) answers =
     match a.ended with
-    | None -> current c
+    | None -> set
     | Some (_, _, needed) ->
         let added =
           match a.request.kind with
@@ -6193,7 +6193,7 @@ module Approvals = struct
                 answers
           | Invite | Removal -> None
         in
-        let named = current c in
+        let named = set in
         List.filter_map
           (fun k ->
             if Some k = added then None
@@ -6206,35 +6206,49 @@ module Approvals = struct
                 | None -> { Approval.name = k; key = k }))
           needed
 
-  let progress c (a : A.row) =
+  (* What every approval of one request is judged against: the signer set and the halt, each read
+     from the update state once per request rather than once per approval (DIG-220). *)
+  type judge = {
+    set : Approval.signer list;
+    halt : Digestif_update.Release.signer list;
+  }
+
+  let judge c = { set = current c; halt = halted c }
+
+  let progress_by (j : judge) c (a : A.row) =
     let answers = answers c a in
     let p =
       Approval.fold a.request ~readers:a.readers
-        ~current:(judged_by c a answers) ~first_author:(first_author a)
-        ~now:c.now answers
+        ~current:(judged_by ~set:j.set a answers)
+        ~first_author:(first_author a) ~now:c.now answers
     in
     match a.ended with
     | Some (state, at, needed) -> { p with state; ended_at = Some at; needed }
     | None
       when p.state = Waiting
-           && Digestif_update.Signer_halt.ends ~halted:(halted c) a.request.kind
-      ->
+           && Digestif_update.Signer_halt.ends ~halted:j.halt a.request.kind ->
         { p with state = Halted; ended_at = Some c.now }
     | None -> p
 
+  let progress c a = progress_by (judge c) c a
   let all c = A.page (log c) ~limit:1000
+
+  (* Every approval beside its progress, each folded once. *)
+  let progressed (j : judge) c =
+    List.map (fun a -> (a, progress_by j c a)) (all c)
 
   (* Who holds each release key: the member whose node handed this circle a signature by it that
      counted, else the one member whose card bears the name the signer set gives the key. A key two
-     cards could claim, or none, has no holder. *)
-  let holders c =
+     cards could claim, or none, has no holder. [holders_of] takes every approval's progress already
+     folded, so a request that reads them all folds each once. *)
+  let holders_of c (all : (A.row * Approval.progress) list) =
     let learned =
       List.concat_map
-        (fun a ->
+        (fun (_, (p : Approval.progress)) ->
           List.map
             (fun (x : Approval.counted) -> (x.c_key, x.c_author))
-            (progress c a).counted)
-        (all c)
+            p.counted)
+        all
     in
     let named name =
       match
@@ -6254,6 +6268,8 @@ module Approvals = struct
       match List.assoc_opt s.key learned with
       | Some id -> Some id
       | None -> named s.name
+
+  let holders c = holders_of c (progressed (judge c) c)
 
   (* Every key of the set beside the member who holds it, when one is known. *)
   let admins c =
@@ -6301,9 +6317,8 @@ module Approvals = struct
     | Removal | Replacement -> a.request.removed_key
     | _ -> None
 
-  let to_json c (a : A.row) (p : Approval.progress) : Yojson.Safe.t =
-    let holder = holders c in
-    let set = current c in
+  let to_json_by ~holder ~set c (a : A.row) (p : Approval.progress) :
+      Yojson.Safe.t =
     let signer_of key =
       match List.find_opt (fun (s : Approval.signer) -> s.key = key) set with
       | Some s -> holder s
@@ -6382,6 +6397,8 @@ module Approvals = struct
         ]
       @ opt "document" (Option.map B64url.encode p.document)
       @ opt "item" a.item)
+
+  let to_json c a p = to_json_by ~holder:(holders c) ~set:(current c) c a p
 
   (* ---- the index and what follows from it ---- *)
 
@@ -6515,18 +6532,34 @@ module Approvals = struct
           | Error _ -> ())
     | _ -> ()
 
+  (* An approval that ended has nothing left to do on this node once its item is settled, which the
+     pass that ended it did, and its effect taken: only a signed one whose effect this node owes
+     and has not taken yet is read again (DIG-220). *)
+  let open_ c (a : A.row) =
+    match a.ended with
+    | None -> true
+    | Some (Signed, _, _) when a.effected_at = None -> (
+        match a.request.kind with
+        | Invite -> self_identity c = Some a.author
+        | Promotion | Removal | Replacement ->
+            List.exists
+              (fun (_, _, own, _, _) -> own)
+              (A.answers (log c) a.hash))
+    | Some _ -> false
+
   let sync_now c =
     index_now c;
+    let j = judge c in
     List.iter
       (fun (a : A.row) ->
-        let p = progress c a in
+        let p = progress_by j c a in
         (match (a.ended, p.ended_at) with
         | None, Some at when p.state <> Waiting ->
             A.set_ended (log c) a.hash ~state:p.state ~at ~needed:p.needed
         | _ -> ());
         file_item c a p;
         take_effect c a p)
-      (all c)
+      (List.filter (open_ c) (A.unsettled (log c)))
 
   let sync c = upkeep c (fun () -> sync_now c)
   let found c id = Option.map (fun a -> (a, progress c a)) (A.find (log c) id)
@@ -6565,15 +6598,17 @@ module Approvals = struct
             let limit =
               Option.value (Option.bind v int_of_string_opt) ~default:50
             in
-            all c
-            |> List.filter_map (fun a ->
-                let p = progress c a in
-                if
-                  wanted = []
-                  || List.mem (Approval.state_to_string p.state) wanted
-                then Some (to_json c a p)
-                else None)
+            (* DIG-220: every approval folded once, the page cut to [limit] before any is written
+               out, and the holders and the set read once for the whole page. *)
+            let j = judge c in
+            let all = progressed j c in
+            let holder = holders_of c all in
+            all
+            |> List.filter (fun (_, (p : Approval.progress)) ->
+                wanted = []
+                || List.mem (Approval.state_to_string p.state) wanted)
             |> List.filteri (fun i _ -> i < limit)
+            |> List.map (fun (a, p) -> to_json_by ~holder ~set:j.set c a p)
             |> fun l -> ok (`List l))
 
   (* "Priya Raman <priya@raman.dev>": the name and the address. *)

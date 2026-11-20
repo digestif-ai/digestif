@@ -5,6 +5,7 @@
     "transcripts": 5000,
     "notes": 1100,
     "inbox_items": 600,
+    "approvals": 300,
     "samples": 40,
     "digests": 3000,
     "summaries": 3000
@@ -40,6 +41,8 @@
     "rules/deny?limit": 0.34,
     "search": 12.21,
     "search (few)": 7.98,
+    "approvals": 6.69,
+    "approvals?state": 7.63,
     "notes?cursor": 1.13,
     "items?cursor": 4.1,
     "feed/:hash": 0.45,

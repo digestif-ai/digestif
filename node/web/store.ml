@@ -3555,6 +3555,20 @@ CREATE INDEX IF NOT EXISTS ui_approval_answers_approval ON ui_approval_answers (
       [ Log.i limit ]
     |> List.filter_map row_of
 
+  (* DIG-220: the approvals a pass still has work on: every one that has not ended, and a signed one
+     whose effect is not taken yet. One that ended otherwise is left as the pass that ended it left
+     it. *)
+  let unsettled (log : Log.t) =
+    Log.rows log
+      (Printf.sprintf
+         "SELECT %s FROM ui_approvals a WHERE readable = 1 AND (ended IS NULL \
+          OR (ended = 'signed' AND effected_at IS NULL)) AND NOT EXISTS \
+          (SELECT 1 FROM envelopes e WHERE e.hash = a.hash AND e.retracted_by \
+          IS NOT NULL) ORDER BY created_at DESC, hash DESC"
+         columns)
+      []
+    |> List.filter_map row_of
+
   let find (log : Log.t) hash =
     match
       Log.rows log
