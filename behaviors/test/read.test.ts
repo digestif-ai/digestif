@@ -969,6 +969,45 @@ test("a failed run leaves its batch unreviewed and reads it again with the next 
   assert.deepEqual(posted.at(-1)!.reviews.map((r) => r.hash), ["sha256:i1"]);
 });
 
+test("a batch holds at most the cap, oldest first; the cursor stops at the last note taken and the next run reads on from there", async () => {
+  feed = [item(6), item(5), item(4), item(3), item(2), item(1)];
+  inbox = [inboxItem(1)];
+  const capped = async () => runRead({ ctx: parseReadContext(JSON.stringify(context())), log: () => {}, maxBatch: 4 });
+  assert.equal(await capped(), 0);
+  assert.deepEqual(batchOf(inboxRuns()[0]!).map((m) => m.hash), ["sha256:1", "sha256:2", "sha256:3", "sha256:4"]);
+  assert.equal(state().cursor, "sha256:4", "the cursor is the newest note the run looked at");
+  assert.ok(!requests.some((q) => q.startsWith("/api/v0/messages/sha256%3A5")), "a note past the cap is not fetched");
+  assert.ok(!requests.includes("/api/v0/items/sha256%3Ai1"), "nor an item");
+  assert.deepEqual(seenHashes(), ["sha256:1", "sha256:2", "sha256:3", "sha256:4"]);
+  // The next run, with nothing new in the feed, reads what was left: the rest of the notes, then the item.
+  assert.equal(await capped(), 0);
+  assert.deepEqual(batchOf(inboxRuns()[1]!).map((m) => m.hash), ["sha256:5", "sha256:6", "sha256:i1"]);
+  assert.equal(state().cursor, "sha256:6");
+  assert.equal(await capped(), 0);
+  assert.equal(inboxRuns().length, 2, "nothing is left");
+});
+
+test("failed messages read again count toward the cap, and those past it stay pending", async () => {
+  setState({
+    cursor: "sha256:6",
+    pending: [1, 2, 3].map((n) => ({ hash: `sha256:p${n}`, type: "note", created_at: "2026-11-01T00:00:00Z", reads: 1 })),
+  });
+  for (const n of [1, 2, 3]) messages[`sha256:p${n}`] = { voice: "agent", text: `P${n}`, author: { identity: OTHER } };
+  feed = [item(7), ...feed];
+  setAnswer("not json");
+  assert.equal(await runRead({ ctx: parseReadContext(JSON.stringify(context())), log: () => {}, maxBatch: 2 }), 0);
+  assert.deepEqual(batchOf(inboxRuns()[0]!).map((m) => m.hash), ["sha256:p1", "sha256:p2"]);
+  assert.deepEqual(
+    state().pending.map((p: { hash: string; reads: number }) => [p.hash, p.reads]),
+    [
+      ["sha256:p1", 2],
+      ["sha256:p2", 2],
+      ["sha256:p3", 1],
+    ],
+  );
+  assert.equal(state().cursor, "sha256:6", "the new note was not looked at");
+});
+
 test("a practice the run saw working goes to the node with the message it came from; adopted practices are read by the reading run and never by the filing run", async () => {
   inboxPrompt = { text: "INBOX PROMPT: file work with gh.", practices: [{ text: "PRACTICE: answer scheduling with two times." }] };
   feed = [item(1)];

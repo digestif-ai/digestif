@@ -79,10 +79,10 @@ export async function commitsAfter(repo: string, from: { since?: number; sha?: s
   return parse(stdout).filter((c) => c.sha !== from.sha && (bySha || from.since === undefined || c.at > from.since));
 }
 
-/** The commits of every clone of one repository, each once, oldest first. */
+/** The commits of every clone of one repository, each once, oldest first. The clones are read at once. */
 export async function repositoryCommits(paths: string[], from: { since?: number; sha?: string }): Promise<Commit[]> {
   const bySha = new Map<string, Commit>();
-  for (const p of paths) for (const c of await commitsAfter(p, from)) if (!bySha.has(c.sha)) bySha.set(c.sha, c);
+  for (const cs of await Promise.all(paths.map((p) => commitsAfter(p, from)))) for (const c of cs) if (!bySha.has(c.sha)) bySha.set(c.sha, c);
   return [...bySha.values()].sort((a, b) => a.at - b.at);
 }
 

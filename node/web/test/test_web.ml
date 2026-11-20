@@ -14139,6 +14139,34 @@ let search () =
   Alcotest.(check (list string))
     "a retract stays out of a refill" [] (hashes "feed" "zeppelin")
 
+(* DIG-238: the note queries a pass or a search runs read through an index, never a scan of every
+   note or an index SQLite builds for one query. *)
+let notes_query_plans () =
+  let n = demo () in
+  let plan sql params =
+    List.map
+      (fun r -> Log.text r.(3))
+      (Log.rows n.log ("EXPLAIN QUERY PLAN " ^ sql) params)
+  in
+  let holds want lines = List.exists (fun l -> contains l want) lines in
+  let search = plan Store.Search.notes_sql [ Log.s "quokka*"; Log.i 10 ] in
+  Alcotest.(check bool)
+    "the search builds no index" false (holds "AUTOMATIC" search);
+  Alcotest.(check bool)
+    "the search reads a version by its key" true
+    (holds "SEARCH v USING INDEX sqlite_autoindex_ui_note_versions_1 (id=?)"
+       search);
+  List.iter
+    (fun (name, cond) ->
+      Alcotest.(check bool)
+        (name ^ " reads through ui_notes_status")
+        true
+        (holds "USING INDEX ui_notes_status"
+           (plan (Store.Notes.handed_over_sql cond) [])))
+    [
+      ("waiting", Store.Notes.waiting_cond); ("unsent", Store.Notes.unsent_cond);
+    ]
+
 (* DIG-128: a search hit's excerpt starts a little before the first word the query matches the
    start of, on one line, cut with an ellipsis. *)
 let excerpt () =
@@ -14185,6 +14213,7 @@ let () =
             inbox_reply_is_not_a_pick;
           Alcotest.test_case "search" `Quick search;
           Alcotest.test_case "search excerpt" `Quick excerpt;
+          Alcotest.test_case "note query plans" `Quick notes_query_plans;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
           Alcotest.test_case "the Inbox: no reply to self" `Quick

@@ -297,7 +297,9 @@ are code, never the prompt: an answer within the brief and Rules goes out in the
 through the deny layer and both checks, and only while the member is Active; anything past them is
 a draft for the member; an intro and a share past the Rules are drafts the member sends; and no run
 picks a choice or sends a draft. Every message the run read carries Reviewed and a review line
-saying what the agent did. A run that fails leaves its batch to be read again with the next sync's,
+saying what the agent did. A run reads at most 40 messages, oldest first, and leaves the rest to the
+next run, so a member back after weeks is read in turns rather than in one prompt that cannot
+finish. A run that fails leaves its batch to be read again with the next sync's,
 at most three times, and the node puts one `inbox_agent_failed` notice in the member's Inbox for
 the streak: "Your Inbox agent's last run failed.", the error in the member's words, and Settings,
 Inbox agent, Log as its page, where the run's log reads on the member's own machine. It is local,

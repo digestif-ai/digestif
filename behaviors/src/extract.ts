@@ -133,6 +133,9 @@ function startOf(st: Partial<Start> | undefined, o: { firstNote: boolean; now: n
   return st?.start ?? o.now - FRESH_MS;
 }
 
+/** How many repositories a git source reads at once. */
+export const GIT_READS = 4;
+
 interface RepoRead {
   key: string;
   repo: Repository;
@@ -265,19 +268,19 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
         const list = s.repositories ?? paths.map((p) => ({ id: p, name: p.split("/").pop() ?? p, paths: [p], recorded: false }));
         const reading = readingOf(s.label);
         const got: { items: Item[]; read: RepoRead }[] = [];
-        // A repository's commits come from one git call; the share is checked between them, and a
-        // source past it names the repository it spent it in.
+        // Repositories are read GIT_READS at a time; the share is checked between those groups, and
+        // a source past it names the last repository of the group it spent it in.
         let last: string | undefined;
         let stopped: string | undefined;
-        for (const r of list) {
+        for (let at = 0; at < list.length; at += GIT_READS) {
           if (last !== undefined && reading.spent()) {
             stopped = last;
             break;
           }
-          const rpaths = r.paths.map((p) => untilde(p, home));
-          last = rpaths[0] ?? r.name;
-          reading.onProgress?.({ file: last, bytes: 0, elapsedMs: 0 });
-          got.push(await gitItems(r, s.authors, o, rpaths));
+          const group = list.slice(at, at + GIT_READS).map((r) => ({ r, rpaths: r.paths.map((p) => untilde(p, home)) }));
+          last = group.map(({ r, rpaths }) => rpaths[0] ?? r.name).at(-1);
+          reading.onProgress?.({ file: last!, bytes: 0, elapsedMs: 0 });
+          got.push(...(await Promise.all(group.map(({ r, rpaths }) => gitItems(r, s.authors, o, rpaths)))));
         }
         if (stopped !== undefined) {
           abandon(s.label, stopped);

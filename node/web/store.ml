@@ -1602,6 +1602,7 @@ CREATE TABLE IF NOT EXISTS ui_note_versions (
 );
 CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
 CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
+CREATE INDEX IF NOT EXISTS ui_notes_status ON ui_notes (status, posted_hash);
 |}
 
   (* ISS-51009: the suggestion a note judges, and the prompt that wrote each version. *)
@@ -1650,25 +1651,30 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
      the note [after] (ISS-41988), which starts nowhere when the store does not hold it. The first
      note's row, from the setup chat starting it until the run hands its first version over, is not
      one: it is [pending]. *)
-  let all ?after ?limit (log : Log.t) =
-    let cursor, cursor_params =
-      match after with
-      | None -> ("", [])
-      | Some id ->
-          ( " AND (written_at, rowid) < (SELECT written_at, rowid FROM \
-             ui_notes WHERE id = ?)",
-            [ Log.s id ] )
-    in
+  (* The handed-over notes matching [cond], newest first: [cond] is SQL over ui_notes' own columns. *)
+  let handed_over_sql cond =
+    "SELECT " ^ note_columns
+    ^ " FROM ui_notes WHERE EXISTS (SELECT 1 FROM ui_note_versions v WHERE \
+       v.note_id = ui_notes.id)" ^ cond
+    ^ " ORDER BY written_at DESC, rowid DESC"
+
+  let handed_over ?(cond = "") ?(params = []) ?limit (log : Log.t) =
     let lim, lim_params =
       match limit with None -> ("", []) | Some n -> (" LIMIT ?", [ Log.i n ])
     in
     List.map note_of
-      (Log.rows log
-         ("SELECT " ^ note_columns
-        ^ " FROM ui_notes WHERE EXISTS (SELECT 1 FROM ui_note_versions v WHERE \
-           v.note_id = ui_notes.id)" ^ cursor
-        ^ " ORDER BY written_at DESC, rowid DESC" ^ lim)
-         (cursor_params @ lim_params))
+      (Log.rows log (handed_over_sql cond ^ lim) (params @ lim_params))
+
+  let all ?after ?limit (log : Log.t) =
+    match after with
+    | None -> handed_over ?limit log
+    | Some id ->
+        handed_over
+          ~cond:
+            " AND (written_at, rowid) < (SELECT written_at, rowid FROM \
+             ui_notes WHERE id = ?)"
+          ~params:[ Log.s id ]
+          ?limit log
 
   let find (log : Log.t) id =
     match
@@ -1679,8 +1685,9 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
     | [ r ] -> Some (note_of r)
     | _ -> None
 
-  let waiting (log : Log.t) =
-    List.filter (fun n -> n.n_status = "waiting") (all log)
+  (* Read through ui_notes_status, so it costs the waiting notes and not every note written. *)
+  let waiting_cond = " AND status = 'waiting'"
+  let waiting (log : Log.t) = handed_over ~cond:waiting_cond log
 
   (* The first note (docs/design.md, The setup chat and the first note): the setup chat starting it
      makes its row, so its page has an id while the run reads, writes and checks; the run's hand-over
@@ -2082,12 +2089,10 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
       [ Log.s reason; Log.s note_id ]
 
   (* Approved and not yet signed: the send job's. A dismissed note is never sent. *)
-  let unsent (log : Log.t) =
-    List.filter
-      (fun n ->
-        (n.n_status = "approved" || n.n_status = "auto_approved")
-        && n.n_posted_hash = None)
-      (List.rev (all log))
+  let unsent_cond =
+    " AND status IN ('approved', 'auto_approved') AND posted_hash IS NULL"
+
+  let unsent (log : Log.t) = List.rev (handed_over ~cond:unsent_cond log)
 
   (* The member dismissed a waiting note: it is never sent, and nothing it read moves (Record): the
      next note starts where the last approved one ended. Whether it was waiting. ISS-47299 *)
@@ -3976,20 +3981,22 @@ module Search = struct
     |> List.filter_map Items.row_of
 
   (* At most [limit] notes whose shown version, the newest that passed its checks (what the Notes list
-     previews), matches [q], best first: an older version's words do not find the note. *)
+     previews), matches [q], best first: an older version's words do not find the note. A hit's doc
+     key is 'notes:' and the version's id, so the version is looked up by its primary key from the
+     key (substr from 7); joining on the key built from each version would make SQLite scan or index
+     every version per query. *)
+  let notes_sql =
+    "SELECT " ^ Notes.note_columns
+    ^ " FROM ui_notes JOIN (SELECT v.note_id AS nid, m.score AS score FROM \
+       (SELECT rowid AS doc, rank AS score FROM ui_search_notes WHERE \
+       ui_search_notes MATCH ?) m JOIN ui_search_docs d ON d.doc = m.doc JOIN \
+       ui_note_versions v ON v.id = substr(d.key, 7) WHERE v.pii = 'passed' \
+       AND v.rules = 'passed' AND v.number = (SELECT MAX(w.number) FROM \
+       ui_note_versions w WHERE w.note_id = v.note_id AND w.pii = 'passed' AND \
+       w.rules = 'passed')) h ON h.nid = ui_notes.id ORDER BY h.score LIMIT ?"
+
   let notes (log : Log.t) ~limit q =
-    List.map Notes.note_of
-      (Log.rows log
-         ("SELECT " ^ Notes.note_columns
-        ^ " FROM ui_notes JOIN (SELECT v.note_id AS nid, m.score AS score FROM \
-           (SELECT rowid AS doc, rank AS score FROM ui_search_notes WHERE \
-           ui_search_notes MATCH ?) m JOIN ui_search_docs d ON d.doc = m.doc \
-           JOIN ui_note_versions v ON d.key = 'notes:' || v.id WHERE v.pii = \
-           'passed' AND v.rules = 'passed' AND v.number = (SELECT \
-           MAX(w.number) FROM ui_note_versions w WHERE w.note_id = v.note_id \
-           AND w.pii = 'passed' AND w.rules = 'passed')) h ON h.nid = \
-           ui_notes.id ORDER BY h.score LIMIT ?")
-         [ Log.s q; Log.i limit ])
+    List.map Notes.note_of (Log.rows log notes_sql [ Log.s q; Log.i limit ])
 end
 
 (* The columns of these tables that name an envelope, moved with it when the node re-signs an own
