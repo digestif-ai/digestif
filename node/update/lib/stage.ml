@@ -3,14 +3,18 @@
    the releases, checked, tested, and only then renamed to releases/<version>, so a release
    directory exists only when everything in it passed. Nothing here touches current.
 
-   A failure is one of two kinds. [Retry]: something about this machine or this attempt (a write
+   A failure is one of three kinds. [Retry]: something about this machine or this attempt (a write
    failed, the archive did not unpack, a checkout's release finds no Node.js on PATH) that a later
-   pass may not meet; the node keeps what it runs and tries again after a backoff. [Refuse]: the release itself is wrong (no
-   binary, no runtime or one that does not run, a self-test that fails or hangs); the node will not
-   take that version again. *)
+   pass may not meet; the node keeps what it runs and tries again after a backoff. [Suspect]: this
+   machine or the release, which one try cannot tell (a self-test that ran past its bound on a
+   machine crawling through the night, or could not be started); it is tried again after the
+   backoff, and the version is refused only when it fails that way State.strike_limit times.
+   [Refuse]: the release itself is wrong (no binary, no runtime or one that does not run, a
+   self-test that answers no); the node will not take that version again. *)
 
-type failure = Retry of string | Refuse of string
+type failure = Retry of string | Suspect of string | Refuse of string
 
+let describe = function Retry e | Suspect e | Refuse e -> e
 let ( let* ) = Result.bind
 
 (* Seconds the staged binary's self-test may take. *)
@@ -174,7 +178,7 @@ let self_test ~dir ~version root =
                 (Refuse
                    (Printf.sprintf "its self-test exited %d%s" code
                       (if said = "" then "" else ": " ^ said)))
-          | Error e -> Error (Refuse ("its self-test failed: " ^ e))))
+          | Error e -> Error (Suspect ("its self-test failed: " ^ e))))
 
 let check_layout root =
   let exe = Layout.binary_in root in

@@ -27,8 +27,11 @@ contain.
   so a channel replaying an old release cannot roll a node back. Moving back to the last healthy
   release on the node's own disk after a failed switch (below) is not a downgrade: nothing is
   fetched for it.
-- **Refused for good.** A release whose self-test failed, or that was rolled back after a switch,
-  is recorded in `update.json` and never chosen again; a newer release is. `digestif update retry
+- **Refused for good.** A release whose self-test answered no, or that crashed after a switch, is
+  recorded in `update.json` and never chosen again; a newer release is. A failure that may be the
+  machine rather than the release (a self-test past its bound, a trial that did not report healthy
+  in time or exited for its environment) is a strike: the node tries again after the backoff and
+  refuses the version only on its third. `digestif update retry
   0.4.1`, or Try again on the Feed line, forgets one refusal (or ends a pending stage's backoff) and
   makes the next pass due at once, for a refusal a person judges was the machine.
 - **Pinning.** `digestif update pin 0.4.1` makes the node install exactly that version and nothing
@@ -163,8 +166,9 @@ is built from (Cutting a release, What's new), written only by `ci/release.sh ch
 only by the Release workflow. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
 
 `candidate/` is a feed of its own, holding the one version on its way to the test nodes: its
-`index.json` names that version and the channel's revocations. Nodes never read it unless pointed at
-it with `--feed`, which is what a test node does. `ci/release.sh candidate` writes it, after
+`index.json` names that version and the channel's revocations and signer-set changes, so a test node
+whose build predates a change follows the chain to the set that signed the candidate. Nodes never
+read it unless pointed at it with `--feed`, which is what a test node does. `ci/release.sh candidate` writes it, after
 checking again that every signer signed (below), and `publish` moves the version out of it into the
 root and its `index.json` in one commit.
 
@@ -329,8 +333,10 @@ A pass that chooses a release stages it before anything the node runs changes
 
 A failure leaves `current` alone. A download, an unpack, a write or a checkout's missing Node.js is kept in
 `update.json` as pending with its cause, and tried again after a backoff (ten minutes, doubling, at
-most a day). A self-test that fails or hangs, or an archive without the binary or a runtime that
-runs, refuses that version for good.
+most a day). A self-test that runs past its bound or cannot be started may be the machine as much as
+the release: it is kept as pending the same way and counts a strike, and the third strike refuses the
+version. A self-test that answers no, or an archive without the binary or a runtime that runs,
+refuses that version for good.
 
 ## Switching
 
@@ -352,18 +358,30 @@ To switch, the pass records a trial in `update-trial.json` (the new release, and
 names to move back to), points `current` at the new release, and exits. The supervisor starts the
 new release and watches it:
 
-- `digestif run` writes `health.json` (its version and pid) once its first pass has opened the
-  store, synced and started the web UI. The new release is then kept: `good` moves to it,
+- `digestif run` writes `health.json` (its version and pid) once it has started: its store open and
+  initialized and its web UI serving, before its first pass, whose length grows with the node's
+  history and says nothing about whether the release runs. The new release is then kept: `good` moves to it,
   `installed` in `update.json` is saved, and the digest says "Updated Digestif to <version>."
   `installed` is never saved before this.
-- If the child exits before it reports healthy, or has not reported healthy after ten minutes of
-  awake time, the supervisor stops it, points `current` back at the release `good` names, refuses
-  the version for good, says so in the digest, and runs the previous release again.
+- If the child crashes before it reports healthy, the supervisor points `current` back at the
+  release `good` names, refuses the version for good, says so in the digest, and runs the previous
+  release again.
+- If it has not reported healthy after ten minutes of awake time, or exits for its environment (its
+  UI port held) or because it was stopped, the supervisor stops it and moves back the same way, but
+  the version counts a strike instead: it is tried again after the backoff, and the third strike
+  refuses it.
 - Awake time is counted in one-second steps: a step that took far longer than a second spanned the
   machine sleeping and counts as one second, so a laptop closed during the window does not use it
   up.
 - A trial that three supervisor starts did not finish (the machine restarting mid-trial) is rolled
-  back the same way.
+  back with a strike.
+- The supervisor writes `update.json` as stored: it never reconciles the signer set with its own
+  build's, since its binary is the oldest the node runs. A node that adopted a signed signer-set
+  change holds the set the last change names: no build's set widens it, a file an older binary
+  widened returns to that set on the next load, and every later signer reaches it as a signed change.
+  Every write of `update.json` is synced to disk and every read-modify-write holds a lock
+  (`update.json.lock`), so the pass, the web UI, the supervisor and a person's `digestif update`
+  never lose each other's change.
 
 The recovery runs in the supervisor and not in `digestif run`, because a release that crashes on
 start cannot run code to fix itself, and the supervisor is always a release that was healthy. A new

@@ -166,6 +166,7 @@ let tick ?self_test cfg ~now ~woke =
 let retry ~dir ~now version =
   let ( let* ) = Result.bind in
   let path = state_path dir in
+  State.with_lock path @@ fun () ->
   let* s = State.load path in
   let refused = State.is_refused s version in
   let waiting =
