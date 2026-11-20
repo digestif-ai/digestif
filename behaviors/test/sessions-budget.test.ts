@@ -1,6 +1,6 @@
 // DIG-361: the sessions source skips transcripts that are not the member's before it reads them,
-// runs under a time budget and a byte budget that end it with what it has read (oldest first, its
-// window ending at the newest prompt read so the next note reads the rest, ISS-74092), and reports
+// runs under a time budget and a byte budget that end it with what it has read (newest first, saying
+// how many of the oldest it left out, ISS-74092, DIG-214), and reports
 // how far it is while it reads. Every transcript here is made up in a temp directory.
 import assert from "node:assert/strict";
 import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { readRecord } from "../src/extract.ts";
 import { readingWriter } from "../src/hook.ts";
-import { BIRTH_MARGIN_MS, bornAt, partialThrough, ReadingOverran, sessionsSince, type ReadingProgress } from "../src/sessions.ts";
+import { ReadingOverran, sessionsSince, type LeftOut, type ReadingProgress } from "../src/sessions.ts";
 import type { Source } from "../src/sources.ts";
 import { jsonl, user } from "./fixtures.ts";
 
@@ -138,7 +138,7 @@ test("a budget spent while judging, before any transcript was read, fails the so
   assert.equal(record.ends["source:claude-code"], undefined, "the end does not move");
 });
 
-test("a budget-cut reading ends its window at the newest prompt read, and the next run reads the rest", async () => {
+test("a budget-cut reading reads the newest first, leaves out the oldest, and its window still ends at now", async () => {
   const h = join(home, "paths");
   const first = join(h, "first");
   const second = join(h, "second");
@@ -149,87 +149,70 @@ test("a budget-cut reading ends its window at the newest prompt read, and the ne
     writeFileSync(f, jsonl([user(text, iso(at - 1000)), user("x".repeat(1000), iso(at))]));
     utimesSync(f, new Date(at), new Date(at));
   };
-  // Oldest first across both paths: the cut falls between the middle and the newest.
+  // Newest first across both paths: the cut falls between the middle and the oldest.
   write(first, "old", "The oldest", NOW - 5 * 3_600_000);
   write(second, "mid", "The middle", NOW - 3 * 3_600_000);
   write(first, "new", "The newest", NOW - 3_600_000);
   const once = await readRecord([claude([first, second])], { firstNote: false, now: () => NOW, home: h, tempRoots: [], maxSourceBytes: 2000 });
   assert.deepEqual(once.failedSources, []);
-  assert.deepEqual(once.partial, [{ source: "Claude Code sessions", reason: "bytes" }]);
-  assert.deepEqual(once.lines.filter((l) => l.startsWith("session:")), ["session: The oldest", "session: The middle"]);
-  const end = once.ends["source:claude-code"]!.at;
-  assert.equal(end, NOW - 3 * 3_600_000, "the window ends at the newest prompt read, not at now");
-  const again = await readRecord([{ ...claude([first, second]), start: end }], { firstNote: false, now: () => NOW, home: h, tempRoots: [], maxSourceBytes: 2000 });
-  assert.deepEqual(again.partial, []);
-  assert.deepEqual(again.lines.filter((l) => l.startsWith("session:")), ["session: The newest"]);
-  assert.equal(again.ends["source:claude-code"]!.at, NOW);
+  assert.deepEqual(once.partial, [{ source: "Claude Code sessions", reason: "bytes", sessions: 1, lastActive: NOW - 5 * 3_600_000 }]);
+  assert.deepEqual(once.lines.filter((l) => l.startsWith("session:")), ["session: The middle", "session: The newest"]);
+  assert.equal(once.ends["source:claude-code"]!.at, NOW, "the window is read through: what was left out is older than all of it");
 });
 
-test("two transcripts whose prompts interleave, cut between them, lose no prompt across two runs", async () => {
+test("transcripts whose prompts interleave: the one active last is read, and what was left out was active no later than it says", async () => {
   const h = join(home, "interleave");
   const dir = join(h, "sessions");
   mkdirSync(dir, { recursive: true });
   const H = 3_600_000;
-  const born = new Map<string, number>();
-  const write = (name: string, prompts: [string, number][], createdAt: number): string => {
+  const write = (name: string, prompts: [string, number][]): void => {
     const f = join(dir, `${name}.jsonl`);
     writeFileSync(f, jsonl(prompts.map(([text, at]) => user(text + " " + "x".repeat(600), iso(at)))));
     const last = prompts.at(-1)![1];
     utimesSync(f, new Date(last), new Date(last));
-    born.set(f, createdAt);
-    return f;
   };
-  // Modified first, so read first: its newest prompt is newer than the other's first.
-  write("a", [["A one", NOW - 5 * H], ["A two", NOW - 3 * H]], NOW - 5 * H);
-  write("b", [["B one", NOW - 4 * H], ["B two", NOW - H]], NOW - 4 * H);
-  const texts = (ss: { prompts: { text: string; at: number }[] }[], since: number): string[] =>
-    ss.flatMap((s) => s.prompts.filter((p) => p.at > since).map((p) => p.text.split(" x")[0]!));
-  let through = NaN;
-  const once = await sessionsSince(dir, SINCE, NOW, {
-    home: h,
-    tempRoots: [],
-    maxTotalBytes: 1000,
-    bornAt: async (f) => born.get(f),
-    onPartial: (_why, t) => void (through = t),
-  });
-  assert.equal(through, NOW - 4 * H - BIRTH_MARGIN_MS, "ends before the unread transcript was created, not at the newest prompt read");
-  assert.deepEqual(texts(once, SINCE), ["A one"], "a prompt past the end waits for the next run");
-  const again = await sessionsSince(dir, through, NOW, { home: h, tempRoots: [], bornAt: async (f) => born.get(f) });
-  assert.deepEqual([...texts(once, SINCE), ...texts(again, through)].sort(), ["A one", "A two", "B one", "B two"], "every prompt once");
+  write("a", [["A one", NOW - 5 * H], ["A two", NOW - 3 * H]]);
+  write("b", [["B one", NOW - 4 * H], ["B two", NOW - H]]);
+  const left: LeftOut[] = [];
+  const once = await sessionsSince(dir, SINCE, NOW, { home: h, tempRoots: [], maxTotalBytes: 1000, onPartial: (_why, l) => void left.push(l) });
+  assert.deepEqual(once.flatMap((s) => s.prompts.map((p) => p.text.split(" x")[0]!)), ["B one", "B two"], "the session active last, whole");
+  assert.deepEqual(left, [{ sessions: 1, lastActive: NOW - 3 * H }]);
 });
 
-test("an unread transcript created at or before the window start, or with no birthtime, leaves the end at the newest prompt read", async () => {
-  const born = new Map<string, number | undefined>([["early", SINCE - 60_000], ["none", undefined], ["late", NOW - 1000]]);
-  const at = async (f: string) => born.get(f);
-  assert.equal(await partialThrough(NOW - 3_600_000, ["early"], SINCE, at), NOW - 3_600_000, "the window still moves forward");
-  assert.equal(await partialThrough(NOW - 3_600_000, ["none"], SINCE, at), NOW - 3_600_000);
-  assert.equal(await partialThrough(NOW - 3_600_000, ["late", "none"], SINCE, at), NOW - 3_600_000, "created after the newest prompt read");
-  assert.equal(await partialThrough(NOW - 3_600_000, [], SINCE, at), NOW - 3_600_000);
-});
-
-test("bornAt reads the file system's birthtime, and none past the file's mtime", async () => {
-  const f = join(home, "born.jsonl");
-  writeFileSync(f, "");
-  const b = await bornAt(f);
-  if (process.platform === "darwin") assert.ok(b !== undefined && Math.abs(b - Date.now()) < 60_000, `birthtime ${b}`);
-  // An mtime set before a birthtime the file system kept is no birthtime to trust.
-  utimesSync(f, new Date(Date.now() + 3_600_000), new Date(SINCE));
-  const after = await bornAt(f);
-  assert.ok(after === undefined || after <= SINCE, `birthtime ${after}`);
-  assert.equal(await bornAt(join(home, "missing.jsonl")), undefined);
+test("a first note reaching back 30 days under a budget is written from the newest sessions, not weeks-old ones", async () => {
+  const h = join(home, "first-note");
+  const dir = join(h, "sessions");
+  mkdirSync(dir, { recursive: true });
+  const D = 24 * 3_600_000;
+  for (let i = 0; i < 20; i++) {
+    const at = NOW - (i + 1) * D - 3_600_000;
+    const f = join(dir, `day${i}.jsonl`);
+    writeFileSync(f, jsonl([user(`Day ${i + 1} ago`, iso(at - 1000)), user("x".repeat(1000), iso(at))]));
+    utimesSync(f, new Date(at), new Date(at));
+  }
+  const today = join(dir, "today.jsonl");
+  writeFileSync(today, jsonl([user("Today's work", iso(NOW - 2000)), user("x".repeat(1000), iso(NOW - 1000))]));
+  utimesSync(today, new Date(NOW), new Date(NOW));
+  const record = await readRecord([{ ...claude([dir]), start: undefined, recorded: false }], { firstNote: true, now: () => NOW, home: h, tempRoots: [], maxSourceBytes: 3000 });
+  assert.deepEqual(record.failedSources, []);
+  const titles = record.lines.filter((l) => l.startsWith("session:"));
+  assert.ok(titles.includes("session: Today's work"), titles.join("\n"));
+  assert.ok(!titles.includes("session: Day 20 ago"), "the oldest is what is left out");
+  assert.equal(record.partial[0]?.sessions, 18);
+  assert.equal(record.partial[0]?.lastActive, NOW - 3 * D - 3_600_000);
 });
 
 test("a budget that runs out after transcripts with nothing in the window fails the source: nothing yielded is not a partial reading", async () => {
   const h = join(home, "empty");
   const dir = join(h, "sessions");
   mkdirSync(dir, { recursive: true });
-  // Modified in the window, but its only prompt is older than it.
+  // Modified last, so read first, but its only prompt is older than the window.
   const stale = join(dir, "stale.jsonl");
   writeFileSync(stale, jsonl([user("Before the window", iso(SINCE - 3_600_000)), user("y".repeat(3000), iso(SINCE - 3_600_000))]));
-  utimesSync(stale, new Date(SINCE + 1000), new Date(SINCE + 1000));
+  utimesSync(stale, new Date(NOW), new Date(NOW));
   const fresh = join(dir, "fresh.jsonl");
   writeFileSync(fresh, jsonl([user("In the window", iso(NOW - 1000))]));
-  utimesSync(fresh, new Date(NOW), new Date(NOW));
+  utimesSync(fresh, new Date(NOW - 500), new Date(NOW - 500));
   const partial: string[] = [];
   await assert.rejects(
     sessionsSince(dir, SINCE, NOW, { home: h, tempRoots: [], maxTotalBytes: 2000, onPartial: (w) => partial.push(w) }),
@@ -267,7 +250,7 @@ test("the byte budget ends the source with the newest sessions it read, and the 
   for (let i = 0; i < 5; i++) transcript(projects, join(h, "code", "app"), `s${i}`, [`Prompt ${i}`, "x".repeat(1000)], NOW - i * 3_600_000);
   const partial: string[] = [];
   const sessions = await sessionsSince(projects, SINCE, NOW, { home: h, tempRoots: [], maxTotalBytes: 2000, onPartial: (why) => partial.push(why) });
-  assert.deepEqual(sessions.map((s) => s.prompts[0]!.text), ["Prompt 4", "Prompt 3"], "oldest first, stopped at the budget");
+  assert.deepEqual(sessions.map((s) => s.prompts[0]!.text), ["Prompt 1", "Prompt 0"], "the newest, answered oldest first, stopped at the budget");
   assert.deepEqual(partial, ["bytes"]);
 });
 
@@ -287,12 +270,15 @@ test("slow parsing: the source stops at its time budget, returns what it read, a
   const record = await readRecord([claude([dir])], { firstNote: false, now: () => NOW, home: h, sourceBudgetMs: 8_000, elapsed: () => (t += 1000), tempRoots: [] });
   assert.deepEqual(record.failedSources, []);
   assert.deepEqual(record.readSources, ["Claude Code sessions"]);
-  assert.deepEqual(record.partial, [{ source: "Claude Code sessions", reason: "time" }]);
-  assert.ok(record.lines.some((l) => l.includes("Prompt 5 a")), "the oldest session is in");
-  assert.ok(!record.lines.some((l) => l.includes("Prompt 0")), "the newest is not");
-  const newestRead = Math.max(...record.items.map((i) => i.at));
-  assert.equal(record.ends["source:claude-code"]?.at, newestRead, "read through the newest prompt read, not failed");
-  assert.equal((NOW - newestRead - 1000) % 3_600_000, 0, "the last prompt of a transcript read");
+  assert.equal(record.partial.length, 1);
+  const p = record.partial[0]!;
+  assert.deepEqual({ source: p.source, reason: p.reason }, { source: "Claude Code sessions", reason: "time" });
+  assert.ok(record.lines.some((l) => l.includes("Prompt 0 a")), "the newest session is in");
+  assert.ok(!record.lines.some((l) => l.includes("Prompt 5")), "the oldest is not");
+  const oldestRead = Math.max(...record.items.map((i) => Number(i.text.split(" ")[1])));
+  assert.equal(p.sessions, 5 - oldestRead, "every transcript older than the oldest read is counted");
+  assert.equal(p.lastActive, NOW - (oldestRead + 1) * 3_600_000, "the newest of them");
+  assert.equal(record.ends["source:claude-code"]?.at, NOW, "read through, not failed");
 });
 
 test("progress advances as bytes are read: elapsed time and bytes change, and progress.json follows", async () => {

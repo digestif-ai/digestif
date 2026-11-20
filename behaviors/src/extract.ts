@@ -23,7 +23,7 @@ import {
   type Item,
   type Start,
 } from "./record.ts";
-import { itemLine, MAX_ITEM_CHARS, ReadingOverran, sessionsSince, type Budget, type Unjudged } from "./sessions.ts";
+import { itemLine, MAX_ITEM_CHARS, ReadingOverran, sessionsSince, type Budget, type LeftOut, type Unjudged } from "./sessions.ts";
 import { untilde, type Author, type Repository, type Source } from "./sources.ts";
 
 export interface ReadOptions {
@@ -86,10 +86,14 @@ export interface SourceProgress {
   elapsedMs: number;
 }
 
-/** A source read in part because a budget ran out: it yielded the oldest of what it holds, and its window ends where that reading left off (partialThrough). */
+/** A source read in part because a budget ran out: it yielded the newest of what it holds and left out the rest (LeftOut), which no later note reads. */
 export interface PartialReading {
   source: string;
   reason: "time" | "bytes";
+  /** How many of the window's transcripts were not read: its oldest. */
+  sessions: number;
+  /** The newest modification time among them, epoch milliseconds. */
+  lastActive: number;
 }
 
 /** A source abandoned because it spent its share of the deadline, and the file it was reading. */
@@ -184,7 +188,7 @@ interface SourceReading {
   home?: string;
   tempRoots?: string[];
   maxTotalBytes?: number;
-  onPartial?: (why: "time" | "bytes", through: number) => void;
+  onPartial?: (why: "time" | "bytes", left: LeftOut) => void;
   onProgress?: (p: { file: string; bytes: number; elapsedMs: number }) => void;
   log?: (line: string) => void;
   maxBytes?: number;
@@ -192,9 +196,9 @@ interface SourceReading {
 }
 
 /**
- * The items of one sessions source, every path read as one oldest-first reading. A reading a budget
- * cut short says where it read through (partialThrough); the source's window ends there, not at the
- * record's end, so the next note reads what this one did not (ISS-74092, ISS-74108).
+ * The items of one sessions source, every path read as one newest-first reading. A reading a budget
+ * cut short says what it left out (the window's oldest transcripts), and the source's window ends
+ * with the record's all the same: the note is of the member's latest work (ISS-74092, DIG-214).
  */
 async function sessionItems(source: Source, paths: string[], since: number, until: number, reading: SourceReading = {}): Promise<Item[]> {
   const key = sourceKey(source.id);
@@ -224,8 +228,6 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
   const readSources: string[] = [];
   const repos: RepoRead[] = [];
   const timeKeys: string[] = [];
-  // A source read in part ends where its reading left off, wherever the rest of the record ends.
-  const partialThrough = new Map<string, number>();
   const commands: { key: string; spawned: number }[] = [];
   // Each command source that failed, tried again once the rest are read.
   const retrying: { s: Source; paths: string[]; since: number; first: number; tries: number; last: CommandResult & { ok: false } }[] = [];
@@ -296,9 +298,8 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
         const onUnjudged = (u: Unjudged): void => void (told = u);
         try {
           const reading = readingOf(s.label);
-          const onPartial = (reason: "time" | "bytes", through: number): void => {
-            partial.push({ source: s.label, reason });
-            partialThrough.set(sourceKey(s.id), through);
+          const onPartial = (reason: "time" | "bytes", left: LeftOut): void => {
+            partial.push({ source: s.label, reason, ...left });
           };
           try {
             items.push(...(await sessionItems(s, paths, startOf(s, o), now, { ...reading, onPartial, onUnjudged })));
@@ -368,7 +369,7 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
     else if (!options.firstNote && repo.recorded && repo.sha !== undefined && repo.start !== undefined) ends[key] = { at: repo.start, sha: repo.sha };
     else ends[key] = { at: through };
   }
-  for (const key of timeKeys) ends[key] = { at: Math.min(through, partialThrough.get(key) ?? through) };
+  for (const key of timeKeys) ends[key] = { at: through };
   // A command with a line waiting is asked for the same window again: its lines carry no time.
   for (const { key, spawned } of commands) if (!limited.cutKeys.has(key)) ends[key] = { at: spawned };
   const judged = sources.some((s) => s.kind === "claude_code") ? unjudged : undefined;

@@ -348,8 +348,8 @@ test("a source that runs out of its share after reading some sessions is partial
   const r = await hookRun("2026-10-30", "2026-10-30T03:21:00", sources, { wall: () => (t += 2000), deadline: new Date(t + 30 * 60_000) });
   assert.equal(r.status, "posted");
   assert.deepEqual(problems().filter((p) => p.includes("source_failed")), []);
-  assert.match(recorded()[0]!.stdin, /\nReading was partial\. Claude Code sessions ran out of time, so its oldest sessions are not in this note\.\n$/);
-  assert.match(readFileSync(join(stateDir, "logs", "nightly-2026-10-30.log"), "utf8"), /reading was partial, Claude Code sessions ran out of time/);
+  assert.match(recorded()[0]!.stdin, /\nReading was partial\. Claude Code sessions ran out of time, so its \d+ oldest sessions, last active \d{4}-\d\d-\d\d or earlier, are not in this note\.\n$/);
+  assert.match(readFileSync(join(stateDir, "logs", "nightly-2026-10-30.log"), "utf8"), /reading was partial, Claude Code sessions ran out of time and left out its \d+ oldest transcripts/);
 });
 
 test("hook mode from a node that hands over no first_note hands the note over without --ends", async () => {
