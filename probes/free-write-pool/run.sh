@@ -76,7 +76,7 @@ deploy() {
   [ -x "$relay/node_modules/.bin/wrangler" ] || (cd "$relay" && npm ci --silent)
   wrangler="$relay/node_modules/.bin/wrangler"
   "$wrangler" whoami
-  work="$(mktemp -d -t free-write-pool)"
+  work="$(mktemp -d "${TMPDIR:-/tmp}/free-write-pool.XXXXXX")"
   local suffix; suffix="$(node -e 'console.log(require("node:crypto").randomBytes(3).toString("hex"))')"
   name="dig320-pool-$suffix"
   db="$name"
