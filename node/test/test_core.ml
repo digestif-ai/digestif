@@ -1881,6 +1881,12 @@ let service_files () =
          "<string>" ^ Service.xml_escape standard ^ "</string>";
          "<key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/bin:/bin</string>";
        ]);
+  (* DIG-323: a Background job is CPU- and disk-throttled, and starved the web UI under load. *)
+  Alcotest.(check bool)
+    "plist runs at standard priority" true
+    (Astring_contains.contains plist
+       "<key>ProcessType</key>\n  <string>Standard</string>"
+    && not (Astring_contains.contains plist "Background"));
   let unit =
     Service.systemd_unit ~exe:"/usr/bin/digestif"
       ~dir:"/home/x/.local/share/digestif" ~path:"/home/x/my bin:/usr/bin:/a%b"
@@ -1924,6 +1930,23 @@ let with_temp_home f =
     ~finally:(fun () ->
       List.iter (fun (k, v) -> Unix.putenv k (Option.value v ~default:"")) saved)
     (fun () -> f home)
+
+(* An installed service file a release changes is rewritten in place; one never installed stays
+   missing. DIG-323 *)
+let service_refresh () =
+  with_temp_home @@ fun home ->
+  let p = Service.plan ~exe:"/d/good/bin/digestif" ~dir:"/d" ~path:"/bin" () in
+  let p = { p with Service.path = Filename.concat home "svc.plist" } in
+  let read () = In_channel.with_open_bin p.path In_channel.input_all in
+  Alcotest.(check (result bool string))
+    "a missing file is not created" (Ok false) (Service.refresh p);
+  Alcotest.(check bool) "still missing" false (Sys.file_exists p.path);
+  Out_channel.with_open_bin p.path (fun oc -> output_string oc "old");
+  Alcotest.(check (result bool string))
+    "a stale file is rewritten" (Ok true) (Service.refresh p);
+  check_str "to the plan's contents" p.contents (read ());
+  Alcotest.(check (result bool string))
+    "a current file is left alone" (Ok false) (Service.refresh p)
 
 (* A second node on the machine gets a service, a unit and a UI port of its own, derived from its
    data directory; the standard node keeps the fixed ones. DIG-264 *)
@@ -2504,6 +2527,7 @@ let () =
           Alcotest.test_case "held keystore" `Quick keystore_held;
           Alcotest.test_case "a reopened log" `Quick log_reopen;
           Alcotest.test_case "service files" `Quick service_files;
+          Alcotest.test_case "service refresh" `Quick service_refresh;
           Alcotest.test_case "service per data directory" `Quick
             service_per_data_directory;
           Alcotest.test_case "service waits for unload" `Quick
