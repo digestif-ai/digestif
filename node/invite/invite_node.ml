@@ -113,7 +113,8 @@ type watch_problem =
           file as written. *)
   | Unreadable_ledger of string
       (** invites.json is not a ledger: no join was watched and the file was
-          left alone. *)
+          left alone. The joins stored meanwhile are watched by the first sync
+          that reads it again. *)
   | Not_saved of string  (** The ledger the joins changed was not written. *)
   | Ask_not_raised of string  (** A join ask the store refused. *)
 
@@ -126,9 +127,29 @@ let watch_problem_to_string = function
         (if n = 1 then "" else "s")
         (if n = 1 then "es" else "")
   | Unreadable_ledger e ->
-      "invites.json was not read, so no join was watched this sync: " ^ e
+      "invites.json was not read, so no join was watched this sync (they are \
+       watched once it reads again): " ^ e
   | Not_saved e -> "the invite ledger was not saved: " ^ e
   | Ask_not_raised e -> "a join ask was not raised: " ^ e
+
+(* The joins in the log, in the order this node stored them, on an invite [ledger] still has Open:
+   the joins the watcher never observed. The log is read only when an invite is Open. DIG-292 *)
+let missed_joins (node : Node.t) (ledger : Host_watch.ledger) =
+  let open_keys =
+    List.filter_map
+      (fun (r : Host_watch.record) ->
+        match r.state with Open _ -> Some r.invite_key | _ -> None)
+      ledger
+  in
+  if open_keys = [] then []
+  else
+    List.filter_map
+      (fun (row : Log.row) ->
+        match (row.retracted_by, Join.verify row.signed) with
+        | None, Ok join when List.mem join.invite_key open_keys ->
+            Some (row.hash, join)
+        | _ -> None)
+      (Log.of_kind node.log "join")
 
 (* Sync, running Host_watch.observe on every join the sync stores for the first time, on every
    relay: the fold admits one join per invite, and the host still hears of a second one another
@@ -136,7 +157,12 @@ let watch_problem_to_string = function
    invite re-raises the same ask. The ledger is the watcher's, never the sync's: a record that does
    not parse is skipped and kept, a ledger that cannot be read at all is left alone, and either is
    returned as a watch problem beside the sync's own report. The result is an Error only when the
-   sync itself failed. DIG-224 *)
+   sync itself failed. DIG-224
+
+   A join stored while the ledger could not be read was seen by nobody, and on_stored never sees
+   it again. So once the sync has run, every join the log holds on an invite the ledger still has
+   Open is observed too: an Open invite with a join in the log is exactly one whose join the
+   watcher missed, since observing it moves it out of Open. DIG-292 *)
 let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
   let problems = ref [] in
   let problem p = problems := p :: !problems in
@@ -150,22 +176,23 @@ let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
         ([], [], false)
   in
   let ledger = ref ledger and seen = ref [] in
+  let watch hash (join : Join.t) =
+    let l, outcome = Host_watch.observe ~now !ledger join in
+    ledger := l;
+    (match outcome with
+    | Host_watch.Asked (_, ask) -> (
+        match Asks.raise_ node.log (Host_watch.to_store ask) with
+        | Ok () -> ()
+        | Error e -> problem (Ask_not_raised e))
+    | _ -> ());
+    seen := { join_hash = hash; outcome } :: !seen
+  in
   let on_stored hash (sg : Envelope.signed) =
     if sg.envelope.kind = "join" && !ledger <> [] then
-      match Join.verify sg with
-      | Error _ -> ()
-      | Ok join ->
-          let l, outcome = Host_watch.observe ~now !ledger join in
-          ledger := l;
-          (match outcome with
-          | Host_watch.Asked (_, ask) -> (
-              match Asks.raise_ node.log (Host_watch.to_store ask) with
-              | Ok () -> ()
-              | Error e -> problem (Ask_not_raised e))
-          | _ -> ());
-          seen := { join_hash = hash; outcome } :: !seen
+      match Join.verify sg with Error _ -> () | Ok join -> watch hash join
   in
   let* report = Sync.sync ?transport ~on_stored node in
+  List.iter (fun (hash, join) -> watch hash join) (missed_joins node !ledger);
   (if savable && !seen <> [] then
      match Host_watch.save ~keep node.dir !ledger with
      | Ok () -> ()

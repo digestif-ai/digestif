@@ -1411,6 +1411,50 @@ let unreadable_ledger_file () =
     "the file is untouched" "{ not json"
     (In_channel.with_open_text p In_channel.input_all)
 
+(* DIG-292: a join stored while invites.json is not a ledger is watched by the first sync that
+   reads it again, so the host is still asked about a stranger who joined in that window, and once
+   only. *)
+let join_while_ledger_unreadable () =
+  let host, _, inv, _, net = host_circle () in
+  let p = Host_watch.file host.dir in
+  let ledger = In_channel.with_open_text p In_channel.input_all in
+  Out_channel.with_open_text p (fun oc -> output_string oc "{ not json");
+  let _, stranger_phrase, _ = guest_joins net inv 0 in
+  let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "nothing watched while unreadable" 0 (List.length seen);
+  Alcotest.(check int)
+    "the unreadable file is reported" 1 (List.length problems);
+  Alcotest.(check int) "no ask yet" 0 (List.length (Asks.list host.log));
+  Out_channel.with_open_text p (fun oc -> output_string oc ledger);
+  let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "no problem once it reads" 0 (List.length problems);
+  let key = "join:" ^ (List.hd inv.dinner.invites).invite_key in
+  Alcotest.(check bool)
+    "the missed join is asked about" true
+    (List.exists
+       (fun (s : Invite_node.seen) ->
+         match s.outcome with
+         | Host_watch.Asked (_, a) -> a.key = key
+         | _ -> false)
+       seen);
+  (match Asks.list host.log with
+  | [ a ] ->
+      Alcotest.(check string) "the ask is the stranger's invite" key a.key;
+      Alcotest.(check (option string))
+        "about the identity that joined"
+        (Some (identity_of stranger_phrase))
+        a.about
+  | l -> Alcotest.failf "%d asks, want 1" (List.length l));
+  Alcotest.(check bool)
+    "the ledger records the join" true
+    (List.exists
+       (fun (r : Host_watch.record) ->
+         match r.state with Host_watch.Joined _ -> true | _ -> false)
+       (ok (Host_watch.load host.dir)));
+  let _, again, _ = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int)
+    "a replayed join is not watched twice" 0 (List.length again)
+
 let () =
   Ci_alcotest.run "digestif-invite-flow"
     [
@@ -1421,6 +1465,8 @@ let () =
             unreadable_ledger_record;
           Alcotest.test_case "a ledger file that does not parse" `Quick
             unreadable_ledger_file;
+          Alcotest.test_case "a join stored while the ledger is unreadable"
+            `Quick join_while_ledger_unreadable;
           Alcotest.test_case "codes no open invite names" `Quick refused;
           Alcotest.test_case "every circle's node under one parent" `Quick
             circles_under_one_parent;
