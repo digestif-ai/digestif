@@ -192,9 +192,7 @@ let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
       match Join.verify sg with Error _ -> () | Ok join -> watch hash join
   in
   let* report = Sync.sync ?transport ~on_stored node in
-  List.iter
-    (fun (hash, join) -> watch hash join)
-    (missed_joins node !ledger);
+  List.iter (fun (hash, join) -> watch hash join) (missed_joins node !ledger);
   (if savable && !seen <> [] then
      match Host_watch.save ~keep node.dir !ledger with
      | Ok () -> ()

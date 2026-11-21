@@ -1422,7 +1422,8 @@ let join_while_ledger_unreadable () =
   let _, stranger_phrase, _ = guest_joins net inv 0 in
   let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
   Alcotest.(check int) "nothing watched while unreadable" 0 (List.length seen);
-  Alcotest.(check int) "the unreadable file is reported" 1 (List.length problems);
+  Alcotest.(check int)
+    "the unreadable file is reported" 1 (List.length problems);
   Alcotest.(check int) "no ask yet" 0 (List.length (Asks.list host.log));
   Out_channel.with_open_text p (fun oc -> output_string oc ledger);
   let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
@@ -1451,8 +1452,8 @@ let join_while_ledger_unreadable () =
          match r.state with Host_watch.Joined _ -> true | _ -> false)
        (ok (Host_watch.load host.dir)));
   let _, again, _ = ok (Invite_node.sync ~transport:net host) in
-  Alcotest.(check int) "a replayed join is not watched twice" 0
-    (List.length again)
+  Alcotest.(check int)
+    "a replayed join is not watched twice" 0 (List.length again)
 
 let () =
   Ci_alcotest.run "digestif-invite-flow"
