@@ -34,6 +34,8 @@ export default defineConfig(async () => {
       }),
     ],
     test: {
+      // spike/ (DIG-319) runs under vitest.do.config.ts, with the store swapped.
+      include: ["test/**/*.test.ts"],
       setupFiles: ["./test/apply-migrations.ts"],
       testTimeout: 120_000,
     },

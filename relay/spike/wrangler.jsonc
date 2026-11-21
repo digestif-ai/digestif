@@ -1,0 +1,25 @@
+// DIG-319 storage spike: the one release that creates the CircleStore class, as an environment of
+// the relay's own configuration would carry it. Shown with
+//   npx wrangler deploy --dry-run --config spike/wrangler.jsonc --env hosted --outdir <dir>
+// and deployed by nobody: it is the evidence for spike-result.md, item 3.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "digestif-relay-spike",
+  "main": "main.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // Top-level only: wrangler applies migrations to every environment. A tag names a lifecycle step;
+  // the release that first carries v1 creates the class, and every later release repeats it unchanged.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CircleStore"] }],
+  "env": {
+    "hosted": {
+      "name": "digestif-hosted",
+      "vars": { "CIRCLE_ROOT": "sha256:36b75adb36d9b9a4c30af96a4fe745ecb7ddfa03089906ee41ee235115fc5533", "MAILER": "0" },
+      "assets": { "directory": "../app", "binding": "ASSETS", "html_handling": "none", "run_worker_first": true },
+      // Bindings are not inherited: the environment names the class it binds.
+      "durable_objects": { "bindings": [{ "name": "CIRCLE_STORE", "class_name": "CircleStore" }] },
+      // The home circle stays on D1 in the same Worker.
+      "d1_databases": [{ "binding": "DB", "database_name": "digestif-hosted", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "../migrations" }]
+    }
+  }
+}

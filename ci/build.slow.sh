@@ -278,6 +278,10 @@ build_relay() {
   bash "$root/relay/scripts/app.sh"
   step "relay: npm ci, check, test, conformance"
   (cd "$root/relay" && npm ci && npm run check && npm test && npm run conformance)
+  # The same suite with the store swapped for a circle's SQLite Durable Object behind the D1-shaped
+  # adapter (relay/spike, DIG-319), so the adapter stays able to stand in for D1.
+  step "relay: the suite against the Durable Object store"
+  (cd "$root/relay" && npx tsc -p spike/tsconfig.json && npx vitest run --config vitest.do.config.ts)
   # The relay release build's own path (.github/workflows/relay-release.yml), rehearsed on every
   # change so a pull request learns of a break before a relay tag does: the migrations are
   # additive, the bundle packs (ci/relay-bundle.sh refuses a module built from a file
