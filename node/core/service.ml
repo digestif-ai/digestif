@@ -90,8 +90,10 @@ let launchd_plist ?(command = [ "run" ]) ~exe ~dir ~log_dir ~path () =
         "  <true/>";
         "  <key>KeepAlive</key>";
         "  <true/>";
+        (* Standard, not Background: launchd throttles a Background job's CPU and disk, and on a
+           loaded machine that left the web UI answering nothing for minutes. DIG-323 *)
         "  <key>ProcessType</key>";
-        "  <string>Background</string>";
+        "  <string>Standard</string>";
         "  <key>StandardOutPath</key>";
         "  <string>"
         ^ xml_escape (Filename.concat log_dir "digestif.log")
@@ -283,6 +285,19 @@ let install p =
   with
   | Error e -> Error e
   | Ok () -> run_all p.load
+
+(* Rewrite an installed service file whose contents differ from the plan's, so a release that
+   changes the file reaches nodes installed before it; the service manager reads it at the next
+   load. Answers whether it wrote. A missing file is left missing: only an install creates one. *)
+let refresh p =
+  match In_channel.with_open_bin p.path In_channel.input_all with
+  | exception Sys_error _ -> Ok false
+  | current when current = p.contents -> Ok false
+  | _ -> (
+      try
+        Out_channel.with_open_bin p.path (fun oc -> output_string oc p.contents);
+        Ok true
+      with Sys_error e -> Error e)
 
 (* The plan's own job answers for the uninstall; a retired one is unloaded too, whatever it says. *)
 let uninstall p =

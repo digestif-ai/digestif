@@ -2259,6 +2259,32 @@ let report_finished =
       Printf.printf "%s behavior %s\t%s after %.0fs\n" (Time_fmt.now ())
         (B.hook_name f.f_hook) f.status f.seconds)
 
+(* The service runs the supervisor from the last healthy release (docs/releases.md). *)
+let service_plan dir =
+  let dir = node_dir dir in
+  Service.plan
+    ~exe:(U.Layout.binary_in (U.Layout.good_link dir))
+    ~command:[ "supervise" ] ~dir
+    ~path:(Option.value (Sys.getenv_opt "PATH") ~default:"/usr/bin:/bin")
+    ()
+
+(* A node launchd started brings its installed plist up to this release's (Service.refresh). Only
+   then: launchd names the job in XPC_SERVICE_NAME, and the PATH this process holds is the one the
+   plist gave it, so the rewrite keeps it. A node run from a shell leaves the file alone. DIG-323 *)
+let refresh_service dir =
+  let d = node_dir dir in
+  if Sys.getenv_opt "XPC_SERVICE_NAME" = Some (Service.label_of d) then
+    match Service.refresh (service_plan dir) with
+    | Ok true ->
+        Printf.printf
+          "%s service: rewrote the launchd plist; it applies at the next load\n\
+           %!"
+          (Time_fmt.now ())
+    | Ok false -> ()
+    | Error e ->
+        Printf.eprintf "%s service: plist not rewritten: %s\n%!"
+          (Time_fmt.now ()) e
+
 (* A 5-second sleep that took longer than this means the machine slept. *)
 let wake_threshold = 60.
 
@@ -2290,6 +2316,7 @@ let run =
              that stops part way names the last thing it did. ISS-79885 *)
           Out_channel.set_buffered stdout false;
           Out_channel.set_buffered stderr false;
+          refresh_service dir;
           let stop = stop_on_signals () in
           let sync_wanted = Atomic.make false in
           let server =
@@ -2831,15 +2858,6 @@ let writer_show =
               print_endline
                 (Option.value (Digestif_web.Sources.writer n.log) ~default:"-")))
       $ data_dir)
-
-(* The service runs the supervisor from the last healthy release (docs/releases.md). *)
-let service_plan dir =
-  let dir = node_dir dir in
-  Service.plan
-    ~exe:(U.Layout.binary_in (U.Layout.good_link dir))
-    ~command:[ "supervise" ] ~dir
-    ~path:(Option.value (Sys.getenv_opt "PATH") ~default:"/usr/bin:/bin")
-    ()
 
 let behaviors_arg =
   Arg.(
