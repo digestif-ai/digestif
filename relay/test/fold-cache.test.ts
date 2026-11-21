@@ -5,9 +5,9 @@
 // envelope does not re-verify the key signatures inside it (conformance/src/fold.ts, stored).
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { deviceBody } from "../../conformance/src/bodies.ts";
+import { deviceBody, retractBody } from "../../conformance/src/bodies.ts";
 import { jcs, type Json } from "../../conformance/src/encoding.ts";
-import { Author, type Envelope, type SignedEnvelope } from "../../conformance/src/envelope.ts";
+import { Author, envelopeHash, type Envelope, type SignedEnvelope } from "../../conformance/src/envelope.ts";
 import { Fold } from "../../conformance/src/fold.ts";
 import { Signer } from "../../conformance/src/keys.ts";
 import { signedHeaders } from "../../conformance/src/request.ts";
@@ -21,11 +21,12 @@ import { DEFAULT_LIMITS } from "../src/env.ts";
 const RELAY = "http://relay.test";
 const realFetch = globalThis.fetch;
 
-/** A D1 that counts the envelope rows its reads return: what a fold replays. */
+/** A D1 that counts the envelope rows its reads return, batched or not: what a fold replays. */
 function counting(real: D1Database): { db: D1Database; replayed: () => number } {
   let rows = 0;
-  const wrap = (inner: D1PreparedStatement, sql: string): D1PreparedStatement =>
-    ({
+  const inners = new WeakMap<D1PreparedStatement, { inner: D1PreparedStatement; sql: string }>();
+  const wrap = (inner: D1PreparedStatement, sql: string): D1PreparedStatement => {
+    const wrapped = {
       bind: (...values: unknown[]) => wrap(inner.bind(...values), sql),
       first: (column?: string) => (column === undefined ? inner.first() : inner.first(column)),
       run: () => inner.run(),
@@ -34,8 +35,19 @@ function counting(real: D1Database): { db: D1Database; replayed: () => number } 
         if (sql.includes(ENVELOPE_COLUMNS)) rows += result.results.length;
         return result;
       },
-    }) as unknown as D1PreparedStatement;
-  const db = { prepare: (sql: string) => wrap(real.prepare(sql), sql), batch: (s: D1PreparedStatement[]) => real.batch(s) } as unknown as D1Database;
+    } as unknown as D1PreparedStatement;
+    inners.set(wrapped, { inner, sql });
+    return wrapped;
+  };
+  const batch = async (statements: D1PreparedStatement[]): Promise<D1Result[]> => {
+    const unwrapped = statements.map((s) => inners.get(s) ?? { inner: s, sql: "" });
+    const results = await real.batch(unwrapped.map((u) => u.inner));
+    results.forEach((result, i) => {
+      if (unwrapped[i]?.sql.includes(ENVELOPE_COLUMNS)) rows += result.results.length;
+    });
+    return results;
+  };
+  const db = { prepare: (sql: string) => wrap(real.prepare(sql), sql), batch } as unknown as D1Database;
   return { db, replayed: () => rows };
 }
 
@@ -131,6 +143,30 @@ describe("the isolate's kept fold", () => {
     expect(replayed()).toBe(0);
     expect(fold.keys.get(key.key)?.role).toBe("device");
     await expectFullRefold(fold);
+  });
+
+  it("folds a retract from the kept fold, replaying no envelope, and still judges it by the target's author", async () => {
+    const note = await world.post(member.device, "to be retracted");
+    const target = envelopeHash(note.envelope);
+    await foldLog(env.DB, env.CIRCLE_ROOT, scope());
+    const relayOn = (db: D1Database) => ({ db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) });
+    const send = async (db: D1Database, author: Author): Promise<Response> => {
+      const signed = author.next("retract", retractBody(target), await world.epoch());
+      const body = jcs(signed);
+      const url = new URL(`${RELAY}/v0/envelopes`);
+      const headers = { "content-type": "application/json", ...signedHeaders(author.signer, "POST", url.pathname, body) };
+      return append(relayOn(db), new Request(url, { method: "POST", headers, body }), url);
+    };
+    const [other] = await world.members(["retract interloper"]);
+    if (other === undefined) throw new Error("a second member expected");
+    await foldLog(env.DB, env.CIRCLE_ROOT, scope());
+    const refused = counting(env.DB);
+    await expect(send(refused.db, other.device)).rejects.toMatchObject({ status: 422, code: "retract_not_author" });
+    expect(refused.replayed()).toBe(0);
+    const accepted = counting(env.DB);
+    const response = await send(accepted.db, member.device);
+    expect(response.status, await response.clone().text()).toBe(201);
+    expect(accepted.replayed()).toBe(0);
   });
 
   it("refolds the whole log when it no longer begins with the envelopes the kept fold read", async () => {

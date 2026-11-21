@@ -251,6 +251,14 @@ export class Fold {
     return this.authorOf.get(hash);
   }
 
+  /**
+   * Records the author of an envelope this fold did not fold, for the retract rule: a relay folds
+   * only the circle-state envelopes and reads a retract target's author from its stored row.
+   */
+  recordAuthor(hash: string, author: string): void {
+    this.authorOf.set(hash, author);
+  }
+
   /** Folds one envelope. Returns the refusal and changes nothing, or returns null having applied it. */
   apply(input: FoldInput): FoldError | null {
     const error = this.applyKind(input);
