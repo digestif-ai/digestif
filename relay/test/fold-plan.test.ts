@@ -5,7 +5,7 @@
 // envelopes, the shape under which it prefers the primary key when nothing pins the index.
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import { CIRCLE_STATE_SQL, INCLUDED_SQL } from "../src/db.ts";
+import { CIRCLE_STATE_SQL, RETRACT_TARGET_SQL } from "../src/db.ts";
 import { ANSWERED_SQL } from "../src/links.ts";
 
 async function plan(sql: string, ...binds: (string | number)[]): Promise<string> {
@@ -31,7 +31,7 @@ describe("the fold's reads", () => {
   });
 
   it("read the retract target by its hash", async () => {
-    const detail = await plan(INCLUDED_SQL, "h7", Number.MAX_SAFE_INTEGER);
+    const detail = await plan(RETRACT_TARGET_SQL, "h7");
     expect(detail).toMatch(/USING INDEX sqlite_autoindex_envelopes_\d+ \(hash=\?/);
   });
 

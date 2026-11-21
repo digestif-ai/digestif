@@ -29,7 +29,7 @@ import {
   type SignedEnvelope,
 } from "../../conformance/src/envelope.ts";
 import { authenticate, type Authenticated } from "./auth.ts";
-import { changedKeys, checkedRoot, CIRCLE_STATE_IDS_SQL, foldLog, keepFold, loadKey, snapshotKeys, type EnvelopeRow, type FoldedIdRow } from "./db.ts";
+import { changedKeys, checkedRoot, CIRCLE_STATE_IDS_SQL, foldLog, keepFold, loadKey, RETRACT_TARGET_SQL, snapshotKeys, type EnvelopeRow, type FoldedIdRow } from "./db.ts";
 import type { Relay } from "./env.ts";
 import { json, Refusal } from "./errors.ts";
 
@@ -209,6 +209,7 @@ interface LogReads {
   last: number;
   daily: number;
   retractKind: string | undefined;
+  retractAuthor: string | undefined;
 }
 
 /**
@@ -225,10 +226,11 @@ async function readLog(relay: Relay, envelope: Envelope, hash: string, day: stri
     db.prepare("SELECT hash FROM envelopes WHERE author = ? AND seq = ?").bind(envelope.author, envelope.seq),
     db.prepare("SELECT MAX(seq) AS last FROM envelopes WHERE author = ?").bind(envelope.author),
     db.prepare("SELECT count FROM daily_appends WHERE author = ? AND day = ?").bind(envelope.author, day),
-    db.prepare("SELECT kind FROM envelopes WHERE hash = ?").bind(retractTarget ?? ""),
+    db.prepare(RETRACT_TARGET_SQL).bind(retractTarget ?? ""),
   ]);
   const first = (i: number): Record<string, unknown> | undefined => results[i]?.results[0];
   const circle = first(2) as { root: string; admission_cutover: number } | undefined;
+  const target = retractTarget === undefined ? undefined : (first(7) as { kind: string; author: string } | undefined);
   return {
     position: (first(0)?.["next"] as number | undefined) ?? 1,
     held: first(1)?.["relay_id"] as number | undefined,
@@ -238,7 +240,8 @@ async function readLog(relay: Relay, envelope: Envelope, hash: string, day: stri
     atSeq: first(4)?.["hash"] as string | undefined,
     last: (first(5)?.["last"] as number | null | undefined) ?? 0,
     daily: (first(6)?.["count"] as number | undefined) ?? 0,
-    retractKind: retractTarget === undefined ? undefined : (first(7)?.["kind"] as string | undefined),
+    retractKind: target?.kind,
+    retractAuthor: target?.author,
   };
 }
 
@@ -256,11 +259,13 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string,
   const { position } = log;
   if (log.held !== undefined) return { status: "duplicate", relay_id: log.held, hash };
   const fold = await foldLog(relay.db, relay.root, {
-    include: retractTarget,
     before: position,
     signers: relay.releaseSigners,
     read: { cutover: log.cutover, ids: log.ids },
   });
+  // The kept fold holds the circle-state envelopes; a retract's target is any envelope below the
+  // position, whose author the retract rule reads off the row rather than a replay of the log.
+  if (retractTarget !== undefined && log.retractAuthor !== undefined) fold.recordAuthor(retractTarget, log.retractAuthor);
   const author = fold.activeAuthor(envelope.author);
   if (envelope.kind !== "join") checkChain(envelope, hash, author?.role === "mail", log);
   if (log.daily >= relay.limits.max_appends_per_device_per_day) {

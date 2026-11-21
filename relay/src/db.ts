@@ -151,8 +151,6 @@ export async function loadEnvelope(db: D1Database, hash: string): Promise<Envelo
 export interface FoldScope {
   /** Fold every envelope rather than the circle-state ones: the full refold the tests compare against. */
   all?: boolean;
-  /** One more envelope to fold at its position: the target of a retract, so the retract rule can see its author. */
-  include?: string;
   /** Fold only the envelopes below this relay_id: the log as it stood when an append chose that position. */
   before?: number;
   /**
@@ -173,27 +171,20 @@ const CIRCLE_STATE_IN = CIRCLE_STATE_KINDS.map((k) => `'${k}'`).join(", ");
 /**
  * The circle-state envelopes below a relay_id, read through envelopes_kind_relay_id. INDEXED BY
  * pins the index: with the relay_id bound alone SQLite prefers walking the primary key, which reads
- * every row of the log, bodies included, and D1 bills each one. An OR on hash in the same statement
- * has the same effect, so the retract target is its own statement. DIG-206
+ * every row of the log, bodies included, and D1 bills each one. DIG-206
  */
 export const CIRCLE_STATE_SQL = `SELECT ${ENVELOPE_COLUMNS} FROM envelopes INDEXED BY envelopes_kind_relay_id WHERE kind IN (${CIRCLE_STATE_IN}) AND relay_id < ?`;
-export const INCLUDED_SQL = `SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE hash = ? AND relay_id < ?`;
 
-/** The rows foldLog replays, in relay order: one batch, so both statements read the same log. */
-async function logRows(db: D1Database, scope: FoldScope): Promise<EnvelopeRow[]> {
-  const below = scope.before ?? Number.MAX_SAFE_INTEGER;
-  if (scope.all) {
-    const { results } = await db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? ORDER BY relay_id`).bind(below).all<EnvelopeRow>();
-    return results;
-  }
-  const statements = [db.prepare(CIRCLE_STATE_SQL).bind(below)];
-  if (scope.include !== undefined) statements.push(db.prepare(INCLUDED_SQL).bind(scope.include, below));
-  const [state, included] = await db.batch<EnvelopeRow>(statements);
-  if (state === undefined) throw new Error("the circle-state read returned no result");
-  const rows = state.results;
-  const extra = included?.results[0];
-  if (extra !== undefined && !rows.some((row) => row.relay_id === extra.relay_id)) rows.push(extra);
-  return rows.sort((a, b) => a.relay_id - b.relay_id);
+/**
+ * What a retract append reads of its target, by the hash's unique index: the kind the retract rule
+ * refuses a circle-state target by, and the author the fold judges the retract against. DIG-241
+ */
+export const RETRACT_TARGET_SQL = "SELECT kind, author FROM envelopes WHERE hash = ?";
+
+/** Every envelope below `before`, in relay order: the full refold. */
+async function allRows(db: D1Database, below: number): Promise<EnvelopeRow[]> {
+  const { results } = await db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? ORDER BY relay_id`).bind(below).all<EnvelopeRow>();
+  return results;
 }
 
 /**
@@ -201,12 +192,13 @@ async function logRows(db: D1Database, scope: FoldScope): Promise<EnvelopeRow[]>
  * it arrived, with its relay_id as position and its judged_at, or else its received_at, as the clock,
  * so replaying them with the same inputs reaches the same state; one that does not replay is a corrupt log, not a refusal.
  *
- * The circle-state fold (no `all`, no `include`) starts from the isolate's kept fold when the log
- * still begins with exactly the envelopes it folded, and is a copy the caller may apply to.
+ * The circle-state fold (no `all`) starts from the isolate's kept fold when the log still begins
+ * with exactly the envelopes it folded, and is a copy the caller may apply to.
  */
 export async function foldLog(db: D1Database, root: string, scope: FoldScope = {}): Promise<Fold> {
-  if (scope.all || scope.include !== undefined) return replay(newFold(root, scope, await admissionCutover(db)), await logRows(db, scope));
-  return foldCircleState(db, root, scope, scope.before ?? Number.MAX_SAFE_INTEGER);
+  const below = scope.before ?? Number.MAX_SAFE_INTEGER;
+  if (scope.all) return replay(newFold(root, scope, await admissionCutover(db)), await allRows(db, below));
+  return foldCircleState(db, root, scope, below);
 }
 
 /** One circle-state envelope as the kept fold names it: position, hash and the clock it was judged at. */
