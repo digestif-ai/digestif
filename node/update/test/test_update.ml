@@ -4539,8 +4539,7 @@ let test_sign_next_offers_newest_and_completable () =
   let uploaded, _, _, said = run_two ~older_signed_by:[ roman ] [ "s" ] in
   Alcotest.(check (list string))
     "one s signs the newest and the one Roman signed, uploaded at once"
-    [ "v0.2.1"; "v0.2.2" ]
-    (List.sort compare uploaded);
+    [ "v0.2.2"; "v0.2.1" ] uploaded;
   Alcotest.(check bool)
     ("said newest first: " ^ said)
     true
