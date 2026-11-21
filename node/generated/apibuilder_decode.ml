@@ -19,23 +19,32 @@ let required ctx name (f : 'a decoder) (j : Yojson.Safe.t) : ('a, string) result
   | None | Some `Null -> Error (Printf.sprintf "%s.%s: missing required field" ctx name)
   | Some v -> Result.map_error (fun e -> Printf.sprintf "%s.%s: %s" ctx name e) (f v)
 
+(* A spec DEFAULT, decoded with its field's decoder. [default] is the spec's text -- JSON for a
+   number, a boolean or a collection, bare for a string or an enum value -- so it is read as
+   JSON first and as a string when that does not decode. *)
+let decode_default ctx name (f : 'a decoder) (default : string) : ('a, string) result =
+  let parsed = try Some (Yojson.Safe.from_string default) with Yojson.Json_error _ -> None in
+  match Option.map f parsed with
+  | Some (Ok v) -> Ok v
+  | _ ->
+      Result.map_error
+        (fun e -> Printf.sprintf "%s.%s: default %s: %s" ctx name default e)
+        (f (`String default))
+
 (* A required field the spec gives a DEFAULT decodes to that default when it is absent or null:
    the default is what the server means by saying nothing, and a server released before the
-   field existed says nothing. [default] is the spec's text -- JSON for a number, a boolean or
-   a collection, bare for a string or an enum value -- so it is read as JSON first and as a
-   string when that does not decode. *)
+   field existed says nothing. *)
 let required_default ctx name (f : 'a decoder) (default : string) (j : Yojson.Safe.t) :
     ('a, string) result =
   match member name j with
-  | None | Some `Null -> (
-      let parsed = try Some (Yojson.Safe.from_string default) with Yojson.Json_error _ -> None in
-      match Option.map f parsed with
-      | Some (Ok v) -> Ok v
-      | _ ->
-          Result.map_error
-            (fun e -> Printf.sprintf "%s.%s: default %s: %s" ctx name default e)
-            (f (`String default)))
+  | None | Some `Null -> decode_default ctx name f default
   | Some v -> Result.map_error (fun e -> Printf.sprintf "%s.%s: %s" ctx name e) (f v)
+
+(* The value [make] fills in for a defaulted field its caller omits, decoded once when the
+   module loads. The generator has already checked that the default decodes, so this raises
+   only for a model or union default the generator cannot see into. *)
+let spec_default ctx name (f : 'a decoder) (default : string) : 'a =
+  match decode_default ctx name f default with Ok v -> v | Error e -> invalid_arg e
 
 let optional ctx name (f : 'a decoder) (j : Yojson.Safe.t) : ('a option, string) result =
   match member name j with
