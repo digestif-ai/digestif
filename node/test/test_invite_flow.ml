@@ -1619,8 +1619,8 @@ let second_identity_while_no_record_parses () =
   post second second_join (List.nth urls 1);
   let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
   Alcotest.(check int) "every record is reported" 1 (List.length problems);
-  Alcotest.(check int) "nothing observed while no record parses" 0
-    (List.length seen);
+  Alcotest.(check int)
+    "nothing observed while no record parses" 0 (List.length seen);
   Alcotest.(check bool)
     "the cursor is kept in the config table" true
     (Host_watch.config_cursor host.log <> None);
@@ -1675,8 +1675,8 @@ let () =
             `Quick second_identity_while_ledger_unreadable;
           Alcotest.test_case "a join on a record that does not parse" `Quick
             join_on_unreadable_record;
-          Alcotest.test_case "a second identity while no record parses"
-            `Quick second_identity_while_no_record_parses;
+          Alcotest.test_case "a second identity while no record parses" `Quick
+            second_identity_while_no_record_parses;
           Alcotest.test_case "the cursor rides on the records" `Quick
             cursor_kept_in_a_list;
           Alcotest.test_case "codes no open invite names" `Quick refused;

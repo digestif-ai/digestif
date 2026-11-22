@@ -237,13 +237,13 @@ let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
   | Some w when w.ledger <> [] || w.keep <> [] -> (
       let ledger, cursor = watch_joins ~now ~start node w ~watch in
       if ledger = [] then (
-        (* No record parses, so none can carry the cursor (and no join changed one): the log's
+        if
+          (* No record parses, so none can carry the cursor (and no join changed one): the log's
            config table keeps it until a record reads again. DIG-329 *)
-        if w.cursor <> Some cursor then
-          Host_watch.set_config_cursor node.log cursor)
+          w.cursor <> Some cursor
+        then Host_watch.set_config_cursor node.log cursor)
       else if
-        !seen <> []
-        || w.cursor <> Some cursor
+        !seen <> [] || w.cursor <> Some cursor
         || Host_watch.config_cursor node.log <> None
       then
         match Host_watch.save ~keep:w.keep ~cursor node.dir ledger with
