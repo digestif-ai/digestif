@@ -817,12 +817,26 @@ let write_baseline file measured =
           ]);
   output_char oc '\n'
 
+(* What an over-budget route measured beside its baseline and the run's [shift], so the failure
+   alone tells a machine that was slower everywhere (the route near its baseline once the shift is
+   taken out) from a route that grew (ISS-125158): the published log carries the failure and not
+   the table [budget] prints. The budget itself is never shifted (ISS-42329). *)
+let over_budget ~shift ~baseline (name, ms) =
+  let against =
+    match List.assoc_opt name baseline with
+    | Some b ->
+        Printf.sprintf "baseline %.2fms, %.2fx it" b
+          (if b > 0. then ms /. b else Float.infinity)
+    | None -> "no baseline yet"
+  in
+  Printf.sprintf
+    "%s: p95 %.1fms is over the %.0fms budget (%s; this run's machine is %.2fx \
+     the baseline's, so %.1fms on the baseline's machine)"
+    name ms budget_ms against shift (ms /. shift)
+
 (* Why a route's p95 fails, or None. *)
 let verdict ?(shift = 1.) ~baseline (name, ms) =
-  if ms > budget_ms then
-    Some
-      (Printf.sprintf "%s: p95 %.1fms is over the %.0fms budget" name ms
-         budget_ms)
+  if ms > budget_ms then Some (over_budget ~shift ~baseline (name, ms))
   else
     match List.assoc_opt name baseline with
     | Some b when regression ~shift ~baseline:b ms ->
@@ -935,7 +949,21 @@ let shifts () =
     (machine_shift ~baseline:[] slow = 1.);
   Alcotest.(check bool)
     "the budget is not shifted" true
-    (verdict ~shift:10. ~baseline:[ ("r", 49.) ] ("r", 51.) <> None)
+    (verdict ~shift:10. ~baseline:[ ("r", 49.) ] ("r", 51.) <> None);
+  (* ISS-125158: an over-budget failure names the run's shift and the route's baseline. *)
+  Alcotest.(check (option string))
+    "an over-budget failure says how slow the machine was"
+    (Some
+       "search: p95 50.5ms is over the 50ms budget (baseline 13.44ms, 3.76x \
+        it; this run's machine is 3.70x the baseline's, so 13.6ms on the \
+        baseline's machine)")
+    (verdict ~shift:3.7 ~baseline:[ ("search", 13.44) ] ("search", 50.5));
+  Alcotest.(check (option string))
+    "an over-budget route with no baseline says so"
+    (Some
+       "new: p95 60.0ms is over the 50ms budget (no baseline yet; this run's \
+        machine is 1.00x the baseline's, so 60.0ms on the baseline's machine)")
+    (verdict ~baseline:[] ("new", 60.))
 
 let () =
   Ci_alcotest.run "perf"
