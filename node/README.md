@@ -268,7 +268,8 @@ named the guest (`--agent-name` names their agent; `digestif card` or Names on S
 Names on Settings publishes the first card of a member who has none). A member with no card
 reads as the name their invite gave them. A host with no card gets one from the `--from` name their
 invite emails are signed with. Every sync on the host runs the join
-watcher over the joins it stores: a join the host recorded as expected (`digestif invite expected`)
+watcher over the joins the log holds past the cursor saved on `invites.json`'s records, so a join
+stored while the ledger could not be read is watched by the first sync that reads it: a join the host recorded as expected (`digestif invite expected`)
 is printed, and any other is an ask, `join:<invite key>`, answered `confirm` or `revoke`. A revoke
 is signed by the identity key, so it reads the phrase.
 

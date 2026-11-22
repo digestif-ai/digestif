@@ -257,7 +257,25 @@ let state_to_json = function
       `Assoc
         [ ("state", `String "revoked"); ("identity_key", `String identity_key) ]
 
-let record_to_json r : Yojson.Safe.t =
+(* How far the join watcher has read the log: every join with a local order up to [watched_through]
+   was observed, except those in [pending], held back because their invite may be one of the
+   records that did not parse. A join past it was stored since, whether or not the ledger could be
+   read then, so the next sync that reads the ledger observes it. DIG-324
+
+   It is written onto every record rather than around them, so the file stays the list of records
+   an older release reads; a release that saves without it drops it, and the next sync starts the
+   cursor at the log's end, past every join that release's own watcher already saw. *)
+type cursor = { watched_through : int; pending : string list }
+
+let cursor_fields = function
+  | None -> []
+  | Some c ->
+      [
+        ("watched_through", `Int c.watched_through);
+        ("pending", `List (List.map (fun h -> `String h) c.pending));
+      ]
+
+let record_to_json ?cursor r : Yojson.Safe.t =
   let state = match state_to_json r.state with `Assoc fs -> fs | _ -> [] in
   `Assoc
     ([
@@ -268,7 +286,7 @@ let record_to_json r : Yojson.Safe.t =
        ("expires_at", `String (Dinner.iso8601 r.expires_at));
        ("message", `String r.message);
      ]
-    @ state
+    @ state @ cursor_fields cursor
     @
     match r.approved with
     | None -> []
@@ -289,7 +307,32 @@ let record_to_json r : Yojson.Safe.t =
               | Some p -> [ ("promotion", `String p) ]) );
         ])
 
-let to_json ledger : Yojson.Safe.t = `List (List.map record_to_json ledger)
+let to_json ?cursor ledger : Yojson.Safe.t =
+  `List (List.map (record_to_json ?cursor) ledger)
+
+(* The cursor a record carries; the newest of the records' is the file's. *)
+let cursor_of_record_json = function
+  | `Assoc fs -> (
+      match List.assoc_opt "watched_through" fs with
+      | Some (`Int n) ->
+          let pending =
+            match List.assoc_opt "pending" fs with
+            | Some (`List hs) ->
+                List.filter_map (function `String h -> Some h | _ -> None) hs
+            | _ -> []
+          in
+          Some { watched_through = n; pending }
+      | _ -> None)
+  | _ -> None
+
+let newest_cursor items =
+  List.fold_left
+    (fun acc j ->
+      match (acc, cursor_of_record_json j) with
+      | None, c -> c
+      | Some a, Some c when c.watched_through > a.watched_through -> Some c
+      | a, _ -> a)
+    None items
 
 let record_of_json j =
   let field k = match j with `Assoc fs -> List.assoc_opt k fs | _ -> None in
@@ -387,13 +430,42 @@ let load dir = read_json dir ~parse:of_json
    that is not a ledger at all. *)
 let load_readable dir = read_json dir ~parse:partition_json
 
+(* What the join watcher reads on every sync: [load_readable]'s records and unreadable items, and
+   the cursor the records that parse carry (None on a file no watcher has saved one in). *)
+type watch = {
+  ledger : ledger;
+  keep : Yojson.Safe.t list;
+  cursor : cursor option;
+}
+
+let load_watch dir =
+  read_json dir ~parse:(fun j ->
+      Result.map
+        (fun (ledger, keep) ->
+          let readable =
+            match j with
+            | `List items ->
+                List.filter (fun i -> record_of_json i <> None) items
+            | _ -> []
+          in
+          { ledger; keep; cursor = newest_cursor readable })
+        (partition_json j))
+
+(* The cursor in the file now, so a command that changes a record keeps the watcher's. *)
+let current_cursor dir =
+  match load_watch dir with Ok w -> w.cursor | Error _ -> None
+
 (* Written to a temporary file and renamed over the old one, so a crash leaves one or the other.
-   [keep] are items [load_readable] could not read, written back after the records. *)
-let save ?(keep = []) dir ledger =
+   [keep] are items [load_readable] could not read, written back after the records. [cursor] is the
+   join watcher's; without it the file's own is kept. *)
+let save ?(keep = []) ?cursor dir ledger =
   let p = file dir in
   let tmp = p ^ ".tmp" in
+  let cursor =
+    match cursor with Some _ -> cursor | None -> current_cursor dir
+  in
   let json =
-    match to_json ledger with `List rs -> `List (rs @ keep) | j -> j
+    match to_json ?cursor ledger with `List rs -> `List (rs @ keep) | j -> j
   in
   match
     Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc ] 0o600 tmp

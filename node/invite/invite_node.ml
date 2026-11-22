@@ -132,71 +132,115 @@ let watch_problem_to_string = function
   | Not_saved e -> "the invite ledger was not saved: " ^ e
   | Ask_not_raised e -> "a join ask was not raised: " ^ e
 
-(* The joins in the log, in the order this node stored them, on an invite [ledger] still has Open:
-   the joins the watcher never observed. The log is read only when an invite is Open. DIG-292 *)
-let missed_joins (node : Node.t) (ledger : Host_watch.ledger) =
-  let open_keys =
-    List.filter_map
-      (fun (r : Host_watch.record) ->
-        match r.state with Open _ -> Some r.invite_key | _ -> None)
-      ledger
-  in
-  if open_keys = [] then []
-  else
-    List.filter_map
-      (fun (row : Log.row) ->
-        match (row.retracted_by, Join.verify row.signed) with
-        | None, Ok join when List.mem join.invite_key open_keys ->
-            Some (row.hash, join)
-        | _ -> None)
-      (Log.of_kind node.log "join")
+(* Whether a join on [invite_key] may be on one of [keep], the ledger items that did not parse: one
+   naming that invite key, or one naming none that can be read. *)
+let may_be_kept keep invite_key =
+  List.exists
+    (function
+      | `Assoc fs -> (
+          match List.assoc_opt "invite_key" fs with
+          | Some (`String k) -> k = invite_key
+          | _ -> true)
+      | _ -> true)
+    keep
 
-(* Sync, running Host_watch.observe on every join the sync stores for the first time, on every
-   relay: the fold admits one join per invite, and the host still hears of a second one another
-   relay accepted. Each ask goes to the ask store, keyed by its invite, so a second identity on one
-   invite re-raises the same ask. The ledger is the watcher's, never the sync's: a record that does
-   not parse is skipped and kept, a ledger that cannot be read at all is left alone, and either is
+(* Observe, in the order this node stored them, the joins the watcher has not: every join past the
+   cursor ([start], the log's end before this sync stored anything, on a ledger no watcher saved a
+   cursor in), every join the cursor holds pending, and every join on an invite the ledger still
+   has Open (DIG-292: an Open invite with a join in the log is one whose join was missed, since
+   observing it moves it out of Open; this reaches joins stored before the ledger carried a
+   cursor). A join on an invite no readable record names that may be one of the records that did
+   not parse is held pending rather than called someone else's, and observed once its record
+   reads. The log is read whole only when something is pending or an invite is Open. DIG-324 *)
+let watch_joins ~now ~start (node : Node.t) (w : Host_watch.watch) ~watch =
+  let after, pending =
+    match w.cursor with
+    | Some c -> (c.watched_through, c.pending)
+    | None -> (start, [])
+  in
+  let ledger = ref w.ledger in
+  let is_open key =
+    List.exists
+      (fun (r : Host_watch.record) ->
+        r.invite_key = key && match r.state with Open _ -> true | _ -> false)
+      !ledger
+  in
+  let ours key =
+    List.exists (fun (r : Host_watch.record) -> r.invite_key = key) !ledger
+  in
+  let rows =
+    if
+      pending = []
+      && not
+           (List.exists
+              (fun (r : Host_watch.record) -> is_open r.invite_key)
+              w.ledger)
+    then Log.of_kind_after node.log "join" ~after
+    else Log.of_kind node.log "join"
+  in
+  let through = ref after and held = ref [] in
+  List.iter
+    (fun (row : Log.row) ->
+      through := max !through row.local_order;
+      match (row.retracted_by, Join.verify row.signed) with
+      | None, Ok (join : Join.t) ->
+          let fresh = row.local_order > after || List.mem row.hash pending in
+          if fresh || is_open join.invite_key then
+            if
+              (not (ours join.invite_key)) && may_be_kept w.keep join.invite_key
+            then held := row.hash :: !held
+            else ledger := watch ~now !ledger row.hash join
+      | _ -> ())
+    rows;
+  (!ledger, { Host_watch.watched_through = !through; pending = List.rev !held })
+
+(* Sync, then run Host_watch.observe on every join the watcher has not observed (watch_joins): the
+   fold admits one join per invite, and the host still hears of a second one another relay
+   accepted. Each ask goes to the ask store, keyed by its invite, so a second identity on one invite
+   re-raises the same ask. The ledger is the watcher's, never the sync's: a record that does not
+   parse is skipped and kept, a ledger that cannot be read at all is left alone, and either is
    returned as a watch problem beside the sync's own report. The result is an Error only when the
    sync itself failed. DIG-224
 
-   A join stored while the ledger could not be read was seen by nobody, and on_stored never sees
-   it again. So once the sync has run, every join the log holds on an invite the ledger still has
-   Open is observed too: an Open invite with a join in the log is exactly one whose join the
-   watcher missed, since observing it moves it out of Open. DIG-292 *)
+   The joins are read from the log after the sync rather than as it stores them, against the cursor
+   saved with the ledger, so a join stored while the ledger could not be read, or on an invite whose
+   record did not parse, is observed by the first sync that reads it, a second identity on an invite
+   already Joined or Revoked included. DIG-292 DIG-324 *)
 let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
   let problems = ref [] in
   let problem p = problems := p :: !problems in
-  let ledger, keep, savable =
-    match Host_watch.load_readable node.dir with
-    | Ok (ledger, keep) ->
-        if keep <> [] then problem (Unreadable_records (List.length keep));
-        (ledger, keep, true)
+  let watched =
+    match Host_watch.load_watch node.dir with
+    | Ok w ->
+        if w.keep <> [] then problem (Unreadable_records (List.length w.keep));
+        Some w
     | Error e ->
         problem (Unreadable_ledger e);
-        ([], [], false)
+        None
   in
-  let ledger = ref ledger and seen = ref [] in
-  let watch hash (join : Join.t) =
-    let l, outcome = Host_watch.observe ~now !ledger join in
-    ledger := l;
+  let start = Log.last_local_order node.log in
+  let synced = Sync.sync ?transport node in
+  let seen = ref [] in
+  let watch ~now ledger hash (join : Join.t) =
+    let l, outcome = Host_watch.observe ~now ledger join in
     (match outcome with
     | Host_watch.Asked (_, ask) -> (
         match Asks.raise_ node.log (Host_watch.to_store ask) with
         | Ok () -> ()
         | Error e -> problem (Ask_not_raised e))
     | _ -> ());
-    seen := { join_hash = hash; outcome } :: !seen
+    seen := { join_hash = hash; outcome } :: !seen;
+    l
   in
-  let on_stored hash (sg : Envelope.signed) =
-    if sg.envelope.kind = "join" && !ledger <> [] then
-      match Join.verify sg with Error _ -> () | Ok join -> watch hash join
-  in
-  let* report = Sync.sync ?transport ~on_stored node in
-  List.iter (fun (hash, join) -> watch hash join) (missed_joins node !ledger);
-  (if savable && !seen <> [] then
-     match Host_watch.save ~keep node.dir !ledger with
-     | Ok () -> ()
-     | Error e -> problem (Not_saved e));
+  (match watched with
+  | Some w when w.ledger <> [] -> (
+      let ledger, cursor = watch_joins ~now ~start node w ~watch in
+      if !seen <> [] || w.cursor <> Some cursor then
+        match Host_watch.save ~keep:w.keep ~cursor node.dir ledger with
+        | Ok () -> ()
+        | Error e -> problem (Not_saved e))
+  | _ -> ());
+  let* report = synced in
   Ok (report, List.rev !seen, List.rev !problems)
 
 (* An answer to a join ask: the person's, or one the daily pass settled from a decision or a lapse

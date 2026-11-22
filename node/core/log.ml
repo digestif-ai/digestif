@@ -539,6 +539,27 @@ let of_kind t kind =
       ^ " FROM envelopes WHERE kind = ? ORDER BY local_order")
        [ s kind ])
 
+(* The [kind] envelopes stored after local order [after], in the order this node stored them. *)
+let of_kind_after t kind ~after =
+  List.map row_of
+    (rows t
+       ("SELECT " ^ envelope_columns
+      ^ " FROM envelopes WHERE kind = ? AND local_order > ? ORDER BY \
+         local_order")
+       [ s kind; i after ])
+
+(* The highest local order this node has given an envelope, 0 for an empty log. *)
+let last_local_order t =
+  match
+    rows t
+      "SELECT MAX(COALESCE((SELECT MAX(local_order) FROM envelopes), 0), \
+       COALESCE((SELECT CAST(value AS INTEGER) FROM config WHERE key = \
+       'log_order_removed'), 0))"
+      []
+  with
+  | [ [| n |] ] -> int n
+  | _ -> 0
+
 (* The envelopes of any of [kinds], read by the kind index, so a reader of a few kinds never decodes
    the rest of the log. *)
 let of_kinds t kinds =
