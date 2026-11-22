@@ -205,12 +205,13 @@ let watch_joins ~now ~start (node : Node.t) (w : Host_watch.watch) ~watch =
    The joins are read from the log after the sync rather than as it stores them, against the cursor
    saved with the ledger, so a join stored while the ledger could not be read, or on an invite whose
    record did not parse, is observed by the first sync that reads it, a second identity on an invite
-   already Joined or Revoked included. DIG-292 DIG-324 *)
+   already Joined or Revoked included. While no record parses the cursor is kept in the log's
+   config table instead, and moves back onto the records once one reads. DIG-292 DIG-324 DIG-329 *)
 let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
   let problems = ref [] in
   let problem p = problems := p :: !problems in
   let watched =
-    match Host_watch.load_watch node.dir with
+    match Host_watch.load_watch ~log:node.log node.dir with
     | Ok w ->
         if w.keep <> [] then problem (Unreadable_records (List.length w.keep));
         Some w
@@ -233,11 +234,20 @@ let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
     l
   in
   (match watched with
-  | Some w when w.ledger <> [] -> (
+  | Some w when w.ledger <> [] || w.keep <> [] -> (
       let ledger, cursor = watch_joins ~now ~start node w ~watch in
-      if !seen <> [] || w.cursor <> Some cursor then
+      if ledger = [] then (
+        if
+          (* No record parses, so none can carry the cursor (and no join changed one): the log's
+           config table keeps it until a record reads again. DIG-329 *)
+          w.cursor <> Some cursor
+        then Host_watch.set_config_cursor node.log cursor)
+      else if
+        !seen <> [] || w.cursor <> Some cursor
+        || Host_watch.config_cursor node.log <> None
+      then
         match Host_watch.save ~keep:w.keep ~cursor node.dir ledger with
-        | Ok () -> ()
+        | Ok () -> Host_watch.unset_config_cursor node.log
         | Error e -> problem (Not_saved e))
   | _ -> ());
   let* report = synced in
