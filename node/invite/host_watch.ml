@@ -264,7 +264,9 @@ let state_to_json = function
 
    It is written onto every record rather than around them, so the file stays the list of records
    an older release reads; a release that saves without it drops it, and the next sync starts the
-   cursor at the log's end, past every join that release's own watcher already saw. *)
+   cursor at the log's end, past every join that release's own watcher already saw. A ledger with
+   no record that parses has nowhere to carry it, so then it is kept in the log's config table
+   ([config_key]), which an older release never reads, and the newer of the two is the cursor. DIG-329 *)
 type cursor = { watched_through : int; pending : string list }
 
 let cursor_fields = function
@@ -325,14 +327,30 @@ let cursor_of_record_json = function
       | _ -> None)
   | _ -> None
 
+let newest = function
+  | None, c -> c
+  | Some a, Some c when c.watched_through > a.watched_through -> Some c
+  | a, _ -> a
+
 let newest_cursor items =
-  List.fold_left
-    (fun acc j ->
-      match (acc, cursor_of_record_json j) with
-      | None, c -> c
-      | Some a, Some c when c.watched_through > a.watched_through -> Some c
-      | a, _ -> a)
-    None items
+  List.fold_left (fun acc j -> newest (acc, cursor_of_record_json j)) None items
+
+(* The config key holding the cursor while no record of the ledger parses. *)
+let config_key = "invite_watch_cursor"
+
+let config_cursor log =
+  match Digestif_core.Log.get_config log config_key with
+  | None -> None
+  | Some v -> (
+      match Yojson.Safe.from_string v with
+      | j -> cursor_of_record_json j
+      | exception Yojson.Json_error _ -> None)
+
+let set_config_cursor log c =
+  Digestif_core.Log.set_config log config_key
+    (Yojson.Safe.to_string (`Assoc (cursor_fields (Some c))))
+
+let unset_config_cursor log = Digestif_core.Log.unset_config log config_key
 
 let record_of_json j =
   let field k = match j with `Assoc fs -> List.assoc_opt k fs | _ -> None in
@@ -431,14 +449,15 @@ let load dir = read_json dir ~parse:of_json
 let load_readable dir = read_json dir ~parse:partition_json
 
 (* What the join watcher reads on every sync: [load_readable]'s records and unreadable items, and
-   the cursor the records that parse carry (None on a file no watcher has saved one in). *)
+   the cursor the records that parse carry, or, given the node's [log], the newer of theirs and the
+   one its config table holds (None when no watcher has saved one in either). *)
 type watch = {
   ledger : ledger;
   keep : Yojson.Safe.t list;
   cursor : cursor option;
 }
 
-let load_watch dir =
+let load_watch ?log dir =
   read_json dir ~parse:(fun j ->
       Result.map
         (fun (ledger, keep) ->
@@ -448,7 +467,13 @@ let load_watch dir =
                 List.filter (fun i -> record_of_json i <> None) items
             | _ -> []
           in
-          { ledger; keep; cursor = newest_cursor readable })
+          let cursor = newest_cursor readable in
+          let cursor =
+            match log with
+            | None -> cursor
+            | Some log -> newest (cursor, config_cursor log)
+          in
+          { ledger; keep; cursor })
         (partition_json j))
 
 (* The cursor in the file now, so a command that changes a record keeps the watcher's. *)

@@ -1570,6 +1570,82 @@ let join_on_unreadable_record () =
   let _, again, _ = ok (Invite_node.sync ~transport:net host) in
   Alcotest.(check int) "and once only" 0 (List.length again)
 
+(* DIG-329: a second identity joins while no record of invites.json parses, and the records that
+   come back carry no cursor (as an older release, or a hand repair, writes them). The cursor the
+   sync kept in the log's config table meanwhile reaches the join, the invite being Joined so no
+   Open replay does, and moves back onto the records once they read. *)
+let second_identity_while_no_record_parses () =
+  let host, _, inv, relays, net = host_circle () in
+  let code =
+    ok
+      (Invite_code.parse (Invite_code.to_url (List.hd inv.dinner.invites).code))
+  in
+  let prepared () =
+    let guest = new_node () and phrase = Phrase.generate () in
+    (guest, phrase, ok (Invite_node.prepare ~transport:net guest ~code ~phrase))
+  in
+  let first, _, first_join = prepared () in
+  let second, second_phrase, second_join = prepared () in
+  let post node (stored : Join_store.t) relay =
+    ignore
+      (ok
+         (Invite_node.post ~transport:net node
+            { stored with relays = [ relay ] }))
+  in
+  post first first_join (List.nth urls 0);
+  let first_relay = Fake_relay.network [ List.hd relays ] in
+  let _, seen, _ = ok (Invite_node.sync ~transport:first_relay host) in
+  Alcotest.(check int) "the first join is watched" 1 (List.length seen);
+  let p = Host_watch.file host.dir in
+  let rewrite f =
+    match Yojson.Safe.from_file p with
+    | `List items ->
+        Yojson.Safe.to_file p
+          (`List
+             (List.map
+                (function
+                  | `Assoc fs ->
+                      `Assoc
+                        (f
+                           (List.filter
+                              (fun (k, _) ->
+                                k <> "watched_through" && k <> "pending")
+                              fs))
+                  | j -> j)
+                items))
+    | _ -> Alcotest.fail "the ledger is a list"
+  in
+  rewrite (List.remove_assoc "dinner");
+  post second second_join (List.nth urls 1);
+  let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "every record is reported" 1 (List.length problems);
+  Alcotest.(check int) "nothing observed while no record parses" 0
+    (List.length seen);
+  Alcotest.(check bool)
+    "the cursor is kept in the config table" true
+    (Host_watch.config_cursor host.log <> None);
+  let _, seen, _ = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "still nothing observed" 0 (List.length seen);
+  rewrite (fun fs -> ("dinner", `String inv.dinner_hash) :: fs);
+  let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "no problem once it reads" 0 (List.length problems);
+  let key = "join:" ^ (List.hd inv.dinner.invites).invite_key in
+  Alcotest.(check bool)
+    "the second identity is asked about" true
+    (List.exists
+       (fun (s : Invite_node.seen) ->
+         match s.outcome with
+         | Host_watch.Asked (_, a) ->
+             a.key = key && a.identity_key = identity_of second_phrase
+         | _ -> false)
+       seen);
+  Alcotest.(check bool)
+    "the cursor is back on the records" true
+    ((ok (Host_watch.load_watch host.dir)).cursor <> None
+    && Host_watch.config_cursor host.log = None);
+  let _, again, _ = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "and once only" 0 (List.length again)
+
 (* DIG-324: the cursor rides on the records, so the file stays the list an older release reads,
    and a command that changes a record keeps it. *)
 let cursor_kept_in_a_list () =
@@ -1599,6 +1675,8 @@ let () =
             `Quick second_identity_while_ledger_unreadable;
           Alcotest.test_case "a join on a record that does not parse" `Quick
             join_on_unreadable_record;
+          Alcotest.test_case "a second identity while no record parses"
+            `Quick second_identity_while_no_record_parses;
           Alcotest.test_case "the cursor rides on the records" `Quick
             cursor_kept_in_a_list;
           Alcotest.test_case "codes no open invite names" `Quick refused;
