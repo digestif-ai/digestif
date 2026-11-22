@@ -1455,6 +1455,134 @@ let join_while_ledger_unreadable () =
   Alcotest.(check int)
     "a replayed join is not watched twice" 0 (List.length again)
 
+(* DIG-324: two relays each take a different join on one invite, the second while invites.json is
+   not a ledger. The invite is already Joined, so no Open replay reaches it: the cursor saved with
+   the ledger does, and the host is asked about the second identity once the file reads again, and
+   once only. *)
+let second_identity_while_ledger_unreadable () =
+  let host, _, inv, relays, net = host_circle () in
+  let code =
+    ok
+      (Invite_code.parse (Invite_code.to_url (List.hd inv.dinner.invites).code))
+  in
+  let prepared () =
+    let guest = new_node () and phrase = Phrase.generate () in
+    (guest, phrase, ok (Invite_node.prepare ~transport:net guest ~code ~phrase))
+  in
+  let first, _, first_join = prepared () in
+  let second, second_phrase, second_join = prepared () in
+  let post node (stored : Join_store.t) relay =
+    ignore
+      (ok
+         (Invite_node.post ~transport:net node
+            { stored with relays = [ relay ] }))
+  in
+  post first first_join (List.nth urls 0);
+  post second second_join (List.nth urls 1);
+  (* The host reaches only the first relay, so it watches the first join alone. *)
+  let first_relay = Fake_relay.network [ List.hd relays ] in
+  let _, seen, _ = ok (Invite_node.sync ~transport:first_relay host) in
+  Alcotest.(check int) "the first join is watched" 1 (List.length seen);
+  let p = Host_watch.file host.dir in
+  let ledger = In_channel.with_open_text p In_channel.input_all in
+  Out_channel.with_open_text p (fun oc -> output_string oc "{ not json");
+  let _, seen, _ = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "nothing watched while unreadable" 0 (List.length seen);
+  Out_channel.with_open_text p (fun oc -> output_string oc ledger);
+  let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "no problem once it reads" 0 (List.length problems);
+  let key = "join:" ^ (List.hd inv.dinner.invites).invite_key in
+  Alcotest.(check bool)
+    "the second identity is asked about" true
+    (List.exists
+       (fun (s : Invite_node.seen) ->
+         match s.outcome with
+         | Host_watch.Asked (_, a) ->
+             a.key = key && a.identity_key = identity_of second_phrase
+         | _ -> false)
+       seen);
+  (match Asks.find host.log key with
+  | Some a ->
+      Alcotest.(check (option string))
+        "the ask is about the second identity"
+        (Some (identity_of second_phrase))
+        a.about
+  | None -> Alcotest.fail "no ask");
+  let _, again, _ = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int)
+    "a join already observed is not watched twice" 0 (List.length again)
+
+(* DIG-324: a join on an invite whose record does not parse is held, not called someone else's,
+   and observed once the record reads. *)
+let join_on_unreadable_record () =
+  let host, _, inv, _, net = host_circle () in
+  let p = Host_watch.file host.dir in
+  let original = Yojson.Safe.from_file p in
+  let roman = (List.hd inv.dinner.invites).invite_key in
+  let broken =
+    match original with
+    | `List items ->
+        `List
+          (List.map
+             (function
+               | `Assoc fs
+                 when List.assoc_opt "invite_key" fs = Some (`String roman) ->
+                   `Assoc (List.remove_assoc "dinner" fs)
+               | j -> j)
+             items)
+    | _ -> Alcotest.fail "the ledger is a list"
+  in
+  Yojson.Safe.to_file p broken;
+  let _ = guest_joins net inv 0 in
+  let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "the bad record is reported" 1 (List.length problems);
+  Alcotest.(check bool)
+    "the join is not called someone else's" false
+    (List.exists
+       (fun (s : Invite_node.seen) -> s.outcome = Host_watch.Not_ours)
+       seen);
+  Alcotest.(check int) "no ask yet" 0 (List.length (Asks.list host.log));
+  (* The record is repaired; the rest of the file, cursor included, is as the watcher wrote it. *)
+  let repaired =
+    match Yojson.Safe.from_file p with
+    | `List items ->
+        `List
+          (List.map
+             (function
+               | `Assoc fs
+                 when List.assoc_opt "invite_key" fs = Some (`String roman) ->
+                   `Assoc (("dinner", `String inv.dinner_hash) :: fs)
+               | j -> j)
+             items)
+    | _ -> Alcotest.fail "the ledger is a list"
+  in
+  Yojson.Safe.to_file p repaired;
+  let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "no problem once it reads" 0 (List.length problems);
+  Alcotest.(check bool)
+    "the held join is asked about" true
+    (List.exists
+       (fun (s : Invite_node.seen) ->
+         match s.outcome with
+         | Host_watch.Asked (_, a) -> a.key = "join:" ^ roman
+         | _ -> false)
+       seen);
+  let _, again, _ = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "and once only" 0 (List.length again)
+
+(* DIG-324: the cursor rides on the records, so the file stays the list an older release reads,
+   and a command that changes a record keeps it. *)
+let cursor_kept_in_a_list () =
+  let host, _, _, _, _ = host_circle () in
+  (match Yojson.Safe.from_file (Host_watch.file host.dir) with
+  | `List _ -> ()
+  | _ -> Alcotest.fail "the ledger is a list");
+  let w = ok (Host_watch.load_watch host.dir) in
+  Alcotest.(check bool) "the sync saved a cursor" true (w.cursor <> None);
+  ignore (ok (Invite_node.expect host ~guest:"phong nguyen"));
+  let w' = ok (Host_watch.load_watch host.dir) in
+  Alcotest.(check bool) "expect keeps it" true (w'.cursor = w.cursor)
+
 let () =
   Ci_alcotest.run "digestif-invite-flow"
     [
@@ -1467,6 +1595,12 @@ let () =
             unreadable_ledger_file;
           Alcotest.test_case "a join stored while the ledger is unreadable"
             `Quick join_while_ledger_unreadable;
+          Alcotest.test_case "a second identity while the ledger is unreadable"
+            `Quick second_identity_while_ledger_unreadable;
+          Alcotest.test_case "a join on a record that does not parse" `Quick
+            join_on_unreadable_record;
+          Alcotest.test_case "the cursor rides on the records" `Quick
+            cursor_kept_in_a_list;
           Alcotest.test_case "codes no open invite names" `Quick refused;
           Alcotest.test_case "every circle's node under one parent" `Quick
             circles_under_one_parent;
