@@ -1,11 +1,12 @@
 // Re-rooting a database (README "Re-root"): the verdict scripts/deploy.sh acts on, and its two
 // statements run against the test D1 with the Worker answering before and after.
+import { TEST_ROOT } from "./root.ts";
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { CIRCLE_QUERY, clearStatement, verdict } from "../scripts/reroot.ts";
 
-const conformanceRoot = env.CIRCLE_ROOT;
+const conformanceRoot = TEST_ROOT;
 const realRoot = `sha256:${"7".repeat(64)}`;
 
 // What `wrangler d1 execute --json --command CIRCLE_QUERY` prints for the test database.

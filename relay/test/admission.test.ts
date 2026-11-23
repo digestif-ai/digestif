@@ -4,6 +4,7 @@
 // suite's public test signers here; src/signers.ts) and changes by signer_set, and no admission
 // counts while a release_revocation's key is in the set. The tests share one D1 and run in order:
 // the halt at the end holds for the rest of the file.
+import { TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { admissionFor, REVOCATION_DOMAIN, SIGNERS_DOMAIN, signedBody, signersDocument, testReleaseSigners } from "../../conformance/src/admission.ts";
@@ -76,7 +77,7 @@ function code(result: HttpResult): unknown {
 }
 
 async function expectRefolds(): Promise<void> {
-  const fold = await foldLog(env.DB, env.CIRCLE_ROOT, { all: true, signers: releaseSignersOf(env) });
+  const fold = await foldLog(env.DB, TEST_ROOT, { all: true, signers: releaseSignersOf(env) });
   expect((await loadKeys(env.DB)).map(keyJson), "admitted_keys against a full refold").toEqual(fold.admittedKeys().map(keyJson));
   expect(await circleEpoch(env.DB)).toBe(fold.epoch);
 }

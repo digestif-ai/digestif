@@ -4,6 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
+  // A deploy keeps the variables the deployment already holds that this file does not name:
+  // HOME_ROOT above all, which `digestif circle found --relay` writes and no file holds.
+  "keep_vars": true,
   "vars": {
     "CIRCLE_ROOT": "sha256:004169dcdcd761ec470e2279c832a3f5684fc25e97bd5d3766397de373f53ba3",
     "MAX_ENVELOPE_BYTES": "65536",
@@ -12,6 +15,10 @@
     "SKEW_SECONDS": "3600",
     "MAILER": "0",
     "MAIL_FROM": "Digestif <digest@mail.digestif.io>",
+    // The home circle stays on D1 here: the tests and `wrangler dev` read its tables there, and
+    // test/move.test.ts drives the move itself. A deployed environment leaves it unset, so its home
+    // circle moves into its store on first use (src/move.ts).
+    "MOVE_ROWS_PER_DAY": "0",
     // The conformance suite's public test signers (conformance/src/admission.ts), which sign the
     // admission beside every guest the suite invites. Only this top level, which runs the tests and
     // `wrangler dev`, sets it: a deployed environment judges admissions by the release-signers.json
@@ -48,6 +55,7 @@
     // hosted install script at digestif.io/install.sh (src/install.ts).
     "dinners": {
       "name": "digestif-dinners",
+      "keep_vars": true,
       "secrets": { "required": ["RELAY_SEALING_KEY", "RESEND_API_KEY"] },
       "routes": [
         { "pattern": "dinners.digestif.io", "custom_domain": true },
@@ -93,6 +101,7 @@
     // dinners-roman: Roman's own account; never mails, so it holds no mail-provider secret.
     "dinners-roman": {
       "name": "dinners",
+      "keep_vars": true,
       "secrets": { "required": ["RELAY_SEALING_KEY"] },
       "vars": {
         // The founding dinner's hash: the root of the circle both relays serve. The ROOT_HASH

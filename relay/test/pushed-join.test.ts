@@ -3,6 +3,7 @@
 // guest's own unsigned append is judged at that clock and refused, the same join pushed by an
 // admitted member's device is judged by its created_at and accepted, and a refold replays it at the
 // clock it was judged at. append() is called directly so the relay's clock can be chosen.
+import { relayExtras, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { jcs } from "../../conformance/src/encoding.ts";
@@ -27,7 +28,7 @@ interface Posted {
 }
 
 function relayAt(now: Date): Relay {
-  return { db: env.DB, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now, mailer: undefined, releaseSigners: releaseSignersOf(env) };
+  return { ...relayExtras(), db: env.DB, root: TEST_ROOT, limits: DEFAULT_LIMITS, now, mailer: undefined, releaseSigners: releaseSignersOf(env) };
 }
 
 /** POST /v0/envelopes into append() at the relay clock `now`, signed by `signer` at that clock or unsigned. */
@@ -46,7 +47,7 @@ async function postAt(now: Date, signed: SignedEnvelope, signer?: Signer): Promi
 }
 
 async function expectRefold(): Promise<void> {
-  const fold = await foldLog(env.DB, env.CIRCLE_ROOT, { all: true });
+  const fold = await foldLog(env.DB, TEST_ROOT, { all: true });
   expect((await loadKeys(env.DB)).map(keyJson)).toEqual(fold.admittedKeys().map(keyJson));
   expect(await circleEpoch(env.DB)).toBe(fold.epoch);
 }

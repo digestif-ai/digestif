@@ -1,4 +1,5 @@
 // The Worker's surface before any envelope: routes, error shapes, and the shared crypto in workerd.
+import { TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 import { envelopeHash, verifyEnvelope, type SignedEnvelope } from "../../conformance/src/envelope.ts";
@@ -73,7 +74,7 @@ describe("routes", () => {
   it("writes the circle row from CIRCLE_ROOT on first use", async () => {
     await SELF.fetch("http://relay.test/v0/circle");
     const row = await env.DB.prepare("SELECT root, epoch FROM circle WHERE id = 1").first<{ root: string; epoch: number }>();
-    expect(row).toEqual({ root: env.CIRCLE_ROOT, epoch: 0 });
+    expect(row).toEqual({ root: TEST_ROOT, epoch: 0 });
   });
 });
 

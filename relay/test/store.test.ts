@@ -13,8 +13,8 @@ function fresh(): DurableObjectStub<CircleStore> {
 }
 
 describe("the schema", () => {
-  it("is every migration the tests apply to D1, split the same way", () => {
-    const migrations = env.TEST_MIGRATIONS ?? [];
+  it("is every migration the tests apply to D1 but the D1-only ones, split the same way", () => {
+    const migrations = (env.TEST_MIGRATIONS ?? []).filter((m) => !m.queries[0]?.startsWith("-- D1 only"));
     expect(migrations.length).toBeGreaterThan(0);
     expect(SCHEMA.map(({ name, queries }) => ({ name, queries }))).toEqual(migrations.map(({ name, queries }) => ({ name, queries })));
   });

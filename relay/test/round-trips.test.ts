@@ -1,6 +1,7 @@
 // How many D1 round trips each route costs once an isolate is warm: a signed read is the key and
 // then the nonce batch carrying the answer, and an append adds one batch of the check's reads and
 // the write. Each first/all/run and each batch is one round trip. DIG-234
+import { relayExtras, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { summaryBody } from "../../conformance/src/bodies.ts";
@@ -53,7 +54,7 @@ function counting(real: D1Database): { db: D1Database; trips: () => number } {
 }
 
 function relayOn(db: D1Database): Relay {
-  return { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) };
+  return { ...relayExtras(), db, root: TEST_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) };
 }
 
 function signedGet(signer: Signer, path: string): { request: Request; url: URL } {
@@ -91,9 +92,9 @@ afterAll(() => {
 describe("a warm isolate", () => {
   it("checks the circle row once per database and root", async () => {
     const { db, trips } = counting(env.DB);
-    await ensureCircle(db, env.CIRCLE_ROOT);
+    await ensureCircle(db, TEST_ROOT);
     const first = trips();
-    await ensureCircle(db, env.CIRCLE_ROOT);
+    await ensureCircle(db, TEST_ROOT);
     expect(first).toBeLessThanOrEqual(1);
     expect(trips()).toBe(first);
   });

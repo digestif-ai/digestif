@@ -8,8 +8,25 @@ declare global {
     DB: D1Database;
     /** The circles' stores: one SQLite-backed Durable Object per circle, named by its root (src/store.ts). */
     CIRCLE_STORE: DurableObjectNamespace<CircleStore>;
-    /** sha256:<hex> of the root envelope (a circle, or a founding dinner) of the circle this relay serves. */
-    CIRCLE_ROOT: string;
+    /**
+     * sha256:<hex> of the home circle's root (src/env.ts, homeOf): the operator's own circle, which
+     * carries the relay's releases and answers the unprefixed routes. Unset on a freshly deployed
+     * relay, which has no home; set by `digestif circle found --relay` and carried forward by every
+     * deploy, never from a bundle.
+     */
+    HOME_ROOT?: string;
+    /** The home circle while HOME_ROOT is unset: what a deployment configured before hosting names. */
+    CIRCLE_ROOT?: string;
+    /** "0" or "off" stops the relay opening new circles (not_hosting). */
+    HOSTING?: string;
+    /** Bytes every hosted circle's reserved share fits in together; 4 GiB when unset. */
+    RELAY_STORAGE?: string;
+    /** Bytes one circle's store may hold; 256 MiB when unset. */
+    CIRCLE_STORAGE?: string;
+    /** Circles one vouching member may open per 30 days; 5 when unset. */
+    CIRCLES_PER_MEMBER?: string;
+    /** Rows a day the home circle's move copies into its store; 20000 when unset, 0 to keep it on D1. */
+    MOVE_ROWS_PER_DAY?: string;
     MAX_ENVELOPE_BYTES?: string;
     MAX_APPENDS_PER_DEVICE_PER_DAY?: string;
     MAX_PAGE_SIZE?: string;

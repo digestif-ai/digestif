@@ -29,22 +29,45 @@ import {
   type SignedEnvelope,
 } from "../../conformance/src/envelope.ts";
 import { authenticate, type Authenticated } from "./auth.ts";
+import { indexInvites, recordStats, unindexInvite } from "./circles.ts";
 import { changedKeys, checkedRoot, CIRCLE_STATE_IDS_SQL, foldLog, keepFold, loadKey, RETRACT_TARGET_SQL, snapshotKeys, type EnvelopeRow, type FoldedIdRow } from "./db.ts";
 import type { Relay } from "./env.ts";
-import { json, Refusal } from "./errors.ts";
+import { isMovingAbort, json, moving, Refusal } from "./errors.ts";
 
 export async function append(relay: Relay, request: Request, url: URL): Promise<Response> {
-  const bytes = await readCapped(relay, request);
-  const raw = new TextDecoder().decode(bytes);
+  return appendRaw(relay, request, url, await readBody(relay, request));
+}
+
+/** The append's body as text, refused as too_large without buffering past the limit. */
+export async function readBody(relay: Pick<Relay, "limits">, request: Request): Promise<string> {
+  return new TextDecoder().decode(await readCapped(relay, request));
+}
+
+/** The append of a body already read: the founding of a circle reads it first, to see the root. */
+export async function appendRaw(relay: Relay, request: Request, url: URL, raw: string): Promise<Response> {
   const signed = parseSigned(raw);
   const { envelope } = signed;
   const bootstrap = envelope.kind === "circle" || envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
   const auth = await authenticate(relay, request, url, raw, { allowUnsigned: bootstrap });
   const receipt = await appendSigned(relay, auth, signed);
+  await indexAppend(relay, envelope, signed.body ?? null, receipt);
   return json(receipt.status === "duplicate" ? 200 : 201, receipt);
 }
 
-export function checkSize(relay: Relay, bytes: number): void {
+/**
+ * Keeps the relay's invite index (src/circles.ts) in step with an append: a dinner's or root's
+ * invites are indexed, on a duplicate too, so an append retried after a failed index write indexes
+ * them; a join's invite, spent, leaves the index.
+ */
+async function indexAppend(relay: Relay, envelope: Envelope, body: Json, receipt: Receipt): Promise<void> {
+  if (envelope.kind === "dinner" || envelope.kind === "circle") {
+    await indexInvites(relay.registry, relay.root, guestsOf(body).map((g) => g.invite_key));
+  } else if (envelope.kind === "join" && receipt.status === "accepted") {
+    await unindexInvite(relay.registry, envelope.author);
+  }
+}
+
+export function checkSize(relay: Pick<Relay, "limits">, bytes: number): void {
   if (bytes > relay.limits.max_envelope_bytes) {
     throw new Refusal(422, "too_large", `the append is ${bytes} bytes, over ${relay.limits.max_envelope_bytes}`);
   }
@@ -68,7 +91,7 @@ export async function throttle(limiter: RateLimit | undefined, request: Request)
  * is read, and, for a body that declares none or understates it, as soon as the bytes read pass the
  * limit. DIG-228
  */
-export async function readCapped(relay: Relay, request: Request): Promise<Uint8Array> {
+export async function readCapped(relay: Pick<Relay, "limits">, request: Request): Promise<Uint8Array> {
   const max = relay.limits.max_envelope_bytes;
   const declared = request.headers.get("content-length");
   if (declared !== null && /^\d+$/.test(declared.trim())) checkSize(relay, Number(declared.trim()));
@@ -210,6 +233,8 @@ interface LogReads {
   daily: number;
   retractKind: string | undefined;
   retractAuthor: string | undefined;
+  /** The bytes the circle's store holds, as the batch's first read reports them. */
+  size: number;
 }
 
 /**
@@ -242,6 +267,7 @@ async function readLog(relay: Relay, envelope: Envelope, hash: string, day: stri
     daily: (first(6)?.["count"] as number | undefined) ?? 0,
     retractKind: target?.kind,
     retractAuthor: target?.author,
+    size: results[0]?.meta.size_after ?? 0,
   };
 }
 
@@ -258,6 +284,9 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string,
   checkedRoot(relay.db, relay.root, log.root);
   const { position } = log;
   if (log.held !== undefined) return { status: "duplicate", relay_id: log.held, hash };
+  if (log.size >= relay.hosting.circle_storage) {
+    throw new Refusal(507, "circle_full", `this circle holds ${log.size} bytes on this relay, its whole share of ${relay.hosting.circle_storage}`);
+  }
   const fold = await foldLog(relay.db, relay.root, {
     before: position,
     signers: relay.releaseSigners,
@@ -331,8 +360,14 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string,
   if (envelope.kind === "join") statements.push(db.prepare("UPDATE invites SET spent = 1 WHERE key = ?").bind(envelope.author));
   if (retractTarget !== undefined) statements.push(db.prepare("UPDATE envelopes SET body = NULL WHERE hash = ?").bind(retractTarget));
   if (along !== undefined) statements.push(...along(db));
-  await db.batch(statements);
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    if (isMovingAbort(error)) throw moving();
+    throw error;
+  }
   keepFold(fold, row);
+  await recordStats(relay.registry, relay.root, log.size, relay.now);
   return { status: "accepted", relay_id: position, hash };
 }
 

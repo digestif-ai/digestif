@@ -126,9 +126,11 @@ export async function mail(relay: Relay, mailer: Mailer, request: Request, url: 
   }
   const already = await relay.db.prepare("SELECT 1 AS held FROM mailed_digests WHERE digest = ?").bind(digest.hash).first();
   if (already !== null) return json(200, { status: "already_sent", digest: digest.hash });
+  await checkDailyMail(relay, author.identity);
 
-  const base = mailer.url ?? url.origin;
-  const email = renderEmail(plaintext, (id) => linkUrl(base, id, secrets.get(id) ?? ""));
+  // Answer links name the circle's own address, so a member of two circles on one relay answers each in its own.
+  const email = forCircle(renderEmail(plaintext, (id) => linkUrl(relay.address, id, secrets.get(id) ?? "")), await circleName(relay));
+  const from = fromFor(mailer.from, await circleName(relay));
 
   // A lease on the digest goes in before the send, with the link index; mailed_digests is written
   // only once Resend has accepted the mail. A request that finds a live lease mails nothing and is
@@ -156,7 +158,7 @@ export async function mail(relay: Relay, mailer: Mailer, request: Request, url: 
     throw new Refusal(503, "mail_failed", `a send of digest ${digest.hash} is in flight; try again later`);
   }
 
-  const failure = await send(mailer, plaintext.to, email, digest.hash);
+  const failure = await send(mailer, from, plaintext.to, email, digest.hash);
   if (failure !== undefined) {
     // Only this request's own lease is dropped, and the link index with it unless another request
     // has since taken the lease or recorded the digest mailed.
@@ -178,6 +180,56 @@ export async function mail(relay: Relay, mailer: Mailer, request: Request, url: 
   return json(202, { status: "sent", digest: digest.hash });
 }
 
+/**
+ * Digests one member is mailed per circle per day. A node mails one a day, so only a runaway node
+ * reaches it, and it cannot spend the mail provider's daily quota every other circle shares.
+ */
+export const MAIL_DIGESTS_PER_DAY = 2;
+
+/** Counts the digests by any key of [identity] this circle mailed since midnight UTC, and refuses one past the cap. */
+async function checkDailyMail(relay: Relay, identity: string): Promise<void> {
+  const midnight = `${isoTime(relay.now).slice(0, 10)}T00:00:00`;
+  const row = await relay.db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM mailed_digests m JOIN envelopes e ON e.hash = m.digest JOIN admitted_keys k ON k.key = e.author " +
+        "WHERE k.identity = ? AND m.sent_at >= ?",
+    )
+    .bind(identity, midnight)
+    .first<{ n: number }>();
+  if ((row?.n ?? 0) >= MAIL_DIGESTS_PER_DAY) {
+    throw new Refusal(429, "rate_limited", `this member was mailed ${MAIL_DIGESTS_PER_DAY} digests of this circle today; the next mails tomorrow (UTC)`);
+  }
+}
+
+/**
+ * The circle's name, from its root: a circle root names it. A circle founded at a dinner, which
+ * predates circle names, has none, and its mail reads as it always has.
+ */
+async function circleName(relay: Relay): Promise<string | undefined> {
+  const root = await loadEnvelope(relay.db, relay.root);
+  if (root === undefined || root.kind !== "circle" || root.body === null) return undefined;
+  const body = JSON.parse(root.body) as Json;
+  const circle = isObject(body) ? body["circle"] : undefined;
+  const name = isObject(circle) ? circle["name"] : undefined;
+  if (typeof name !== "string") return undefined;
+  // A header value: no line breaks, no quotes or angle brackets to end the display name early.
+  const clean = name.replace(/[\r\n"<>\\]/g, " ").replace(/\s+/g, " ").trim();
+  return clean === "" ? undefined : clean;
+}
+
+/** The From header naming the circle: its name as the display name, the relay's own address. */
+export function fromFor(configured: string, name: string | undefined): string {
+  if (name === undefined) return configured;
+  const address = /<([^>]+)>\s*$/.exec(configured)?.[1] ?? configured.trim();
+  return `"${name} (Digestif)" <${address}>`;
+}
+
+/** The subject with the circle's name in front, so a member of two circles tells their digests apart. */
+export function forCircle(email: Email, name: string | undefined): Email {
+  if (name === undefined || email.subject.startsWith(name)) return email;
+  return { ...email, subject: `${name}: ${email.subject}` };
+}
+
 /** How long a send holds its lease on a digest: far longer than one call to Resend takes. */
 export const MAIL_LEASE_MS = 2 * 60 * 1000;
 
@@ -187,7 +239,7 @@ export function mailIdempotencyKey(digest: string): string {
 }
 
 /** One POST to Resend; the failure as text, or undefined when the mail was accepted. */
-async function send(mailer: Mailer, to: string, email: Email, digest: string): Promise<string | undefined> {
+async function send(mailer: Mailer, from: string, to: string, email: Email, digest: string): Promise<string | undefined> {
   let response: Response;
   try {
     response = await fetch(RESEND_URL, {
@@ -197,7 +249,7 @@ async function send(mailer: Mailer, to: string, email: Email, digest: string): P
         "content-type": "application/json",
         "idempotency-key": mailIdempotencyKey(digest),
       },
-      body: JSON.stringify({ from: mailer.from, to: [to], subject: email.subject, text: email.text, html: email.html }),
+      body: JSON.stringify({ from, to: [to], subject: email.subject, text: email.text, html: email.html }),
     });
   } catch (error) {
     return `the mail service could not be reached: ${error instanceof Error ? error.message : String(error)}`;
