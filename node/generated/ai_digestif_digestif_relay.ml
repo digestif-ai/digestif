@@ -106,6 +106,7 @@ module Error_code = struct
     | Unknown_digest
     | Circle_unknown
     | Circle_suspended
+    | Circle_moved
     | Moving
     | Not_vouched
     | Not_hosting
@@ -114,7 +115,7 @@ module Error_code = struct
     | Too_many_circles
     | Undefined of string
 
-  let all = [ Malformed; Bad_signature; Not_admitted; Stale_request; Replayed_nonce; Sequence_regression; Fork; Too_large; Rate_limited; Wrong_circle; Retract_not_author; Not_mailer; Unknown_digest; Circle_unknown; Circle_suspended; Moving; Not_vouched; Not_hosting; Relay_full; Circle_full; Too_many_circles ]
+  let all = [ Malformed; Bad_signature; Not_admitted; Stale_request; Replayed_nonce; Sequence_regression; Fork; Too_large; Rate_limited; Wrong_circle; Retract_not_author; Not_mailer; Unknown_digest; Circle_unknown; Circle_suspended; Circle_moved; Moving; Not_vouched; Not_hosting; Relay_full; Circle_full; Too_many_circles ]
 
   let to_string = function
     | Malformed -> "malformed"
@@ -132,6 +133,7 @@ module Error_code = struct
     | Unknown_digest -> "unknown_digest"
     | Circle_unknown -> "circle_unknown"
     | Circle_suspended -> "circle_suspended"
+    | Circle_moved -> "circle_moved"
     | Moving -> "moving"
     | Not_vouched -> "not_vouched"
     | Not_hosting -> "not_hosting"
@@ -156,6 +158,7 @@ module Error_code = struct
     | "unknown_digest" -> Stdlib.Ok Unknown_digest
     | "circle_unknown" -> Stdlib.Ok Circle_unknown
     | "circle_suspended" -> Stdlib.Ok Circle_suspended
+    | "circle_moved" -> Stdlib.Ok Circle_moved
     | "moving" -> Stdlib.Ok Moving
     | "not_vouched" -> Stdlib.Ok Not_vouched
     | "not_hosting" -> Stdlib.Ok Not_hosting

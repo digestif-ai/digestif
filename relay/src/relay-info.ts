@@ -1,7 +1,7 @@
 // GET /v0/relay (docs/protocol.md, Hosted circles): what anyone may read of a relay, unsigned. A
 // founding node reads it to write a circle's relay message (whether it mails and its sealing key's
 // public half), and to see whether the relay hosts new circles now; an operator reads its home
-// circle; the release that drops the unprefixed routes waits on the last request one received.
+// circle; and the last request on an unprefixed circle route says whether anything still knocks there.
 import { b64url } from "../../conformance/src/encoding.ts";
 import { mailerOf, type HostingLimits } from "./env.ts";
 import { json } from "./errors.ts";

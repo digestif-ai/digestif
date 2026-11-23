@@ -1152,17 +1152,18 @@ Three routes are the relay's own, outside every circle (and also answered under 
   "<time>"|null }`. `encryption_key` is the mailing relay's sealing key, present when `mailer` is
   true: a founding node writes the circle's `relay` message from it. `hosting` says whether the relay
   opens a new circle now. `home` is the home circle's root. `last_unprefixed_at` is the last request
-  on an unprefixed circle route (below).
+  on a circle route without a circle's address (below).
 - `GET /v0/invites/<invite key>`, the bootstrap read across every hosted circle: an invite key is
   random, so it names one open invite on the relay. The answer is the circle's own bootstrap read
   (Invites) with `circle`, the circle's address, beside the stored envelope; the guest's app reads
   and appends at that address from then on. An invite stays `<relay host>/<code>`.
 
 **The home circle** is the one the relay's `HOME_ROOT` names, the operator's own, which carries the
-relay's releases; a relay whose `HOME_ROOT` is unset reads its `CIRCLE_ROOT`. Its routes also answer
-unprefixed, the address every node used before relays hosted many circles, and the relay records the
-time of the last such request. A freshly deployed relay has no home: `home` is `null` and it hosts
-nothing.
+relay's releases; a relay whose `HOME_ROOT` is unset reads its `CIRCLE_ROOT`. Like every circle's,
+its routes answer only under its address: a circle route without one answers `410 circle_moved`,
+whose message and `Location` header name the home circle's address, and the relay records the time
+of the last such request. A freshly deployed relay has no home: `home` is `null`, it hosts nothing,
+and a circle route without an address answers `404 circle_unknown`.
 
 **Founding a circle on a relay.** A circle opens with its root's bootstrap append to `POST
 <base>/c/<root hex>/v0/envelopes`, and nothing else reaches an address no circle holds (`404

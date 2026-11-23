@@ -1,7 +1,7 @@
 // How many D1 round trips each route costs once an isolate is warm: a signed read is the key and
 // then the nonce batch carrying the answer, and an append adds one batch of the check's reads and
 // the write. Each first/all/run and each batch is one round trip. DIG-234
-import { relayExtras, TEST_ROOT } from "./root.ts";
+import { HOME, relayExtras, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { summaryBody } from "../../conformance/src/bodies.ts";
@@ -17,7 +17,8 @@ import { DEFAULT_LIMITS, type Relay } from "../src/env.ts";
 import { circle, page } from "../src/read.ts";
 import { releaseSignersOf } from "../src/signers.ts";
 
-const RELAY = "http://relay.test";
+// The home circle's address: every circle route answers only under it.
+const RELAY = HOME;
 const realFetch = globalThis.fetch;
 
 /** A D1 that counts its round trips. */

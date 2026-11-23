@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Runs the conformance suite's relay cases against this Worker under `wrangler dev`: one instance
 // per relay on a fresh local D1 with the migrations applied, rooted in the suite's test circle
-// (`digestif-conformance circle show`). Exits with the suite's status: 1 when any case fails.
+// (`digestif-conformance circle show`), each case reaching it at that circle's address. Exits with
+// the suite's status: 1 when any case fails.
 //
 //   npm run conformance                      two instances, so the two-relay cases run too
 //   npm run conformance -- --instances 1     one instance; the two-relay cases are skipped
@@ -128,7 +129,8 @@ function spawnDev(root: string, port: number, stamped: boolean, state: string, c
   );
   child.stdout?.on("data", (chunk: Buffer) => process.stderr.write(`[relay ${port}] ${chunk.toString()}`));
   child.stderr?.on("data", (chunk: Buffer) => process.stderr.write(`[relay ${port}] ${chunk.toString()}`));
-  return { url: `http://127.0.0.1:${port}`, state, process: child };
+  // The home circle's address: every circle route answers only under it (docs/protocol.md, Hosted circles).
+  return { url: `http://127.0.0.1:${port}/c/${root.slice("sha256:".length)}`, state, process: child };
 }
 
 /** How many ports an instance on a free port tries before its failure is the run's. */
