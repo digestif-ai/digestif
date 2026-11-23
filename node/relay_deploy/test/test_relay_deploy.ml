@@ -121,10 +121,18 @@ let cloudflare ?(workers = [ "digestif-relay" ]) ?(user_token = true)
              ])
     | _ -> Ok { Relay_client.status = 404; body = "{}" }
 
-(* The relay answering GET /v0/circle with [version]. *)
+(* Whether [u] is GET /v0/circle at a circle's address on the relay, <url>/c/<root hex>/v0/circle:
+   the operator's node never reads its home circle at the unprefixed routes. *)
+let circle_route u =
+  let prefix = url ^ "/c/" and suffix = "/v0/circle" in
+  String.starts_with ~prefix u
+  && String.ends_with ~suffix u
+  && String.length u = String.length prefix + 64 + String.length suffix
+
+(* The relay answering GET /v0/circle with [version], at a circle's address only. *)
 let relay ?version () : Relay_client.transport =
  fun ~meth:_ ~url:u ~headers:_ ~body:_ ->
-  if u <> url ^ "/v0/circle" then Error ("no route to " ^ u)
+  if not (circle_route u) then Error ("no route to " ^ u)
   else
     Ok
       {
