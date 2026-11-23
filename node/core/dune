@@ -21,3 +21,18 @@
     (echo "let raw = {words|")
     (cat bip39_english.txt)
     (echo "|words}\n")))))
+
+; The release signer set this build was made with (node/update/release-signers.json): the set the
+; fold starts a circle founded at a dinner from (Fold.release_signers), as a relay starts from its
+; build's RELEASE_SIGNERS. Digestif_update.Trust_root embeds the same file for releases.
+
+(rule
+ (target release_signers_data.ml)
+ (deps ../update/release-signers.json)
+ (action
+  (with-stdout-to
+   %{target}
+   (progn
+    (echo "let json = {json|")
+    (cat ../update/release-signers.json)
+    (echo "|json}\n")))))

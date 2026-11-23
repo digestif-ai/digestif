@@ -43,7 +43,18 @@ type invite = {
   mutable spent_by : string option;
 }
 
-type t = {
+(* The circle's signer set as the fold holds it at one point (protocol.md, The admission fold): the
+   circle root's admins, or for a circle founded at a dinner the release signer set this build
+   starts from, changed by each signer_set that verifies against it and each release_revocation one
+   of its keys signed. It is what an admin-signed revoke is judged by (protocol.md, revoke). *)
+and signer_set = {
+  mutable s_keys : string list;
+  mutable s_bound : (string * string) list;
+      (** key -> the identity it is bound to *)
+  s_revoked : (string, unit) Hashtbl.t;
+}
+
+and t = {
   root : string;
   mutable epoch : int;
   keys : (string, key_state) Hashtbl.t;
@@ -67,6 +78,8 @@ type t = {
       (** every signer_set the fold applied, newest first ([signer_sets]) *)
   mutable root_admins : Approval.signer list option;
       (** the admins a circle root names ([root_admins]) *)
+  mutable signer_set : signer_set option;
+      (** the signer set at this point of the fold ([admin_bindings]) *)
   mutable applied : string list;  (** in application order *)
   mutable rejected : (string * string) list;  (** hash, reason *)
   mutable waiting : (string * string) list;  (** hash, what it waits for *)
@@ -90,6 +103,7 @@ let empty root =
     revokes = Hashtbl.create 8;
     signer_sets = [];
     root_admins = None;
+    signer_set = None;
     applied = [];
     rejected = [];
     waiting = [];
@@ -172,9 +186,149 @@ let parse_body entry parse =
   | None -> Error "body withheld or dropped"
   | Some b -> parse b
 
+(* ---- the signer set (protocol.md, The admission fold; revoke) ---- *)
+
+let revocation_domain = "DIGESTIF-REVOCATION-V0\n"
+let revocation_format = "digestif-revocation-v0"
+
+(* The release signer set this build was made with: where a circle founded at a dinner starts. *)
+let release_signers () =
+  match Approval.parse_signers Release_signers_data.json with
+  | Ok s -> s
+  | Error e -> failwith ("node/update/release-signers.json: " ^ e)
+
+let signer_set_of (signers : Approval.signer list) =
+  {
+    s_keys = List.map (fun (s : Approval.signer) -> s.key) signers;
+    s_bound =
+      List.filter_map
+        (fun (s : Approval.signer) ->
+          Option.map (fun i -> (s.key, i)) s.identity)
+        signers;
+    s_revoked = Hashtbl.create 2;
+  }
+
+(* A circle root's admins, each bound to its own identity, or, for a root naming one admin and no
+   identity, to the root's host, since only the founder writes the root (protocol.md, circle). *)
+let root_signer_set ~host (admins : Approval.signer list) =
+  match admins with
+  | [ ({ identity = None; _ } as only) ] ->
+      signer_set_of [ { only with identity = Some host } ]
+  | l -> signer_set_of l
+
+let halted s = List.exists (Hashtbl.mem s.s_revoked) s.s_keys
+
+(* A release document's bytes and every (key, signature) it carries, or None when the body is not
+   { document, signatures } with base64url document bytes. *)
+let signed_document (body : Yojson.Safe.t option) =
+  match body with
+  | Some (`Assoc f) -> (
+      match (List.assoc_opt "document" f, List.assoc_opt "signatures" f) with
+      | Some (`String d), Some (`List l) -> (
+          match B64url.decode d with
+          | Error _ -> None
+          | Ok bytes ->
+              let sig_of = function
+                | `Assoc s -> (
+                    match
+                      (List.assoc_opt "key" s, List.assoc_opt "signature" s)
+                    with
+                    | Some (`String k), Some (`String g) -> Some (k, g)
+                    | _ -> None)
+                | _ -> None
+              in
+              Some (bytes, List.filter_map sig_of l))
+      | _ -> None)
+  | _ -> None
+
+(* The keys whose signature over [domain] and the document's bytes verifies. *)
+let valid_signers ~domain (bytes, sigs) =
+  List.sort_uniq compare
+    (List.filter_map
+       (fun (key, signature) ->
+         if Keys.verify ~pub:key ~signature (domain ^ bytes) then Some key
+         else None)
+       sigs)
+
+(* A signer_set adopted under the three conditions of a change: every key of the set held signed
+   it, every key it names signed it, and it names at least two keys, none twice and none revoked.
+   It binds every key afresh. One that does not verify changes nothing: posting one grants nothing. *)
+let adopt_signer_set s body =
+  match signed_document body with
+  | None -> ()
+  | Some ((bytes, _) as doc) -> (
+      match Approval.parse_signers bytes with
+      | Error _ -> ()
+      | Ok next ->
+          let keys = List.map (fun (n : Approval.signer) -> n.key) next in
+          let valid = valid_signers ~domain:Approval.signers_domain doc in
+          if
+            List.length keys >= 2
+            && List.length (List.sort_uniq compare keys) = List.length keys
+            && (not (List.exists (Hashtbl.mem s.s_revoked) keys))
+            && List.for_all (fun k -> List.mem k valid) s.s_keys
+            && List.for_all (fun k -> List.mem k valid) keys
+          then begin
+            let n = signer_set_of next in
+            s.s_keys <- n.s_keys;
+            s.s_bound <- n.s_bound
+          end)
+
+(* A release_revocation honoured when any key of the set signed it, revoked or not, as
+   Digestif_update.Policy.apply_revocations does. *)
+let apply_set_revocation s body =
+  match signed_document body with
+  | None -> ()
+  | Some ((bytes, _) as doc) -> (
+      let key =
+        match Jcs.parse_unique bytes with
+        | Ok (`Assoc f)
+          when List.assoc_opt "format" f = Some (`String revocation_format) -> (
+            match List.assoc_opt "key" f with
+            | Some (`String k) -> Some k
+            | _ -> None)
+        | _ -> None
+      in
+      match key with
+      | None -> ()
+      | Some k ->
+          let valid = valid_signers ~domain:revocation_domain doc in
+          if List.exists (fun k -> List.mem k valid) s.s_keys then
+            Hashtbl.replace s.s_revoked k ())
+
+(* The identity an admin key revokes as (protocol.md, revoke): Error unless [key] is in the set, no
+   key of the set is revoked, and every key of the set is bound, since a set with an unbound key
+   cannot tell a sitting admin from a member. *)
+let admin_identity t key =
+  match t.signer_set with
+  | None -> Error "no signer set"
+  | Some s when not (List.mem key s.s_keys) ->
+      Error ("by " ^ key ^ " is not a key of the signer set")
+  | Some s when halted s -> Error "a revoked key is in the signer set"
+  | Some s -> (
+      match
+        List.find_opt (fun k -> not (List.mem_assoc k s.s_bound)) s.s_keys
+      with
+      | Some k ->
+          Error ("the signer set's key " ^ k ^ " is bound to no identity")
+      | None -> Ok (List.assoc key s.s_bound))
+
+(* Whether a key of the signer set is bound to [identity]: they are a sitting admin. *)
+let seats t identity =
+  match t.signer_set with
+  | None -> false
+  | Some s ->
+      List.exists (fun k -> List.assoc_opt k s.s_bound = Some identity) s.s_keys
+
+(* The signer set the fold ended on, each key with the identity it is bound to, if any. *)
+let admin_bindings t =
+  match t.signer_set with
+  | None -> []
+  | Some s -> List.map (fun k -> (k, List.assoc_opt k s.s_bound)) s.s_keys
+
 (* The root is a circle envelope, or the dinner that founded a circle at a dinner (protocol.md, The
    admission fold, step 1): either admits its host and authoring device and records its guests. *)
-let apply_root t entry =
+let apply_root ~release_signers t entry =
   let kind = entry.envelope.kind in
   let ( let* ) = Result.bind in
   let parse b =
@@ -186,6 +340,11 @@ let apply_root t entry =
   | Error m -> Rejected ("root " ^ kind ^ ": " ^ m)
   | Ok (d, admins) ->
       t.root_admins <- admins;
+      t.signer_set <-
+        Some
+          (match admins with
+          | Some a -> root_signer_set ~host:d.host a
+          | None -> signer_set_of release_signers);
       admit t ~key:d.host ~role:Identity ~identity:d.host
         ~admitted_by:entry.hash ~join_epoch:0;
       admit t ~key:entry.envelope.author ~role:Device ~identity:d.host
@@ -352,7 +511,8 @@ let record_cutoff (r : Bodies.revoke) ~revoke k =
    the join ask's 72 hours, and room for a host's node that was asleep when it lapsed. *)
 let host_device_window = 7. *. 86400.
 
-(* Whether [r.by] may revoke [target] with this entry. An identity revokes its own keys, itself, and
+(* Whether [r.by], an admitted key, may revoke [target] with this entry (an admin key, which is no
+   admitted key, is apply_admin_revoke's). An identity revokes its own keys, itself, and
    an identity its dinner admitted. A device key revokes an identity a join on its own dinner
    admitted, within [host_device_window] of the join, signing as itself: that is how the host's node
    revokes an unanswered join ask without the recovery phrase. Each case names who may author it. *)
@@ -380,12 +540,48 @@ let revoke_authority t entry (r : Bodies.revoke) ~(by : key_state)
       Error "a device key revokes only an identity its dinner admitted"
   | Mail, _ -> Error "a mail key revokes nothing"
 
+(* Marks the target, and for an identity every key under it, revoked, recording each stopped key's
+   cutoff. *)
+let stop t entry (r : Bodies.revoke) ~(target : key_state) =
+  let stopped = stopped_by t target in
+  match check_cutoff_keys stopped r with
+  | Error m -> Rejected ("malformed: " ^ m)
+  | Ok () ->
+      Hashtbl.replace t.revokes entry.hash entry;
+      List.iter (record_cutoff r ~revoke:entry.hash) stopped;
+      Applied
+
+(* A revoke whose [by] is an admin key of the signer set the fold holds at this point (protocol.md,
+   revoke): it stops an admitted identity no key of the set is bound to, posted by an admitted
+   device of the identity [by] is bound to. What depends on the set waits rather than fails, since a
+   signer_set ordered after it may bind the set as a relay that accepted it had. *)
+let apply_admin_revoke t entry (r : Bodies.revoke) ~(target : key_state) =
+  match admin_identity t r.by with
+  | Error why -> Waiting why
+  | Ok admin -> (
+      if target.role <> Identity then
+        Rejected "an admin key revokes only an identity"
+      else if seats t target.key then
+        Waiting "the target is a sitting admin: their key leaves the set first"
+      else if not (Bodies.revoke_signature_valid r) then
+        Rejected "bad_signature"
+      else
+        match author_in_force t entry entry.envelope.author with
+        | None ->
+            if Hashtbl.mem t.keys entry.envelope.author then
+              Rejected "author revoked"
+            else Waiting ("author " ^ entry.envelope.author)
+        | Some a when a.role <> Device || a.identity <> admin ->
+            Rejected "author is not a device of the admin key's identity"
+        | Some _ -> stop t entry r ~target)
+
 let apply_revoke t entry =
   match parse_body entry Bodies.parse_revoke with
   | Error m -> Rejected ("malformed: " ^ m)
   | Ok r -> (
       match (find t r.by, find t r.target) with
-      | None, _ -> Waiting ("by " ^ r.by)
+      | None, Some target -> apply_admin_revoke t entry r ~target
+      | None, None -> Waiting ("by " ^ r.by)
       | _, None -> Waiting ("target " ^ r.target)
       | Some by, Some target -> (
           if not (Bodies.revoke_signature_valid r) then Rejected "bad_signature"
@@ -405,14 +601,7 @@ let apply_revoke t entry =
                 | Some author
                   when author_rule = `By_itself && author.key <> r.by ->
                     Rejected "author is not by"
-                | Some _ -> (
-                    let stopped = stopped_by t target in
-                    match check_cutoff_keys stopped r with
-                    | Error m -> Rejected ("malformed: " ^ m)
-                    | Ok () ->
-                        Hashtbl.replace t.revokes entry.hash entry;
-                        List.iter (record_cutoff r ~revoke:entry.hash) stopped;
-                        Applied))))
+                | Some _ -> stop t entry r ~target)))
 
 let apply_card t entry =
   match device_author t entry with
@@ -456,9 +645,10 @@ let apply_release_document t entry =
 
 (* A signer-set change (protocol.md, signer_set) is a release document of its own: the fold checks
    its author and its two fields as for the other release kinds, then the signer-set hook keeps it,
-   in fold order, as the chain the node adopts from. The release signatures are judged against the
-   set the node holds, which lives in its update state and not in the circle (Circle_signer_set),
-   so posting one grants nothing. *)
+   in fold order, as the chain the node adopts from (Circle_signer_set, Circle_admins). The fold
+   also advances its own signer set by it when it verifies against that set (adopt_signer_set),
+   which is what an admin-signed revoke is judged by; posting one that does not verify grants
+   nothing. *)
 let on_signer_set t entry = t.signer_sets <- entry :: t.signer_sets
 
 (* The admins the circle root names (protocol.md, circle): the circle's own signer set, which a
@@ -474,6 +664,14 @@ let apply_signer_set t entry =
   match apply_release_document t entry with
   | Applied ->
       on_signer_set t entry;
+      Option.iter (fun set -> adopt_signer_set set entry.body) t.signer_set;
+      Applied
+  | o -> o
+
+let apply_release_revocation t entry =
+  match apply_release_document t entry with
+  | Applied ->
+      Option.iter (fun set -> apply_set_revocation set entry.body) t.signer_set;
       Applied
   | o -> o
 
@@ -503,14 +701,14 @@ let apply t entry =
   | "revoke" -> apply_revoke t entry
   | "card" -> apply_card t entry
   | "relay" -> apply_relay t entry
-  | "release_revocation" | "release_recall" | "relay_release" ->
-      apply_release_document t entry
+  | "release_revocation" -> apply_release_revocation t entry
+  | "release_recall" | "relay_release" -> apply_release_document t entry
   | "signer_set" -> apply_signer_set t entry
   | "prompt" -> apply_prompt t entry
   | k -> Rejected ("not a circle-state kind: " ^ k)
 
 (* One fold of the circle-state entries from [root], leaving out [excluded]. *)
-let run_once ~root ~excluded entries =
+let run_once ~release_signers ~root ~excluded entries =
   let t = empty root in
   let circle =
     List.filter
@@ -524,7 +722,7 @@ let run_once ~root ~excluded entries =
       t.waiting <- [ (root, "the circle root is not in the log") ];
       t
   | Some r -> (
-      match apply_root t r with
+      match apply_root ~release_signers t r with
       | Rejected m ->
           t.rejected <- [ (root, m) ];
           t
@@ -554,14 +752,16 @@ let run_once ~root ~excluded entries =
           t.applied <- List.rev t.applied;
           t)
 
-(* Fold every circle-state entry from [root]; entries of other kinds are ignored. A folded entry past
+(* Fold every circle-state entry from [root]; entries of other kinds are ignored. A circle founded at
+   a dinner starts its signer set from [release_signers], this build's release-signers.json unless
+   given. A folded entry past
    its author's cutoff is left out and the fold run again, until nothing folded is past a cutoff. The
    root is never left out: a revoke that cut it off would leave no circle to read. *)
-let run ~root entries =
+let run ?(release_signers = release_signers ()) ~root entries =
   let by_hash = Hashtbl.create 64 in
   List.iter (fun e -> Hashtbl.replace by_hash e.hash e) entries;
   let rec go excluded =
-    let t = run_once ~root ~excluded entries in
+    let t = run_once ~release_signers ~root ~excluded entries in
     let past =
       List.filter
         (fun h ->

@@ -109,7 +109,14 @@ type approval = {
 }
 
 (* A key of the folded signer set (GET /api/v0/signers). *)
-type set_key = { set_name : string; set_key : Keys.public_key; revoked : bool }
+type set_key = {
+  set_name : string;
+  set_key : Keys.public_key;
+  set_identity : string option;
+      (** the member the circle's fold binds the key to (docs/protocol.md,
+          circle) *)
+  revoked : bool;
+}
 
 let str name j = Release.string_field name j
 
@@ -201,7 +208,12 @@ let set_key_of_json j =
   let revoked =
     match Release.field "revoked" j with Some (`Bool b) -> b | _ -> false
   in
-  Ok { set_name; set_key; revoked }
+  let set_identity =
+    match Release.field "member" j with
+    | Some m -> Result.to_option (str "identity" m)
+    | None -> None
+  in
+  Ok { set_name; set_key; set_identity; revoked }
 
 let get_ok (api : api) path =
   let* status, j = api ~meth:"GET" ~path ~body:None in
@@ -256,11 +268,17 @@ let waiting_line (a : approval) =
 
 (* The new signer set a promotion or a replacement names once [me] signs first: the set the node
    folded plus [me] under the member's name, or with the replaced key's entry moved to [me].
-   Rendered in release-signers.json's layout; its exact bytes are what every key then signs. *)
-let signers_document ~created_at (signers : Release.signer list) =
+   Rendered in release-signers.json's layout; its exact bytes are what every key then signs. Each
+   entry names the identity its key is bound to (docs/protocol.md, Approvals): the promoted member
+   for a promotion's new key, the replaced key's identity for a replacement's, and every other
+   key's binding as the node folded it. *)
+let signers_document ~created_at (signers : Approval.signer list) =
   let q s = Yojson.Safe.to_string (`String s) in
-  let line (s : Release.signer) =
-    Printf.sprintf "    { \"name\": %s, \"key\": %s }" (q s.name) (q s.key)
+  let line (s : Approval.signer) =
+    Printf.sprintf "    { \"name\": %s, \"key\": %s%s }" (q s.name) (q s.key)
+      (match s.identity with
+      | Some i -> Printf.sprintf ", \"identity\": %s" (q i)
+      | None -> "")
   in
   Printf.sprintf
     "{\n\
@@ -277,7 +295,9 @@ let signers_document ~created_at (signers : Release.signer list) =
 let completed_set ~me ~set (a : approval) =
   let current =
     List.map
-      (fun k -> ({ name = k.set_name; key = k.set_key } : Release.signer))
+      (fun k ->
+        ({ name = k.set_name; key = k.set_key; identity = k.set_identity }
+          : Approval.signer))
       set
   in
   let* next =
@@ -285,21 +305,31 @@ let completed_set ~me ~set (a : approval) =
     | Approval.Promotion -> (
         match a.member with
         | None -> Error "the promotion names no member"
-        | Some m -> Ok (current @ [ { Release.name = m.name; key = me } ]))
+        | Some m ->
+            Ok
+              (current
+              @ [
+                  {
+                    Approval.name = m.name;
+                    key = me;
+                    identity = Some m.identity;
+                  };
+                ]))
     | Approval.Replacement -> (
         match a.removed_key with
         | None -> Error "the replacement names no key to take out"
         | Some old
           when not
-                 (List.exists (fun (s : Release.signer) -> s.key = old) current)
-          ->
+                 (List.exists
+                    (fun (s : Approval.signer) -> s.key = old)
+                    current) ->
             Error
               (Printf.sprintf
                  "the key it replaces, %s, is not in the signer set" old)
         | Some old ->
             Ok
               (List.map
-                 (fun (s : Release.signer) ->
+                 (fun (s : Approval.signer) ->
                    if s.key = old then { s with key = me } else s)
                  current))
     | Approval.Invite | Approval.Removal ->
@@ -309,7 +339,7 @@ let completed_set ~me ~set (a : approval) =
     List.find_opt
       (fun k ->
         k.revoked
-        && List.exists (fun (s : Release.signer) -> s.key = k.set_key) next)
+        && List.exists (fun (s : Approval.signer) -> s.key = k.set_key) next)
       set
   with
   | Some k ->
@@ -409,21 +439,20 @@ let admission_lines bytes =
 let canonical_signers bytes =
   let* doc = Release.signer_set_of_string bytes in
   let created_at = doc.set_created_at in
-  let compact =
-    Approval.signers_document ~created_at
-      (List.map
-         (fun (s : Release.signer) -> { Approval.name = s.name; key = s.key })
-         doc.set_signers)
+  let* signers =
+    Result.map_error
+      (fun e -> "signer set: " ^ e)
+      (Approval.parse_signers bytes)
   in
   if
-    String.equal bytes (signers_document ~created_at doc.set_signers)
-    || String.equal bytes compact
-  then Ok doc.set_signers
+    String.equal bytes (signers_document ~created_at signers)
+    || String.equal bytes (Approval.signers_document ~created_at signers)
+  then Ok signers
   else Error not_canonical
 
 let set_change_lines ~set (a : approval) bytes =
   let* next = canonical_signers bytes in
-  let keys l = List.map (fun (s : Release.signer) -> s.key) l in
+  let keys l = List.map (fun (s : Approval.signer) -> s.key) l in
   let current = List.map (fun k -> k.set_key) set in
   let added = List.filter (fun k -> not (List.mem k current)) (keys next) in
   let removed = List.filter (fun k -> not (List.mem k (keys next))) current in
@@ -467,10 +496,11 @@ let set_change_lines ~set (a : approval) bytes =
     (Printf.sprintf "%s: the signer set becomes"
        (String.capitalize_ascii (Approval.kind_to_string a.kind))
      :: List.map
-          (fun (s : Release.signer) ->
-            Printf.sprintf "  %s %s  %s"
+          (fun (s : Approval.signer) ->
+            Printf.sprintf "  %s %s  %s%s"
               (if List.mem s.key added then "+" else " ")
-              s.name s.key)
+              s.name s.key
+              (match s.identity with Some i -> "  identity " ^ i | None -> ""))
           next
     @ List.map (fun k -> Printf.sprintf "  - %s  %s" (name_of k) k) removed)
 

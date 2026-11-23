@@ -116,7 +116,9 @@ export class SignerSet {
    */
   adopt(body: Json | undefined): boolean {
     const doc = signedDocumentOf(body);
-    if (doc === undefined) return false;
+    // A fold that starts from no set (a node folding a dinner root it holds no release signers for)
+    // adopts nothing: every key of an empty set "signed" any document.
+    if (doc === undefined || this.keys.length === 0) return false;
     const next = signerKeysOf(doc.value);
     const identities = signerIdentitiesOf(doc.value["signers"]);
     if (next === undefined || identities === undefined || next.some((k) => this.revoked.has(k))) return false;

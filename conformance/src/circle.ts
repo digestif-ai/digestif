@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 // Node's URL, not the global one: relay compiles this file beside the workerd runtime types, whose
 // global URL is not assignable to the path node:fs takes.
 import { URL } from "node:url";
-import { dinnerBody } from "./bodies.ts";
+import { circleBody, dinnerBody } from "./bodies.ts";
 import { envelopeHash, signEnvelope, type SignedEnvelope } from "./envelope.ts";
 import { Signer } from "./keys.ts";
 
@@ -31,20 +31,24 @@ export class TestCircle {
     this.root = file.root;
     this.rootHash = envelopeHash(file.root.envelope);
     if (this.rootHash !== file.root_hash) throw new Error(`root_hash ${file.root_hash} does not match the root envelope (${this.rootHash})`);
-    if (file.root.envelope.author !== this.hostDevice.key) throw new Error("the root dinner is not authored by the host device seed");
+    if (file.root.envelope.author !== this.hostDevice.key) throw new Error("the root is not authored by the host device seed");
   }
 
   static load(path: string | URL = DEFAULT_CIRCLE_PATH): TestCircle {
     return new TestCircle(JSON.parse(readFileSync(path, "utf8")) as CircleFile);
   }
 
-  /** A fresh founding dinner with no guests: guests arrive in later dinners the cases write. */
-  static create(label: string, relays: string[], createdAt = new Date()): CircleFile {
+  /**
+   * A fresh founding dinner with no guests: guests arrive in later dinners the cases write. Given
+   * `admins`, a circle root naming them instead (docs/protocol.md, circle), whose own signer set
+   * judges it from the start, so a node needs no release signer set to fold it.
+   */
+  static create(label: string, relays: string[], createdAt = new Date(), admins?: Array<{ name: string; key: string }>): CircleFile {
     const hostIdentity = Signer.random();
     const hostDevice = Signer.random();
     const root = signEnvelope(hostDevice, {
-      kind: "dinner",
-      body: dinnerBody(hostIdentity, label, [], relays, createdAt),
+      kind: admins === undefined ? "dinner" : "circle",
+      body: admins === undefined ? dinnerBody(hostIdentity, label, [], relays, createdAt) : circleBody(hostIdentity, label, [], relays, admins),
       seq: 1,
       epoch: 0,
       createdAt,

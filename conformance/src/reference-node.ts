@@ -34,7 +34,26 @@ export interface NodeState {
 }
 
 /** Rules the reference node can be told to get wrong, so the self-test can prove each node case catches it. */
-export type NodeBreak = "verify" | "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "mail-cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order" | "self-device" | "device-signature" | "host-device-window" | "replicate" | "join-floor";
+export type NodeBreak =
+  | "verify"
+  | "dedupe"
+  | "fork"
+  | "gap"
+  | "backfill"
+  | "revocation"
+  | "cutoff"
+  | "mail-cutoff"
+  | "bootstrap"
+  | "retract-author"
+  | "mail"
+  | "relay-order"
+  | "self-device"
+  | "device-signature"
+  | "host-device-window"
+  | "admin-revoke"
+  | "admin-revoke-admin"
+  | "replicate"
+  | "join-floor";
 
 interface Held {
   hash: string;
@@ -87,7 +106,17 @@ function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<stri
   if (breaks.has("self-device")) foldBreaks.push("self-device");
   if (breaks.has("device-signature")) foldBreaks.push("device-signature");
   if (breaks.has("host-device-window")) foldBreaks.push("host-device-window");
-  const fold = new Fold(root, { breaks: foldBreaks, readsCutoffs: !breaks.has("cutoff") });
+  if (breaks.has("admin-revoke")) foldBreaks.push("admin-revoke");
+  if (breaks.has("admin-revoke-admin")) foldBreaks.push("admin-revoke-admin");
+  // The fold holds the circle's signer set, which an admin-signed revoke is judged by (docs/protocol.md,
+  // revoke): a circle root's admins, changed by each signer_set that verifies against them. A node
+  // holds no release signer set the suite can name, so a dinner root starts from none and its
+  // admins revoke nobody here. Admissions are never judged: the cutover is past every position.
+  const fold = new Fold(root, {
+    breaks: foldBreaks,
+    readsCutoffs: !breaks.has("cutoff"),
+    admission: { cutover: Number.MAX_SAFE_INTEGER, signers: [] },
+  });
   const folded: Held[] = [];
   // The root first: an envelope sharing its created_at and sorting ahead of it by hash would
   // otherwise miss the first pass, and a later envelope could fold ahead of it in that pass.

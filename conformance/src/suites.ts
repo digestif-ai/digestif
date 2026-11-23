@@ -1,10 +1,11 @@
 // The two suites as functions, shared by the CLI and the self-test.
+import { testReleaseSigners } from "./admission.ts";
 import { TestCircle } from "./circle.ts";
 import { FakeRelay, type RelayLimits } from "./fake-relay.ts";
 import { runCases, type Outcome } from "./harness.ts";
 import { NodeRunner } from "./node-runner.ts";
 import { World } from "./world.ts";
-import { nodeCases, type NodeContext } from "./cases/node.ts";
+import { nodeCases, type CircleRelays, type NodeContext } from "./cases/node.ts";
 import { relayCases } from "./cases/relay.ts";
 
 export interface SuiteOptions {
@@ -31,18 +32,27 @@ export async function runNodeSuite(nodeCommand: string, options: SuiteOptions & 
     cases: nodeCases,
     relayCount: 2,
     context: async () => {
-      const circle = new TestCircle(TestCircle.create("conformance node case", []));
-      const relays = [
-        new FakeRelay({ root: circle.rootHash, ...(options.limits ? { limits: options.limits } : {}) }),
-        new FakeRelay({ root: circle.rootHash, ...(options.limits ? { limits: options.limits } : {}) }),
-        new FakeRelay({ root: circle.rootHash, mode: "unchecked" }),
-      ];
-      const [a, b, hostile] = await Promise.all(relays.map((r) => r.listen()));
-      const world = new World(circle, [a!, b!]);
-      await world.setup();
-      await world.publish([hostile!], world.host.device, circle.root, { unsigned: true });
+      const relays: FakeRelay[] = [];
+      const open = async (circle: TestCircle): Promise<CircleRelays> => {
+        const mine = [
+          new FakeRelay({ root: circle.rootHash, ...(options.limits ? { limits: options.limits } : {}) }),
+          new FakeRelay({ root: circle.rootHash, ...(options.limits ? { limits: options.limits } : {}) }),
+          new FakeRelay({ root: circle.rootHash, mode: "unchecked" }),
+        ];
+        relays.push(...mine);
+        const [a, b, hostile] = await Promise.all(mine.map((r) => r.listen()));
+        const world = new World(circle, [a!, b!]);
+        await world.setup();
+        await world.publish([hostile!], world.host.device, circle.root, { unsigned: true });
+        return { world, a: a!, b: b!, hostile: hostile! };
+      };
+      const { world, a, b, hostile } = await open(new TestCircle(TestCircle.create("conformance node case", [])));
+      // A circle founded on its own whose admins are the suite's test release signers, so a case
+      // can bind them to members and sign as an admin (docs/protocol.md, circle and revoke).
+      const admins = testReleaseSigners().map((s, i) => ({ name: `test signer ${i + 1}`, key: s.key }));
+      const ownCircle = () => open(new TestCircle(TestCircle.create("conformance own circle", [], new Date(), admins)));
       return {
-        value: { world, a: a!, b: b!, hostile: hostile!, node },
+        value: { world, a, b, hostile, node, ownCircle },
         close: async () => {
           await Promise.all(relays.map((r) => r.close()));
         },

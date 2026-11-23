@@ -11,14 +11,22 @@ import type { NodeState } from "../reference-node.ts";
 import type { World } from "../world.ts";
 import { LINES } from "./lines.ts";
 
-export interface NodeContext {
+export interface CircleRelays {
   /** The suite's circle on relays A and B, both checked. */
   world: World;
   a: string;
   b: string;
   /** An unchecked relay with the same root: accepts anything whose envelope signature verifies. */
   hostile: string;
+}
+
+export interface NodeContext extends CircleRelays {
   node: NodeRunner;
+  /**
+   * A circle founded on its own (docs/protocol.md, circle) on fresh relays A, B and an unchecked
+   * one, its root's admins the suite's test release signers, so `world.bindAdmins` binds them.
+   */
+  ownCircle: () => Promise<CircleRelays>;
 }
 
 function sync(context: NodeContext, relays: string[]): Promise<NodeState> {
@@ -307,6 +315,40 @@ export const nodeCases: Case<NodeContext>[] = [
       check(key(state, fresh.member.device.key)?.revoked === true, "and its device");
       check(key(state, stale.member.identity.key)?.role === "identity", "the identity that joined eight days ago is admitted");
       check(key(state, stale.member.identity.key)?.revoked !== true, "and not revoked: the revoke is past the window");
+    },
+  },
+  {
+    id: "node.revocation.admin-revokes-member",
+    covers: LINES.adminRevoke,
+    title:
+      "In a circle whose signer set binds every key, an admin key's revoke of a member, posted by the admin's own device, revokes the member and every key under them",
+    async run(context) {
+      const { world, a, b } = await context.ownCircle();
+      const [first, second, member, bystander] = await world.members(["admin revoke first admin", "admin revoke second admin", "admin revoke member", "admin revoke bystander"], [a, b]);
+      const [firstKey] = await world.bindAdmins([first!, second!], [a, b]);
+      await world.publish([a, b], first!.device, await world.revoke(first!.device, firstKey!, member!.identity.key, [member!.device], a));
+      const state = await context.node.sync(world.host.device.signer, [a, b]);
+      check(key(state, member!.identity.key)?.revoked === true, "the member's identity is revoked");
+      check(key(state, member!.device.key)?.revoked === true, "and the member's device");
+      for (const kept of [first!, second!, bystander!]) check(key(state, kept.identity.key)?.revoked === false, `${kept.name} is not revoked`);
+    },
+  },
+  {
+    id: "node.revocation.admin-may-not-revoke-admin",
+    covers: LINES.adminRevoke,
+    title:
+      "Served by a relay that accepted them, an admin key's revoke of a sitting admin, one by a key outside the signer set, and one posted by another member's device revoke nobody",
+    async run(context) {
+      const { world, a, hostile } = await context.ownCircle();
+      const [first, second, member, bystander] = await world.members(["sitting admin first", "sitting admin second", "unrevoked member", "unrevoking bystander"], [a, hostile]);
+      const [firstKey] = await world.bindAdmins([first!, second!], [a, hostile]);
+      await world.publish([hostile], first!.device, await world.revoke(first!.device, firstKey!, second!.identity.key, [second!.device], a));
+      await world.publish([hostile], first!.device, await world.revoke(first!.device, Signer.random(), member!.identity.key, [member!.device], a));
+      await world.publish([hostile], bystander!.device, await world.revoke(bystander!.device, firstKey!, member!.identity.key, [member!.device], a));
+      const state = await context.node.sync(world.host.device.signer, [a, hostile]);
+      check(key(state, second!.identity.key)?.revoked === false, "the sitting admin is not revoked");
+      check(key(state, second!.device.key)?.revoked === false, "nor their device");
+      check(key(state, member!.identity.key)?.revoked === false, "the member is not revoked by a key outside the set, nor from another member's device");
     },
   },
   {
