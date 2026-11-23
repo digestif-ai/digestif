@@ -229,6 +229,36 @@ test.describe('after first run', () => {
     await expect(page.getByRole('status')).toContainText('refused by deny: domain');
   });
 
+  test('a member in review is put to the admins, who keep them or are shown how to remove them (DES-376)', async ({ page }) => {
+    test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the demo node holds no signer set naming its admins');
+    await page.goto('/members');
+    const dee = page.getByTestId('member-row').filter({ hasText: 'Dee Rao' });
+    await expect(dee.getByTestId('member-stage')).toContainText('Paused');
+    await expect(dee.getByTestId('member-stage')).toContainText('In review');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Ben Ortiz' })).not.toContainText('In review');
+
+    await page.goto('/inbox/itm-review-dee');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Dee Rao has sent no note in 3 days');
+    await expect(page.getByTestId('item-subline')).toContainText('Waiting on any admin');
+    await expect(page.getByTestId('review-facts')).toContainText('Dee was told');
+    await expect(page.getByTestId('command-text')).toHaveText(/^digestif-update remove ed25519:/);
+    await page.getByRole('button', { name: 'Keep', exact: true }).click();
+    await expect(page.getByTestId('item-subline')).toContainText('Kept');
+    await expect(page.getByRole('button', { name: 'Keep', exact: true })).toHaveCount(0);
+    await expect(page.getByTestId('command-block')).toHaveCount(0);
+
+    await page.getByRole('link', { name: 'Dee Rao' }).first().click();
+    await expect(page.getByTestId('member-review')).toHaveText(/^Kept by Ada Park · /);
+    await page.goto('/members');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).not.toContainText('In review');
+
+    // Remove, from any member's page: the same command, with nothing stored.
+    await page.getByTestId('member-row').filter({ hasText: 'Fay Kim' }).getByRole('link', { name: 'Fay Kim' }).click();
+    await page.getByRole('button', { name: 'More actions' }).click();
+    await page.getByRole('menuitem', { name: 'Remove', exact: true }).click();
+    await expect(page.getByTestId('member-remove').getByTestId('command-text')).toHaveText(/^digestif-update remove ed25519:/);
+  });
+
   test("members show each one's stage and last note, and a member can be muted", async ({ page }) => {
     await page.goto('/members');
     await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Paused');

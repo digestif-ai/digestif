@@ -7460,7 +7460,7 @@ module Review = struct
           days )
     else
       let name = fst (names c k.key) in
-      ( Printf.sprintf "Keep or remove %s?" name,
+      ( Printf.sprintf "%s has sent no note in %s" name days,
         Printf.sprintf
           "%s has sent no note in %s and was told on %s that their membership \
            is in review. Keep them, or remove them with: digestif-update \
@@ -7533,6 +7533,52 @@ module Review = struct
     | None, Some (id, opens) -> close c ~me k ~id ~opens st
     | None, None -> ()
 
+  (* A member another identity revoked finds it in their own Inbox: one notice, raised once by their
+     node's upkeep when it reads the revoke and never settled, naming who removed them. *)
+  let k_removed me = "member_review_removed:" ^ me
+
+  let removed_words ~by ~circle ~at =
+    ( Printf.sprintf "%s removed you from %s" by circle,
+      Printf.sprintf
+        "%s revoked your membership on %s. Your node sends no more notes and \
+         keeps what it read. You return only by a new invite from the admins."
+        by (day at) )
+
+  let removed c v ~me heard (k : Fold.key_state) =
+    if k.key = me && Log.get_config (log c) (k_removed me) = None then
+      match outcome c (state c v ~note:(note_of heard k) k) k with
+      | Some ("revoked", by, at) -> (
+          let circle =
+            match Digestif_invite.Approved_invite.circle_label c.node with
+            | "" -> "the circle"
+            | l -> l
+          in
+          let title, detail =
+            removed_words ~by:(fst (names c by)) ~circle ~at:(unix at)
+          in
+          match
+            Inbox.raise_item c
+              {
+                kind = "notice";
+                subject = Some subject;
+                voice = "node";
+                title;
+                detail;
+                about = Some me;
+                quote = None;
+                options = [];
+                default = None;
+                deadline = None;
+                adopted = None;
+                link = None;
+              }
+          with
+          | Ok id -> Log.set_config (log c) (k_removed me) id
+          | Error e ->
+              Printf.eprintf "%s review: the removed notice: %s\n"
+                (Time_fmt.now ()) e)
+      | _ -> ()
+
   (* An admin promoted after a Keep holds no copy of it: every admin's node posts each Keep still in
      force, its plaintext unchanged, sealed to each admin no copy it holds was sealed to and to its
      own member, so this node reads its own copy and forwards it once. *)
@@ -7582,7 +7628,11 @@ module Review = struct
         let v = view_of c in
         let ids = identities c in
         let heard = heard c ids in
-        List.iter (keep_item c v ~me heard) ids;
+        List.iter
+          (fun k ->
+            keep_item c v ~me heard k;
+            removed c v ~me heard k)
+          ids;
         forward c v ~me heard
 
   let upkeep c = catch_up c (fun () -> upkeep_now c)

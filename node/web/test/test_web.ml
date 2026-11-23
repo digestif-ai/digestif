@@ -11812,6 +11812,10 @@ let member_review () =
   | [ i ] ->
       Alcotest.(check string) "the item is about Dee" dee_id (s "about" i);
       Alcotest.(check bool)
+        "its title says how long she has been silent" true
+        (String.starts_with ~prefix:"Dee Rao has sent no note in "
+           (s "title" i));
+      Alcotest.(check bool)
         "it shows the command that removes her" true
         (contains
            (s "detail" (snd (call ("items/" ^ enc (s "id" i)))))
@@ -11911,6 +11915,18 @@ let member_review () =
        (fun (k : Member_review.keep) ->
          k.member = dee_id && Member_review.verifies k)
        opened)
+
+(* DIG-396: the notice a removed member finds names who removed them and from what. *)
+let member_review_removed_words () =
+  let title, detail =
+    Api.Review.removed_words ~by:"Sasha Petrov" ~circle:"AI Dinners"
+      ~at:(Option.get (Time_fmt.to_unix "2026-11-14T18:20:00.000Z"))
+  in
+  Alcotest.(check string)
+    "the title" "Sasha Petrov removed you from AI Dinners" title;
+  Alcotest.(check bool)
+    "the way back is a new invite" true
+    (contains detail "a new invite from the admins")
 
 (* DIG-394: a member in review is told by their own node, in a notice their digest carries; Ada has
    just joined and written nothing, and her dinner was weeks ago. *)
@@ -15367,6 +15383,8 @@ let () =
           Alcotest.test_case "member review" `Quick (cleaned member_review);
           Alcotest.test_case "member review: the member's notice" `Quick
             member_review_notice;
+          Alcotest.test_case "member review: the removed member's notice"
+            `Quick member_review_removed_words;
           Alcotest.test_case "suggestion rounds" `Quick suggestion_rounds;
           Alcotest.test_case "a suggestion adopted" `Quick suggestion_flow;
           Alcotest.test_case "a suggestion with judges" `Quick suggestion_judges;
