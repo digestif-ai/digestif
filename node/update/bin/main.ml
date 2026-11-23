@@ -1308,6 +1308,317 @@ let signers_cmd =
     (Cmd.info "signers" ~doc:"Change the release signer set by approval.")
     [ signers_propose_cmd ]
 
+(* THE SIGNING JOB (docs/releases.md, The signing job): `signer install` pins this digestif-update
+   and installs the launchd agent that runs the pinned copy's `signer run`. *)
+
+let now_stamp () =
+  let t = Unix.gmtime (Unix.gettimeofday ()) in
+  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ" (t.tm_year + 1900)
+    (t.tm_mon + 1) t.tm_mday t.tm_hour t.tm_min t.tm_sec
+
+(* A line of the job's log, stamped, written at once. *)
+let say_stamped line =
+  print_endline (now_stamp () ^ " " ^ line);
+  flush stdout
+
+(* The set a signature is checked against now, as sign --next reads it. *)
+let signers_now () =
+  current_signers
+    ~channel:
+      (Feed.read Feed.default_fetch ~base:Feed.default_url
+         ~installed:(Trust_root.version ()))
+
+(* signer.json when the signer wrote one (its repo and public_key), else the default repository.
+   The job never runs its key_command: the key comes from the Keychain. *)
+let job_config () =
+  let path = Sign_next.config_path () in
+  if Sys.file_exists path then Sign_next.load_config path
+  else Ok Sign_next.pasted
+
+let keychain_value service =
+  Result.map_error
+    (Keychain.read_error_to_string service)
+    (Keychain.read service)
+
+let signer_run ~api ~once =
+  let ( let* ) = Result.bind in
+  match
+    let* config = job_config () in
+    let* token =
+      Result.bind
+        (keychain_value Keychain.signer_token_service)
+        Signing_job.check_token
+    in
+    let read_key () = keychain_value Keychain.release_key_service in
+    (* The key is read once at start, so a job that cannot read it says so at once, and its public
+       half names whose signature a draft already carries. *)
+    let* printed = read_key () in
+    let* _, pub = Signing_job.check_key ~signers:(signers_now ()) printed in
+    let* () =
+      match config.public_key with
+      | Some named when named <> pub ->
+          Error
+            (Printf.sprintf
+               "the Keychain's release key is %s but signer.json's public_key \
+                is %s"
+               pub named)
+      | _ -> Ok ()
+    in
+    let config = { config with public_key = Some pub } in
+    say_stamped
+      (Printf.sprintf
+         "The signing job reads %s's decisions as %s, signing on %s." api pub
+         config.repo);
+    let env () =
+      {
+        Signing_job.gh;
+        git = sign_git;
+        clone = Sign_next.clone_path config.repo;
+        signers = signers_now ();
+        config;
+        read_key;
+        tmp = Filename.temp_dir "digestif-signer" "";
+        relay = sign_next_relay ~timer:Timing.none config;
+        cache =
+          Attestation.file_cache
+            (Filename.concat (Sign_next.state_dir ()) "attested.json");
+        say = say_stamped;
+      }
+    in
+    let act ~settled decisions =
+      if Signing_job.to_sign ~settled decisions = [] then []
+      else Signing_job.act (env ()) ~settled decisions
+    in
+    Signing_job.run
+      ~fetch:(Signing_job.fetch ~http:Signing_job.curl ~api ~token)
+      ~act ~sleep:Unix.sleepf ~say:say_stamped
+      ?rounds:(if once then Some 1 else None)
+      ()
+  with
+  | Ok () -> 0
+  | Error e ->
+      say_stamped ("digestif-update signer run: " ^ e);
+      1
+
+(* Whether the login Keychain holds an item for [service], asked of `security` without reading the
+   item's data, so nothing prompts. *)
+let keychain_has service =
+  match
+    Proc.run ~timeout:30.
+      [| "security"; "find-generic-password"; "-s"; service |]
+  with
+  | Ok { code = 0; _ } -> true
+  | _ -> false
+
+let copy_file ~src ~dst =
+  let bytes = In_channel.with_open_bin src In_channel.input_all in
+  let tmp = dst ^ ".partial" in
+  (try Sys.remove tmp with Sys_error _ -> ());
+  Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ]
+    0o755 tmp (fun oc -> Out_channel.output_string oc bytes);
+  Unix.chmod tmp 0o555;
+  Unix.rename tmp dst
+
+let launchctl args =
+  match Proc.run ~timeout:60. (Array.of_list ("launchctl" :: args)) with
+  | Ok { code = 0; _ } -> Ok ()
+  | Ok { code; stderr; _ } ->
+      Error
+        (Printf.sprintf "launchctl %s exited %d: %s" (String.concat " " args)
+           code (String.trim stderr))
+  | Error e -> Error ("launchctl: " ^ e)
+
+let signer_install () =
+  let ( let* ) = Result.bind in
+  let self =
+    try Unix.realpath Sys.executable_name
+    with Unix.Unix_error _ -> Sys.executable_name
+  in
+  let version = Version.to_string (Trust_root.version ()) in
+  match
+    let* () =
+      match Platform.current () with
+      | Ok p when String.starts_with ~prefix:"darwin-" p -> Ok ()
+      | _ ->
+          Error
+            "the signing job runs on a Mac: it reads the key from the login \
+             Keychain"
+    in
+    let* () =
+      if Out_of_date.in_a_node Sys.executable_name && version <> "0.0.0" then
+        Ok ()
+      else
+        Error
+          "signer install pins a published digestif-update: run it as the one \
+           your node holds, ~/.local/bin/digestif-update signer install"
+    in
+    let pinned = Signing_job.pinned_path ~version in
+    Sign_next.mkdir_p (Signing_job.signer_dir ());
+    if not (Sys.file_exists pinned) then copy_file ~src:self ~dst:pinned;
+    let signers = signers_now () in
+    let* key =
+      if keychain_has Keychain.release_key_service then Ok ""
+      else
+        let* pasted = Sign_next.read_hidden () in
+        let* key, _ = Signing_job.check_key ~signers pasted in
+        Ok key
+    in
+    let* token =
+      let has = keychain_has Keychain.signer_token_service in
+      let prompt =
+        if has then
+          "Paste your signer token, or press Enter to keep the one in the \
+           Keychain: "
+        else "Paste your signer token (it is not shown): "
+      in
+      let* pasted =
+        match Sign_next.read_hidden ~prompt () with
+        | Error _ when has -> Ok ""
+        | r -> r
+      in
+      if String.trim pasted = "" then
+        if has then Ok "" else Error "no signer token was pasted"
+      else Signing_job.check_token pasted
+    in
+    print_endline
+      "The pinned copy now takes the key and the token into the Keychain. If \
+       the Keychain asks, answer Allow, never Always Allow.";
+    let* () =
+      match
+        Proc.run ~timeout:900.
+          ~stdin:(Signing_job.handover_to_string { Signing_job.key; token })
+          [| pinned; "signer"; "adopt" |]
+      with
+      | Ok { code = 0; stdout; _ } ->
+          print_string stdout;
+          Ok ()
+      | Ok { stdout; stderr; _ } ->
+          print_string stdout;
+          Error (String.trim stderr)
+      | Error e -> Error e
+    in
+    let path = Option.value (Sys.getenv_opt "PATH") ~default:"/usr/bin:/bin" in
+    let plist = Signing_job.plist_path () in
+    Sign_next.mkdir_p (Filename.dirname plist);
+    Out_channel.with_open_bin plist (fun oc ->
+        Out_channel.output_string oc
+          (Signing_job.plist ~pinned ~path ~log:(Signing_job.log_path ())));
+    let domain = Printf.sprintf "gui/%d" (Unix.getuid ()) in
+    ignore (launchctl [ "bootout"; domain ^ "/" ^ Signing_job.label ]);
+    let* () = launchctl [ "bootstrap"; domain; plist ] in
+    (* Older pinned copies: the Keychain no longer trusts them, and nothing runs them. *)
+    Array.iter
+      (fun n ->
+        let p = Filename.concat (Signing_job.signer_dir ()) n in
+        if
+          String.starts_with ~prefix:"digestif-update-" n
+          && p <> pinned
+          && not (Filename.check_suffix n ".partial")
+        then try Sys.remove p with Sys_error _ -> ())
+      (Sys.readdir (Signing_job.signer_dir ()));
+    Printf.printf "The signing job runs %s signer run as %s; its log is %s.\n"
+      pinned Signing_job.label (Signing_job.log_path ());
+    List.iter
+      (fun job ->
+        Printf.printf
+          "%s runs sign --next on its own; the signing job replaces it: \
+           launchctl bootout %s/%s\n"
+          job domain job)
+      (Signing_job.sign_on_assignment_jobs ~dir:(Filename.dirname plist));
+    Ok ()
+  with
+  | Ok () -> 0
+  | Error e -> exit_err ("signer install: " ^ e)
+
+(* signer adopt, run by signer install as the pinned copy: the key and the token, each the value
+   handed over on stdin or the one already in the Keychain, written back as items this binary
+   created, so their access lists trust it alone, then read back silently. *)
+let signer_adopt () =
+  let ( let* ) = Result.bind in
+  let self =
+    try Unix.realpath Sys.executable_name
+    with Unix.Unix_error _ -> Sys.executable_name
+  in
+  match
+    let* () =
+      if Filename.dirname self = Signing_job.signer_dir () then Ok ()
+      else Error "signer adopt is run by signer install, as the pinned copy"
+    in
+    let* h = Signing_job.handover_of_string (In_channel.input_all stdin) in
+    let given v service = if v <> "" then Ok v else keychain_value service in
+    let* printed = given h.key Keychain.release_key_service in
+    let* key, pub = Signing_job.check_key ~signers:(signers_now ()) printed in
+    let* token =
+      Result.bind
+        (given h.token Keychain.signer_token_service)
+        Signing_job.check_token
+    in
+    let account = Option.value (Sys.getenv_opt "USER") ~default:"digestif" in
+    let* () =
+      Result.map_error
+        (fun e ->
+          e
+          ^ ". The Keychain may no longer hold the release key: run signer \
+             install again and paste it from your password manager when it \
+             asks")
+        (Keychain.store ~service:Keychain.release_key_service ~account
+           ~label:"Digestif release key" key)
+    in
+    let* () =
+      Keychain.store ~service:Keychain.signer_token_service ~account
+        ~label:"Digestif signer token" token
+    in
+    let* back = keychain_value Keychain.release_key_service in
+    let* back_token = keychain_value Keychain.signer_token_service in
+    if back = key && back_token = token then (
+      Printf.printf
+        "The Keychain's %s and %s items now trust %s alone (key %s).\n"
+        Keychain.release_key_service Keychain.signer_token_service self pub;
+      Ok ())
+    else Error "the Keychain answered other values than were stored"
+  with
+  | Ok () -> 0
+  | Error e -> exit_err ("signer adopt: " ^ e)
+
+let signer_cmd =
+  let install =
+    Cmd.v
+      (Cmd.info "install"
+         ~doc:
+           "Pin this digestif-update as the signing job, give it the release \
+            key and the signer token in the Keychain, and install its launchd \
+            agent (docs/releases.md, The signing job).")
+      Term.(const signer_install $ const ())
+  in
+  let run =
+    let api =
+      Arg.(
+        value
+        & opt string Signing_job.default_api
+        & info [ "api" ] ~docv:"URL" ~doc:"Where idempotent's API answers.")
+    in
+    let once =
+      Arg.(
+        value & flag
+        & info [ "once" ]
+            ~doc:"Read the open decisions once, act on them, and stop.")
+    in
+    Cmd.v
+      (Cmd.info "run"
+         ~doc:
+           "The signing job: hold the decision stream open and sign exactly \
+            what a decision approved, after the integrity check.")
+      Term.(const (fun api once -> signer_run ~api ~once) $ api $ once)
+  in
+  let adopt =
+    Cmd.v
+      (Cmd.info "adopt" ~doc:"Run by signer install as the pinned copy.")
+      Term.(const signer_adopt $ const ())
+  in
+  Cmd.group
+    (Cmd.info "signer" ~doc:"The signing job on a signer's Mac.")
+    [ install; run; adopt ]
+
 (* A file a command names that cannot be read (a --key path that does not exist) ends the command
    with one line naming it, never cmdliner's uncaught-exception report. *)
 let () =
@@ -1336,5 +1647,6 @@ let () =
              approve_cmd;
              remove_cmd;
              signers_cmd;
+             signer_cmd;
            ])
     with Sys_error e -> exit_err e

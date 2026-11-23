@@ -19,7 +19,10 @@ never in a plain file on the disk of a machine that runs a node. A signer
 signs a version with `digestif-update sign --next`, which reads the key from the password manager,
 or from a hidden prompt the signer pastes it into, into memory only, shows every commit the version adds, and asks before it signs
 ([docs/releases.md](docs/releases.md), Signing a release). Either signer may instead drop a waiting
-version there, which deletes its draft and every signature on it.
+version there, which deletes its draft and every signature on it. A signer's unattended signatures come only from
+the signing job, which signs exactly what a decision of idempotent's signing check, or Mike's answer
+to it, approved, after repeating the integrity check itself ([docs/releases.md](docs/releases.md),
+The signing job).
 
 A member may pin a version (`digestif update pin <version>`) and stay on it as long as they like.
 

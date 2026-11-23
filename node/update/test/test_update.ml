@@ -6974,6 +6974,305 @@ let test_layout_share () =
   Alcotest.(check (option string))
     "sharing again changes nothing" (Some "0.1.0") (Layout.current dir)
 
+(* The signing job (Signing_job, docs/releases.md, The signing job): the decisions it reads, the
+   loop that reads them, and what it signs against a fake gh. *)
+
+let manifest_sha version =
+  Attestation.hex (Keys.hash_of_bytes (manifest_json version))
+
+let decision_json ?(id = "dec-1") ?(line = "node") ?(tag = "v0.2.1")
+    ?(sha = Some (manifest_sha "0.2.1")) ?(act = "sign") () =
+  `Assoc
+    ([
+       ("id", `String id);
+       ("line", `String line);
+       ("version", `String "0.2.1");
+       ("tag", `String tag);
+       ("commit", `String "abc123");
+       ("call", `String "sign");
+       ("act", `String act);
+       ("reasons", `List []);
+       ("decided_at", `String "2026-11-23T00:00:00Z");
+     ]
+    @ match sha with Some s -> [ ("manifest_sha256", `String s) ] | None -> [])
+
+let decisions_body ?(seen = "s1") ds =
+  Yojson.Safe.to_string
+    (`Assoc
+       [
+         ("seen", `String seen);
+         ( "signer",
+           `Assoc
+             [
+               ("kind", `String "account");
+               ("key", `String "usr-1");
+               ("label", `String "Mike");
+             ] );
+         ("decisions", `List ds);
+       ])
+
+let decisions_of ds =
+  match Signing_job.answer_of_string (decisions_body ds) with
+  | Ok a -> a.decisions
+  | Error e -> Alcotest.fail e
+
+let test_signing_job_parses () =
+  match
+    Signing_job.answer_of_string
+      (decisions_body ~seen:"abc"
+         [ decision_json (); decision_json ~id:"dec-2" ~act:"later" () ])
+  with
+  | Error e -> Alcotest.fail e
+  | Ok a ->
+      Alcotest.(check string) "seen" "abc" a.seen;
+      Alcotest.(check int) "two decisions" 2 (List.length a.decisions);
+      let acts =
+        List.map (fun (d : Signing_job.decision) -> d.act) a.decisions
+      in
+      Alcotest.(check bool)
+        "an act this binary does not know is wait, never sign" true
+        (acts = [ Signing_job.Sign; Signing_job.Wait ]);
+      Alcotest.(check bool)
+        "an answer without seen is refused" true
+        (Result.is_error (Signing_job.answer_of_string "{\"decisions\":[]}"))
+
+let test_signing_job_url () =
+  Alcotest.(check string)
+    "connect" "https://a/digestif/signer/decisions?wait=25"
+    (Signing_job.decisions_url ~api:"https://a" ~seen:None);
+  Alcotest.(check string)
+    "held with seen, encoded"
+    "https://a/digestif/signer/decisions?wait=25&seen=a%2Bb%3D"
+    (Signing_job.decisions_url ~api:"https://a" ~seen:(Some "a+b="))
+
+let test_signing_job_fetch () =
+  let http status body : Signing_job.http =
+   fun ~token:_ _ -> Ok (status, body)
+  in
+  let fetch h =
+    Signing_job.fetch ~http:h ~api:"https://a" ~token:"dsg_x" ~seen:None
+  in
+  Alcotest.(check bool)
+    "401 is unauthorized" true
+    (fetch (http 401 "{}") = Signing_job.Unauthorized);
+  (match fetch (http 503 "busy") with
+  | Signing_job.Failed e ->
+      Alcotest.(check bool)
+        ("names the status: " ^ e) true (contains ~sub:"503" e)
+  | _ -> Alcotest.fail "a 503 is a failure");
+  match fetch (http 200 (decisions_body [ decision_json () ])) with
+  | Signing_job.Answered a -> Alcotest.(check string) "answered" "s1" a.seen
+  | _ -> Alcotest.fail "a 200 is an answer"
+
+(* The loop asks again at once after an answer, with its seen; after a failure it waits out a
+   backoff and reads every open decision again; a decision signed is not signed again; a 401 ends
+   it. *)
+let test_signing_job_loop () =
+  let answers =
+    ref
+      [
+        Signing_job.Failed "connection reset";
+        Signing_job.Answered
+          { seen = "s1"; decisions = decisions_of [ decision_json () ] };
+        Signing_job.Answered
+          { seen = "s2"; decisions = decisions_of [ decision_json () ] };
+        Signing_job.Unauthorized;
+      ]
+  in
+  let seens = ref [] in
+  let fetch ~seen =
+    seens := !seens @ [ seen ];
+    match !answers with
+    | a :: rest ->
+        answers := rest;
+        a
+    | [] -> Alcotest.fail "asked once too often"
+  in
+  let slept = ref [] in
+  let acted = ref [] in
+  let act ~settled ds =
+    let wanted = Signing_job.to_sign ~settled ds in
+    acted := !acted @ [ List.length wanted ];
+    List.map
+      (fun (d : Signing_job.decision) -> (d, Signing_job.Signed d.tag))
+      wanted
+  in
+  let result =
+    Signing_job.run ~fetch ~act
+      ~sleep:(fun s -> slept := !slept @ [ s ])
+      ~say:ignore ()
+  in
+  (match result with
+  | Ok () -> Alcotest.fail "a refused token ended nothing"
+  | Error e ->
+      Alcotest.(check bool)
+        ("says revoked: " ^ e) true
+        (contains ~sub:"revoked" e));
+  Alcotest.(check (list (option string)))
+    "connect, reconnect after the failure, then held with each seen"
+    [ None; None; Some "s1"; Some "s2" ]
+    !seens;
+  Alcotest.(check (list (float 0.))) "one backoff" [ 1. ] !slept;
+  Alcotest.(check (list int))
+    "the decision is signed once, not again on the next answer" [ 1; 0 ] !acted
+
+let job_env ?attested ?(key = mike) () =
+  let f, gh = fake_gh ?attested () in
+  let said = Buffer.create 256 in
+  let env =
+    {
+      Signing_job.gh;
+      git =
+        fake_git
+          ~shas:[ ("v0.2.1", "abc123"); ("v0.2.0", "aaa000") ]
+          ~logs:[ ("v0.2.0..v0.2.1", "Fix the digest\n") ]
+          ();
+      clone = temp_dir ();
+      signers = founders;
+      config = { Sign_next.key_command = ""; repo = "o/r"; public_key = None };
+      read_key =
+        (fun () ->
+          incr f.keys_read;
+          Ok (Keys.encode_secret key));
+      tmp = temp_dir ();
+      relay = Sign_next.no_relay;
+      cache = Attestation.no_cache;
+      say = (fun l -> Buffer.add_string said (l ^ "\n"));
+    }
+  in
+  (f, env, said)
+
+let outcomes env ds =
+  List.map snd (Signing_job.act env ~settled:[] (decisions_of ds))
+
+let test_signing_job_signs_approved () =
+  let f, env, _ = job_env () in
+  (match outcomes env [ decision_json () ] with
+  | [ Signing_job.Signed "v0.2.1" ] -> ()
+  | _ -> Alcotest.fail "the approved manifest was not signed");
+  match !(f.uploaded) with
+  | None -> Alcotest.fail "nothing was uploaded"
+  | Some path -> (
+      match
+        Release.signatures_of_string
+          (In_channel.with_open_bin path In_channel.input_all)
+      with
+      | Error e -> Alcotest.fail e
+      | Ok sigs ->
+          Alcotest.(check (list string))
+            "Mike's signature over the manifest"
+            [ Keys.public mike ]
+            (Release.valid_signers ~domain:Release.release_domain
+               (manifest_json "0.2.1") sigs))
+
+let test_signing_job_signs_nothing_else () =
+  let f, env, _ = job_env () in
+  Alcotest.(check int)
+    "wait and drop sign nothing and read nothing" 0
+    (List.length
+       (outcomes env
+          [
+            decision_json ~act:"wait" (); decision_json ~id:"d2" ~act:"drop" ();
+          ]));
+  Alcotest.(check int) "no gh call" 0 (List.length !(f.calls));
+  Alcotest.(check int)
+    "a sign without a manifest sha256 is not acted on" 0
+    (List.length (outcomes env [ decision_json ~sha:None () ]))
+
+let test_signing_job_refuses_other_manifest () =
+  let f, env, said = job_env () in
+  (match
+     outcomes env [ decision_json ~sha:(Some (manifest_sha "0.2.2")) () ]
+   with
+  | [ Signing_job.Refused (_, why) ] ->
+      Alcotest.(check bool)
+        ("names the sha256: " ^ why)
+        true
+        (contains ~sub:"not the" why)
+  | _ -> Alcotest.fail "a manifest the decision did not approve was signed");
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None);
+  Alcotest.(check int) "the key is never read" 0 !(f.keys_read);
+  Alcotest.(check bool)
+    ("logged: " ^ Buffer.contents said)
+    true
+    (contains ~sub:"NOT SIGNED" (Buffer.contents said))
+
+(* The integrity check no answer overrides: a manifest the decision approved, whose files no run
+   of the release workflow attested, is not signed. *)
+let test_signing_job_repeats_integrity () =
+  let f, env, _ = job_env ~attested:(fun _ -> false) () in
+  (match outcomes env [ decision_json () ] with
+  | [ Signing_job.Refused (_, why) ] ->
+      Alcotest.(check bool)
+        ("the integrity check: " ^ why)
+        true
+        (contains ~sub:"integrity check failed" why)
+  | _ -> Alcotest.fail "an unattested manifest was signed");
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None);
+  Alcotest.(check int) "the key is never read" 0 !(f.keys_read)
+
+let test_signing_job_published () =
+  let f, env, _ = job_env () in
+  (match outcomes env [ decision_json ~tag:"v0.2.0" () ] with
+  | [ Signing_job.Published "v0.2.0" ] -> ()
+  | _ -> Alcotest.fail "a published version was not left alone");
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None)
+
+let test_signing_job_outsider_key () =
+  let f, env, _ = job_env ~key:mallory () in
+  (match outcomes env [ decision_json () ] with
+  | [ Signing_job.Refused (_, why) ] ->
+      Alcotest.(check bool)
+        ("names it: " ^ why) true
+        (contains ~sub:"is not a release signer" why)
+  | _ -> Alcotest.fail "an outsider's key signed");
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None)
+
+let test_signing_job_install_pieces () =
+  let p =
+    Signing_job.plist ~pinned:"/Users/m/.digestif/signer/digestif-update-0.4.1"
+      ~path:"/opt/homebrew/bin:/usr/bin&x"
+      ~log:"/Users/m/.digestif/signer/signer.log"
+  in
+  List.iter
+    (fun sub ->
+      Alcotest.(check bool) ("plist holds " ^ sub) true (contains ~sub p))
+    [
+      "<string>io.digestif.signer</string>";
+      "<string>/Users/m/.digestif/signer/digestif-update-0.4.1</string>";
+      "<string>signer</string>";
+      "<string>run</string>";
+      "/usr/bin&amp;x";
+      "<key>KeepAlive</key>";
+    ];
+  Alcotest.(check bool)
+    "a token" true
+    (Signing_job.check_token " dsg_Ab-9\n" = Ok "dsg_Ab-9");
+  Alcotest.(check bool)
+    "a token with a quote is refused" true
+    (Result.is_error (Signing_job.check_token "dsg_\"x"));
+  Alcotest.(check bool)
+    "an outsider's key is refused" true
+    (Result.is_error
+       (Signing_job.check_key ~signers:founders (Keys.encode_secret mallory)));
+  let h = { Signing_job.key = "k"; token = "" } in
+  Alcotest.(check bool)
+    "the handover reads back" true
+    (Signing_job.handover_of_string (Signing_job.handover_to_string h) = Ok h);
+  let dir = temp_dir () in
+  let write n text =
+    Out_channel.with_open_bin (Filename.concat dir n) (fun oc ->
+        Out_channel.output_string oc text)
+  in
+  write "com.roman.digestif-sign.plist"
+    "<string>digestif-update</string><string>sign</string><string>--next</string>";
+  write "io.digestif.signer.plist" "digestif-update signer run --next";
+  write "com.other.plist" "nothing";
+  Alcotest.(check (list string))
+    "the sign-on-assignment job is named"
+    [ "com.roman.digestif-sign" ]
+    (Signing_job.sign_on_assignment_jobs ~dir)
+
 let () =
   let t name f = Alcotest.test_case name `Quick f in
   Ci_alcotest.run "digestif-update"
@@ -7109,6 +7408,21 @@ let () =
           t "two documents under one version" test_relay_fold_conflict;
           t "an unreadable document" test_relay_fold_unreadable;
           t "relay-manifest, sign and verify" test_relay_manifest_cli;
+        ] );
+      ( "the signing job",
+        [
+          t "reads the decisions answer" test_signing_job_parses;
+          t "the request's url" test_signing_job_url;
+          t "a request's outcome" test_signing_job_fetch;
+          t "the loop" test_signing_job_loop;
+          t "signs the approved manifest" test_signing_job_signs_approved;
+          t "wait and drop sign nothing" test_signing_job_signs_nothing_else;
+          t "another manifest is refused"
+            test_signing_job_refuses_other_manifest;
+          t "repeats the integrity check" test_signing_job_repeats_integrity;
+          t "a published version" test_signing_job_published;
+          t "an outsider's key" test_signing_job_outsider_key;
+          t "install's pieces" test_signing_job_install_pieces;
         ] );
       ( "sign --next",
         [
