@@ -7214,10 +7214,20 @@ module Review = struct
   module I = Store.Items
   module R = Member_review
 
-  (* The identities of the admins: the members holding a key of the set this node judges by
-     (Approvals.admins). A key no member is known to hold names nobody. *)
-  let admin_identities c =
-    List.sort_uniq compare (List.filter_map snd (Approvals.admins c))
+  (* The signer set Review judges by, each key with the identity it is bound to, as the fold holds
+     it (docs/protocol.md, Member review): the set at [at], or the one the fold ends on. A test sets
+     its own. *)
+  let bindings_at =
+    ref (fun c ~at ->
+        match at with
+        | Some at -> Fold.admin_bindings_at c.fold ~at
+        | None -> Fold.admin_bindings c.fold)
+
+  let bound_identities l = List.sort_uniq compare (List.filter_map snd l)
+
+  (* The identities of the admins now: those a key of the signer set the fold ends on is bound to,
+     whom a Keep is sealed and forwarded to. A key bound to nobody names nobody. *)
+  let admin_identities c = bound_identities (!bindings_at c ~at:None)
 
   type honoured = {
     keep : R.keep;
@@ -7226,28 +7236,28 @@ module Review = struct
     readers : string list;  (** every identity a copy of it was sealed to *)
   }
 
-  (* Who a Keep's [by] belongs to, when it is an admitted device key of an identity that is an admin
-     and is not the member kept: only such a Keep is honoured. The signer set is the one this node
-     holds now (Approvals.admins), which binds a key to an identity by its holder. *)
-  let honoured_by c ~admins (k : R.keep) =
-    if not (R.verifies k) then None
-    else
-      match Fold.find c.fold k.by with
-      | Some { role = Bodies.Device; identity; _ }
-        when identity <> k.member && List.mem identity admins ->
-          Some identity
-      | _ ->
-          (* This node's own device, before the fold has admitted it. *)
-          if
-            List.mem k.by (Node.own_keys c.node)
-            && self_identity c <> Some k.member
-          then
-            Option.bind (self_identity c) (fun me ->
-                if List.mem me admins then Some me else None)
-          else None
+  (* Who a Keep's [by] belongs to, when only such a Keep is honoured (Member_review.honoured_by): an
+     admitted device of an identity bound to a key of the signer set the fold held at the Keep's
+     created_at, other than the member kept. This node's own device counts as its member's before
+     the fold has admitted it. *)
+  let honoured_by c (k : R.keep) =
+    let seated _ ~at id =
+      List.mem id (bound_identities (!bindings_at c ~at:(Some at)))
+    in
+    match R.honoured_by ~seated c.fold k with
+    | Some id -> Some id
+    | None -> (
+        match (Fold.find c.fold k.by, self_identity c) with
+        | None, Some me
+          when R.verifies k
+               && List.mem k.by (Node.own_keys c.node)
+               && me <> k.member
+               && seated () ~at:k.created_at me ->
+            Some me
+        | _ -> None)
 
   (* Every honoured Keep this node can open, one per id however many copies arrived. *)
-  let keeps c ~admins =
+  let keeps c =
     match encryption c with
     | None -> []
     | Some enc ->
@@ -7273,7 +7283,7 @@ module Review = struct
                             readers = List.sort_uniq compare (to_ @ h.readers);
                           }
                     | None -> (
-                        match honoured_by c ~admins k with
+                        match honoured_by c k with
                         | Some by_identity ->
                             Hashtbl.replace by_id id
                               {
@@ -7306,7 +7316,7 @@ module Review = struct
 
   let view_of c =
     let admins = admin_identities c in
-    { admins; keeps = keeps c ~admins; me = self_identity c }
+    { admins; keeps = keeps c; me = self_identity c }
 
   (* One view per request: a Members page works out every row's review from it. A write that adds
      a Keep forgets it. *)

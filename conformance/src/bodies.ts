@@ -1,7 +1,7 @@
 // Circle-state bodies, docs/protocol.md "Circle-state bodies". Content bodies are not fixed by
 // protocol v0 yet; the shapes below are what the suite sends and a relay need not read them.
-import { b64url, bytesOf, isoTime, jcs, type Json } from "./encoding.ts";
-import { Signer } from "./keys.ts";
+import { b64url, bytesOf, hashOf, isoTime, jcs, type Json } from "./encoding.ts";
+import { Signer, verifySignature } from "./keys.ts";
 
 export interface Guest {
   name: string;
@@ -87,6 +87,34 @@ export function namedItemBody(to: string[], label: string): Json {
  */
 export function keepBody(to: string[], label: string): Json {
   return { to, sealed: b64url(bytesOf(`conformance keep ${label}`)) };
+}
+
+/** A Keep's plaintext (docs/protocol.md, Member review): what is sealed inside a `keep` body. */
+export interface Keep {
+  member: string;
+  created_at: string;
+  by: string;
+  signature: string;
+}
+
+/** The Keep `by`'s device signs for `member` at `createdAt`: its signature over JCS({member, created_at, by}). */
+export function signKeep(by: Signer, member: string, createdAt: Date = new Date()): Keep {
+  const created_at = isoTime(createdAt);
+  return { member, created_at, by: by.key, signature: by.sign(jcs({ member, created_at, by: by.key })) };
+}
+
+/** The Keep an opened plaintext is, when its four fields are strings and `signature` is `by`'s. */
+export function verifiedKeep(plaintext: Json | undefined): Keep | undefined {
+  if (typeof plaintext !== "object" || plaintext === null || Array.isArray(plaintext)) return undefined;
+  const { member, created_at, by, signature } = plaintext;
+  if (typeof member !== "string" || typeof created_at !== "string" || typeof by !== "string" || typeof signature !== "string") return undefined;
+  if (Number.isNaN(Date.parse(created_at)) || !verifySignature(by, jcs({ member, created_at, by }), signature)) return undefined;
+  return { member, created_at, by, signature };
+}
+
+/** A Keep's id: the hash of its plaintext, never the envelope's, so a forwarded copy is the same Keep. */
+export function keepId(keep: Keep): string {
+  return hashOf({ member: keep.member, created_at: keep.created_at, by: keep.by, signature: keep.signature });
 }
 
 /** A pick on an item (docs/protocol.md, Items, Picks): a decision naming it, the option sealed as opaque bytes. */

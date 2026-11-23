@@ -108,3 +108,17 @@ let of_json (j : Yojson.Safe.t) =
 let in_force ~now ~kept_at ~note =
   now < opens_at ~anchor:kept_at
   && match note with Some n -> n <= kept_at | None -> true
+
+(* The identity a Keep is honoured as (protocol.md, Member review): its signature verifies, [by] is a
+   device key the fold admitted, of an identity that is not the member kept and that a key of the
+   signer set held at the Keep's created_at is bound to ([seated], Fold.seated_at as a node folds
+   it). None for any other Keep. *)
+let honoured_by ?(seated = fun fold ~at id -> Fold.seated_at fold ~at id)
+    (fold : Fold.t) k =
+  if not (verifies k) then None
+  else
+    match Fold.find fold k.by with
+    | Some { role = Bodies.Device; identity; _ }
+      when identity <> k.member && seated fold ~at:k.created_at identity ->
+        Some identity
+    | _ -> None

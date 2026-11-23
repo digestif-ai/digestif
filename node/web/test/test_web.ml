@@ -11741,23 +11741,31 @@ let member_review_rules () =
        ~now:(at "2026-11-23T00:00:00.000Z")
        ~kept_at:(at k.created_at) ~note:None)
 
-(* The set this node judges by, saved in its update state as the approvals test does: every key
-   named as the card of the member who holds it. *)
-let save_admins n names =
-  Digestif_update.State.save
-    (Digestif_update.Schedule.state_path n.Node.dir)
-    {
-      (Digestif_update.State.initial ()) with
-      trust =
-        {
-          signers =
-            List.map
-              (fun name : Digestif_update.Release.signer ->
-                { name; key = Keys.public (Crypto.generate_signing_key ()) })
-              names;
-          revoked = [];
-        };
-    }
+(* The signer set Review judges Keeps by (Api.Review.bindings_at), as the fold would hold it: each
+   call seats [ids], a fresh key bound to each, from [from] on, so a Keep dated earlier is judged by
+   the set before. [unbind_admins] puts the fold's own back. *)
+let fold_bindings = !Api.Review.bindings_at
+let binding_history = ref []
+
+let bind_admins ?(from = "1970-01-01T00:00:00.000Z") ids =
+  binding_history :=
+    ( from,
+      List.map
+        (fun i -> (Keys.public (Crypto.generate_signing_key ()), Some i))
+        ids )
+    :: !binding_history;
+  Api.Review.bindings_at :=
+    fun _ ~at ->
+      let found =
+        match at with
+        | None -> List.nth_opt !binding_history 0
+        | Some at -> List.find_opt (fun (c, _) -> c <= at) !binding_history
+      in
+      Option.fold ~none:[] ~some:snd found
+
+let unbind_admins () =
+  binding_history := [];
+  Api.Review.bindings_at := fold_bindings
 
 let member_named call name =
   List.find (fun m -> s "name" m = name) (list (snd (call "members")))
@@ -11796,7 +11804,9 @@ let member_review () =
   Alcotest.(check string)
     "a member who is no admin sees nobody's review" ""
     (s "in_review_since" (member_named call "Dee Rao"));
-  save_admins n [ "Ada Park" ];
+  let ada_id = Option.get (Log.get_config n.log Node.k_identity) in
+  bind_admins [ ada_id ];
+  Fun.protect ~finally:unbind_admins @@ fun () ->
   let dee () = member_named call "Dee Rao" in
   Alcotest.(check bool)
     "an admin sees Dee in review" true
@@ -11878,7 +11888,7 @@ let member_review () =
       Alcotest.(check bool) "sealed to Dee" true (List.mem dee_id to_)
   | l -> Alcotest.failf "two keep envelopes, got %d" (List.length l));
   (* Pia is promoted: Ada's node forwards the Keep still in force, sealed to her. *)
-  save_admins n [ "Ada Park"; "Pia Gale" ];
+  bind_admins ~from:(Time_fmt.now ()) [ ada_id; Keys.public pia.p_identity ];
   keep_up n;
   let forwarded =
     List.filter

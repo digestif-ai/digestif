@@ -116,6 +116,8 @@ for (const [rule, id] of relayBreaks) {
 }
 
 const nodeBreaks: Array<[NodeBreak, string]> = [
+  ["keep-admin", "node.keep.admins-only"],
+  ["keep-at", "node.keep.admins-only"],
   ["relay-order", "node.divergent.same-fold-and-feed"],
   ["backfill", "node.gap.backfilled-from-other-relay"],
   ["gap", "node.gap.reported-when-unfilled"],
