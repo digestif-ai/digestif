@@ -6,6 +6,7 @@ import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test as nodeTest, type TestContext } from "node:test";
+import { USAGE_LIMIT_MARGIN_MS } from "../src/nightly.ts";
 import { buildReadPrompt, emptyState, LEFT_MORE, loadConfig, loadState, localDay, parseReadContext, READ_RETRY_DELAYS_MS, readStateDir, runRead, saveState, sentence } from "../src/read.ts";
 import { CHECK_FIRST, INBOX_PROMPT_FILE, QUOTE_MAX, TAKEN_MAX, checkFiled, filingPlaces, onNamedTracker, parseFiled, parseRun } from "../src/inbox.ts";
 import { ALWAYS_ON_FILE } from "../src/writer.ts";
@@ -93,6 +94,7 @@ beforeEach(async () => {
       // A filing answer of {"byTitle": {...}} answers each filing run by the title its work holds.
       `if (filing) { try { const m = JSON.parse(a); if (m.byTitle) { a = '{"filed": null}'; for (const [t, v] of Object.entries(m.byTitle)) if (stdin.includes(t)) a = JSON.stringify(v); } } catch {} }\n` +
       `if (a === "!signedout") { console.error("Not logged in · Please run /login"); process.exit(1); }\n` +
+      `if (a === "!limited") { console.error("You've hit your 5-hour limit, resets 7:30am (America/New_York)"); process.exit(1); }\n` +
       `console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: a }));\n`,
     { mode: 0o755 },
   );
@@ -1177,6 +1179,26 @@ test("a failed run leaves its batch unreviewed and reads it again with a later s
   assert.equal(await at(third + READ_RETRY_DELAYS_MS[1]!), 0);
   assert.deepEqual(state().pending, []);
   assert.deepEqual(posted.at(-1)!.reviews.map((r) => r.hash), ["sha256:i1"]);
+});
+
+test("a run the usage limit held reads its batch again after the reset, spending no read and no run of the day's budget (DIG-371)", async () => {
+  const t0 = Date.parse("2026-11-22T12:04:00Z");
+  const at = (ms: number) => runRead({ ctx: parseReadContext(JSON.stringify(context())), now: new Date(t0 + ms), log: () => {} });
+  feed = [item(1)];
+  setAnswer("!limited");
+  assert.equal(await at(0), 0);
+  const after = new Date(Date.parse("2026-11-22T12:30:00Z") + USAGE_LIMIT_MARGIN_MS).toISOString();
+  assert.deepEqual(state().pending, [{ hash: "sha256:1", type: "note", created_at: "2026-11-01T00:00:01Z", reads: 0, after }]);
+  assert.equal(state().counters["agent_runs"] ?? 0, 0, "no run of the day's budget");
+  const [report] = nodeCalls();
+  assert.match(report!, /^problem report --job read_circle --kind model_unavailable --detail Claude's usage limit was reached; the Inbox agent runs again after /);
+  inbox = [inboxItem(1)];
+  assert.equal(await at(20 * 60_000), 0);
+  assert.deepEqual(batchOf(inboxRuns()[1]!).map((m) => m.hash), ["sha256:i1"], "before the reset, the held note waits");
+  setAnswer({ reviews: [] });
+  messages = { "sha256:1": { voice: "agent", text: "NOTE AGAIN" } };
+  assert.equal(await at(Date.parse(after) - t0), 0);
+  assert.ok(batchOf(inboxRuns().at(-1)!).some((m) => m.hash === "sha256:1"), "after it, the held note is read");
 });
 
 test("a batch holds at most the cap, oldest first; the cursor stops at the last note taken and the next run reads on from there", async () => {

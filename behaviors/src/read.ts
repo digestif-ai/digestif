@@ -15,8 +15,8 @@ import { AwakeClock } from "./awake.ts";
 import { readDenyList } from "./deny.ts";
 import { harnessOf, readConfig } from "./hook.ts";
 import { INBOX_PROMPT_FILE, MAX_READS, practicesOf, runInbox, type BatchMessage, type Member, type OwnNote } from "./inbox.ts";
-import { hookStateDir, reportProblem, resolveProblem } from "./nightly.ts";
-import { ALWAYS_ON_FILE, ALWAYS_ON_PLACEHOLDER, killHarnesses, nodeApi, type ApiAccess } from "./writer.ts";
+import { hookStateDir, reportProblem, resolveProblem, USAGE_LIMIT_MARGIN_MS, usageLimitNext } from "./nightly.ts";
+import { agentOf, ALWAYS_ON_FILE, ALWAYS_ON_PLACEHOLDER, killHarnesses, nodeApi, usageLimitDetail, type ApiAccess } from "./writer.ts";
 
 /** The context the node hands the read hook on stdin, checked. */
 export interface ReadContext {
@@ -645,8 +645,22 @@ export async function runRead(options: ReadOptions): Promise<number> {
       const read = [...again, ...kept].map(({ after: _after, ...p }) => ({ ...p, reads: p.reads + 1 }));
       state.pending = [...read, ...waiting];
       saveState(stateDir, state);
-      const done = await runInbox({ ...(await agentArgs()), batch });
-      if (done.status === "done") {
+      const args = await agentArgs();
+      const done = await runInbox({ ...args, batch });
+      if (done.status === "failed" && done.limited !== undefined) {
+        // A usage limit is no read of the batch and no run of the day's budget: it waits, unread,
+        // until the limit's reset (or a backoff past its window) and is read then (DIG-371).
+        runProblem = true;
+        state.counters["agent_runs"] = Math.max(0, (state.counters["agent_runs"] ?? 1) - 1);
+        const next = usageLimitNext(done.limited.reset, 1, now.getTime());
+        const after = new Date(next.at).toISOString();
+        state.pending = [...[...again, ...kept].map(({ after: _after, ...p }) => ({ ...p, after })), ...waiting];
+        log(`the Inbox agent's run over ${batch.length} met the usage limit, read again after ${after}: ${done.why}`);
+        const agent = args.harness.agent ?? agentOf(args.harness.harness ?? "claude");
+        const detail = usageLimitDetail(agent, "the Inbox agent", next.named ? next.at - USAGE_LIMIT_MARGIN_MS : next.at, next.named, now.getTime());
+        const err = await reportProblem(ctx.digestif, "read_circle", done.problem, undefined, sentence(detail));
+        if (err !== undefined) log(`could not report the problem: ${err}`);
+      } else if (done.status === "done") {
         state.pending = waiting;
         const sent = done.sent + done.items;
         if (sent > 0) state.counters["outbound"] = (state.counters["outbound"] ?? 0) + sent;
