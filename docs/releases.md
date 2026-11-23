@@ -210,7 +210,8 @@ and the channel lacks, so the channel and `ci/release.sh`'s check hold the new s
 release ships. The writer clones `release/` of main, shallow and sparse, and the `channel` branch,
 writes into each, and pushes one commit to each it changed, starting again from new clones when a
 push loses a race. A commit that touches only `release/` is no new code: `release/` is in neither
-`ci/release-paths` nor `ci/relay-release-paths`, so its rollout tags nothing.
+`ci/release-paths` nor `ci/relay-release-paths`, so its rollout tags nothing, and the Release
+workflow ignores a push to main touching only `release/`.
 
 ### The channel branch, for nodes older than the move
 
@@ -530,8 +531,8 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
    (the hosted install script, below, written from the manifest by `ci/install-hosted.sh`), and
    `manifest.json`, written by `digestif-update manifest --platforms ci/platforms.json`, which
    refuses a manifest missing any platform in that file. The manifest's notes are the commit titles
-   since the last published release, or the tag's own message when a person wrote an annotated
-   tag. Every one of those files is attested first, with a GitHub artifact attestation by this
+   since the newest version the release list names, or the tag's own message when a person wrote
+   an annotated tag (a tag whose message is a What's new ledger, What's new, takes the titles). Every one of those files is attested first, with a GitHub artifact attestation by this
    workflow on the tag at the commit it built (What ties a version to its build). A draft is
    readable only by people with write access until it is published. One failed
    platform leaves no draft and no manifest, so nothing partial can be signed. Nobody edits the
@@ -583,15 +584,16 @@ The entries are the Digestif product's entries of the changelog idempotent write
 build`). Only an identity idempotent admits reads them, and the release command holds none, so the
 Digestif rollout's job reads them (`GET /dev/changelog/releases?repo=digestif-ai/digestif&product=digestif`)
 once `ci/release.sh changed` answers `changed`, and hands them to the release command before the tag
-exists: `ci/release.sh changelog --sha <commit> --file <file>` leaves them on `channel` as
-`changelog/<commit>.json` before the job tags the commit, and the Release run on that tag reads the
-file. `ci/release.sh build --changelog <file>` writes the tag it mints as an annotated tag whose
-message is the file, kept verbatim, so the ledger can ride in the push that starts the run,
-attached to the one thing it describes. Notes are
+exists. `ci/release.sh build --changelog <file>` writes the tag it mints as an annotated tag whose
+message is the file, kept verbatim, so the ledger rides in the push that starts the run, attached to
+the one thing it describes; the Release run on the tag reads its own tag's message. Until the
+rollout passes `--changelog`, it hands them to `ci/release.sh changelog --sha <commit> --file
+<file>`, which leaves them on `channel` as `changelog/<commit>.json` before the job tags the commit,
+and the run reads that file when the tag carries no ledger. Notes are
 written after a version is released, so a version carries every earlier version's entries and its
 own as the commit titles its manifest's notes hold, which the next release replaces with its
-entries. A version whose notes are not written yet, and every version when the run finds no
-`changelog/<commit>.json`, carries its commit titles the same way.
+entries. A version whose notes are not written yet, and every version when the run finds no ledger (a tag a
+person pushed carries none), carries its commit titles the same way.
 
 ### A job no runner took
 
@@ -650,8 +652,9 @@ sha256 for every platform in it. It:
 
 1. picks this machine's platform from `uname`, and stops when the release has none for it;
 2. downloads the archive and prints the sha256 it expects, the sha256 the download has, and a link
-   to the release's signed manifest (`<version>/` on the `channel` branch, the manifest beside its
-   signatures); a mismatch stops it with nothing installed;
+   to the release's signed manifest (the version's GitHub release page,
+   `https://github.com/digestif-ai/digestif/releases/tag/v<version>`, which shows `manifest.json`
+   beside every signature); a mismatch stops it with nothing installed;
 3. unpacks the archive and stages it with the binary inside it, `digestif update stage <archive>`:
    the checks a node runs before it runs a release (staging, above), into `<data dir>/releases/`,
    changing nothing the node runs. A release already staged is not staged again, so running the
