@@ -22,7 +22,7 @@ import { DEFAULT_HOSTING, DEFAULT_LIMITS, type HostingLimits } from "../src/env.
 import { fromFor, forCircle } from "../src/mail.ts";
 import { circleDatabase } from "../src/store.ts";
 import { RELAY } from "./helpers.ts";
-import { HOME, relayExtras, TEST_ROOT } from "./root.ts";
+import { relayExtras, TEST_ROOT } from "./root.ts";
 
 const realFetch = globalThis.fetch;
 
@@ -57,7 +57,7 @@ beforeAll(async () => {
   };
   home = new World(
     { hostIdentity: Signer.fromSeed(circleFile.host_identity_seed), hostDevice: Signer.fromSeed(circleFile.host_device_seed), root: circleFile.root as SignedEnvelope, rootHash: circleFile.root_hash },
-    [HOME],
+    [RELAY],
   );
   await home.setup();
   [voucherMember] = (await home.members(["founder"])) as [Member];
@@ -71,7 +71,7 @@ describe("the relay's own routes", () => {
   it("GET /v0/relay reports the release, the mailer's key, hosting, the home circle and the last unprefixed request", async () => {
     forgetMemos();
     const before = new Date().toISOString();
-    expect((await home.client(RELAY, home.host.device).circle()).status).toBe(410);
+    expect((await home.client(RELAY, home.host.device).circle()).status).toBe(200);
     const response = await SELF.fetch(`${RELAY}/v0/relay`);
     expect(response.status).toBe(200);
     const info = await response.json<Record<string, unknown>>();
@@ -92,21 +92,10 @@ describe("the relay's own routes", () => {
     expect(await code(malformed)).toBe("circle_unknown");
   });
 
-  it("answers the home circle at its address, and 410 circle_moved naming that address at every unprefixed route", async () => {
-    const at = await home.client(HOME, home.host.device).circle();
+  it("answers the home circle at its address as at the unprefixed routes", async () => {
+    const at = await home.client(addressOf(RELAY, TEST_ROOT), home.host.device).circle();
     expect(at.status).toBe(200);
     expect((at.body as { root: string }).root).toBe(TEST_ROOT);
-    const client = home.client(RELAY, home.host.device);
-    for (const result of [await client.circle(), await client.page(0), await client.append(home.circle.root, { unsigned: true }), await client.send("POST", "/v0/mail", "{}")]) {
-      expect(result.status).toBe(410);
-      expect(result.body).toMatchObject({ code: "circle_moved", message: `this circle's routes are at ${HOME}` });
-    }
-    for (const path of ["/", "/v0/links/abc?s=def", "/install.sh"]) {
-      const moved = await SELF.fetch(`${RELAY}${path}`);
-      expect(moved.status, path).toBe(410);
-      expect(moved.headers.get("location"), path).toBe(HOME);
-      expect(await code(moved), path).toBe("circle_moved");
-    }
   });
 });
 
@@ -209,20 +198,21 @@ describe("two circles hosted by one relay", () => {
   it("lets neither circle read, append to or admit into the other", async () => {
     const [guest] = (await world.members(["only-second"])) as [Member];
     // A member of the second circle is a stranger to the home circle, and the reverse.
-    expect((await new RelayClient(HOME, guest.device.signer).circle()).status).toBe(401);
+    expect((await new RelayClient(RELAY, guest.device.signer).circle()).status).toBe(401);
+    expect((await new RelayClient(addressOf(RELAY, TEST_ROOT), guest.device.signer).circle()).status).toBe(401);
     expect((await new RelayClient(address, voucherMember.device.signer).circle()).status).toBe(401);
     const summary = await world.summary(guest.device, "second only", address);
-    const crossed = await new RelayClient(HOME, guest.device.signer).append(summary);
+    const crossed = await new RelayClient(RELAY, guest.device.signer).append(summary);
     expect(crossed.status).toBe(401);
     // A request signed for one circle's address never verifies at the other's.
     const signedForSecond = await new RelayClient(address, guest.device.signer).append(summary);
     expect(signedForSecond.status).toBe(201);
-    const replayed = await SELF.fetch(`${HOME}/v0/envelopes`, { method: "POST", headers: signedForSecond.request.headers, body: signedForSecond.request.body });
+    const replayed = await SELF.fetch(`${RELAY}/v0/envelopes`, { method: "POST", headers: signedForSecond.request.headers, body: signedForSecond.request.body });
     expect(replayed.status).toBe(401);
     // An invite of one circle admits nobody into the other.
     const [invitation] = await world.dinner(["cross"]);
     const { signed } = world.joinFor(invitation!);
-    const joinedHome = await new RelayClient(HOME, invitation!.invite).append(signed, { unsigned: true });
+    const joinedHome = await new RelayClient(RELAY, invitation!.invite).append(signed, { unsigned: true });
     expect(joinedHome.status).toBe(422);
     const homeLog = await env.DB.prepare("SELECT COUNT(*) AS n FROM envelopes WHERE hash = ?").bind(envelopeHash(summary.envelope)).first("n");
     expect(homeLog).toBe(0);
@@ -236,7 +226,7 @@ describe("two circles hosted by one relay", () => {
     const [homeInvite] = await home.dinner(["home-guest"]);
     const homeRead = await new RelayClient(RELAY, homeInvite!.invite).invite(homeInvite!.invite.key);
     expect(homeRead.status).toBe(200);
-    expect(homeRead.body).toMatchObject({ hash: homeInvite!.dinnerHash, circle: HOME });
+    expect(homeRead.body).toMatchObject({ hash: homeInvite!.dinnerHash, circle: addressOf(RELAY, TEST_ROOT) });
   });
 
   it("answers 410 circle_suspended at every route of a suspended circle, and serves it again once resumed", async () => {
@@ -246,7 +236,7 @@ describe("two circles hosted by one relay", () => {
       expect(result.status).toBe(410);
       expect((result.body as { code: string }).code).toBe("circle_suspended");
     }
-    expect((await home.client(HOME, home.host.device).circle()).status).toBe(200);
+    expect((await home.client(RELAY, home.host.device).circle()).status).toBe(200);
     await env.DB.prepare("UPDATE hosted_circles SET state = 'open' WHERE root = ?").bind(second.rootHash).run();
     expect((await client.circle()).status).toBe(200);
   });

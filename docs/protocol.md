@@ -110,17 +110,16 @@ them.
 }
 ```
 
-A `circle` is valid only as the circle root, and the hash of its envelope is the circle's address on
-each relay that hosts it (Hosted circles); any other `circle` envelope names a circle this one is
-not, and is refused `wrong_circle`. Its `host` is admitted by the message itself. `circle.name` is the circle's name and
+A `circle` is valid only as the circle root, and each relay is configured with the hash of its
+envelope; any other `circle` envelope names a circle this one is not, and is refused
+`wrong_circle`. Its `host` is admitted by the message itself. `circle.name` is the circle's name and
 is not blank. `guests` lists the circle's first guests exactly as a dinner does, admitted by their
 invite keys alone, and may be empty or absent: the founder invites everyone else later, with the
 admins' signed admission, in a dinner message. A circle root carries no date and no dinner.
 
 `admins` is the circle's own signer set, and every circle root names it: a non-empty list of
 `{ name, key }`, each key an ed25519 admin key, none twice. `digestif circle found` names the
-founder's: an admin key it makes for the circle and keeps in the keystore beside the circle's device
-key, or the one `--admin-key` names. Those admins, and not the
+founder's (the `public_key` of their `signer.json`, or `--admin-key`). Those admins, and not the
 release signers, sign every later invite's `digestif-admission-v0` and every change of their own set
 (Approvals), so the release signers never sign for, or learn who is in, a circle they are not in.
 Only a founding dinner is judged by the release signer set. The set may start from one key, its
@@ -141,8 +140,8 @@ admits nobody and its circle is founded again.
 ```
 
 A circle founded at a dinner has that **founding dinner** as its root instead of a `circle`: its
-`host` is admitted by the message itself, the hash of its envelope is the circle's address on each
-relay that hosts it, and it folds exactly as a circle root does, its label read as the circle's name. A relay has no
+`host` is admitted by the message itself, each relay is configured with the hash of its envelope,
+and it folds exactly as a circle root does, its label read as the circle's name. A relay has no
 root of its own. Any admitted member may write a later dinner, but after the circle's admission cutover a guest entry counts only
 when its `admission` is a `digestif-admission-v0` every key of the signer set signed (Approvals,
 below; The admission fold), so in practice the starting admin's node writes every dinner once the
@@ -1085,8 +1084,6 @@ mailing relay; every node reads every relay, so that is enough.
 
 The phone web app is the node's web UI built for a phone and served by the mailing relay under
 `/app/`, installable from the browser. It holds its own device key and never the recovery phrase.
-Its circle is that relay's home circle, which it reaches at the address `GET /v0/relay`'s `home`
-names (Hosted circles).
 
 1. The phone generates an Ed25519 signing keypair and an X25519 keypair in WebCrypto, keeps both
    non-extractable in IndexedDB, and shows a pairing code: `p1.<base64url of the 32-byte Ed25519
@@ -1155,18 +1152,17 @@ Three routes are the relay's own, outside every circle (and also answered under 
   "<time>"|null }`. `encryption_key` is the mailing relay's sealing key, present when `mailer` is
   true: a founding node writes the circle's `relay` message from it. `hosting` says whether the relay
   opens a new circle now. `home` is the home circle's root. `last_unprefixed_at` is the last request
-  on a circle route without a circle's address (below).
+  on an unprefixed circle route (below).
 - `GET /v0/invites/<invite key>`, the bootstrap read across every hosted circle: an invite key is
   random, so it names one open invite on the relay. The answer is the circle's own bootstrap read
   (Invites) with `circle`, the circle's address, beside the stored envelope; the guest's app reads
   and appends at that address from then on. An invite stays `<relay host>/<code>`.
 
 **The home circle** is the one the relay's `HOME_ROOT` names, the operator's own, which carries the
-relay's releases; a relay whose `HOME_ROOT` is unset reads its `CIRCLE_ROOT`. Like every circle's,
-its routes answer only under its address: a circle route without one answers `410 circle_moved`,
-whose message and `Location` header name the home circle's address, and the relay records the time
-of the last such request. A freshly deployed relay has no home: `home` is `null`, it hosts nothing,
-and a circle route without an address answers `404 circle_unknown`.
+relay's releases; a relay whose `HOME_ROOT` is unset reads its `CIRCLE_ROOT`. Its routes also answer
+unprefixed, the address every node used before relays hosted many circles, and the relay records the
+time of the last such request. A freshly deployed relay has no home: `home` is `null` and it hosts
+nothing.
 
 **Founding a circle on a relay.** A circle opens with its root's bootstrap append to `POST
 <base>/c/<root hex>/v0/envelopes`, and nothing else reaches an address no circle holds (`404

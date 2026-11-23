@@ -17,10 +17,9 @@ import { DEFAULT_LIMITS, type Relay } from "../src/env.ts";
 import { circle, page } from "../src/read.ts";
 import { releaseSignersOf } from "../src/signers.ts";
 import { StoreDatabase } from "../src/store.ts";
-import { HOME, relayExtras, TEST_ROOT } from "../test/root.ts";
+import { relayExtras, TEST_ROOT } from "../test/root.ts";
 
-// The home circle's address: every circle route answers only under it.
-const RELAY = HOME;
+const RELAY = "http://relay.test";
 const realFetch = globalThis.fetch;
 const bound: Env = env;
 

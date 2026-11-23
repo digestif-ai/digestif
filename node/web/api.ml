@@ -3244,9 +3244,8 @@ module Inbox = struct
      read; one this node cannot read, or retracted, is kept as unreadable. index_now runs inside a
      transaction the caller holds (the daily digest's); index holds its own. *)
   (* The approvals' own index and the items it files and settles (Approvals.sync_now, ISS-87806),
-     brought up with the Inbox's so an approval item reads as it stands; a GET opens what is new and
-     leaves the filing, settling and effects to the run loop and the writes (DIG-374). Set once
-     Approvals is defined below. *)
+     brought up with the Inbox's so an approval item reads as it stands; set once Approvals is
+     defined below. *)
   let sync_approvals : (ctx -> unit) ref = ref (fun _ -> ())
 
   (* One pass: every envelope not indexed yet opened, every follow-up not decided yet decided, and,
@@ -6769,12 +6768,8 @@ module Approvals = struct
               (A.answers (log c) a.hash))
     | Some _ -> false
 
-  (* Every open approval's end recorded, its Inbox item filed or settled, and its effect taken: work
-     that grows with the approvals still open and whose effects read the keystore and write the log,
-     so it is the run loop's (keep_up, after every sync) and a write's, never a GET's. A page opens
-     what is new and reads each approval's progress as it folds now, and its item settles on the
-     next of those passes (DIG-374, as DIG-236 leaves a fold change to them). *)
-  let settle_open c =
+  let sync_now c =
+    index_now c;
     let j = judge c in
     List.iter
       (fun (a : A.row) ->
@@ -6786,10 +6781,6 @@ module Approvals = struct
         file_item c a p;
         take_effect c a p)
       (List.filter (open_ c) (A.unsettled (log c)))
-
-  let sync_now c =
-    index_now c;
-    if c.upkeep_waits then settle_open c
 
   let sync c = upkeep c (fun () -> sync_now c)
   let found c id = Option.map (fun a -> (a, progress c a)) (A.find (log c) id)

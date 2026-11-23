@@ -14,7 +14,6 @@ export type ErrorCode =
   | "mail_failed"
   | "circle_unknown"
   | "circle_suspended"
-  | "circle_moved"
   | "moving"
   | "not_vouched"
   | "not_hosting"
@@ -47,15 +46,6 @@ export class Refusal extends Error {
  */
 export function moving(): Refusal {
   return new Refusal(503, "moving", "this circle is moving into its own store; retry in a few seconds", { "retry-after": "5" });
-}
-
-/**
- * A circle route reached without a circle's address (docs/protocol.md, Hosted circles): the home
- * circle's routes live only at [address] now, which the answer names in its message and its
- * Location header.
- */
-export function circleMoved(address: string): Refusal {
-  return new Refusal(410, "circle_moved", `this circle's routes are at ${address}`, { location: address });
 }
 
 /** A write the home circle's moved-tables triggers aborted (migrations/0006_hosted_circles.sql). */

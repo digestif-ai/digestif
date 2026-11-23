@@ -1,8 +1,8 @@
 // The Digestif relay: a Cloudflare Worker implementing spec/digestif-relay.json, hosting many circles
 // (docs/protocol.md, Hosted circles). Each circle's routes live at its address, /c/<root hex>: the
 // core routes, the mailer routes (/v0/mail, /v0/links, on the relay whose MAILER is "1"; 404
-// not_mailer elsewhere) and its own bootstrap read. A circle route without a circle's address
-// answers 410 circle_moved naming the home circle's. Three routes are the relay's own: the unsigned GET /v0/version and GET /v0/relay, and
+// not_mailer elsewhere) and its own bootstrap read. The home circle answers the same routes
+// unprefixed. Three routes are the relay's own: the unsigned GET /v0/version and GET /v0/relay, and
 // the bootstrap read GET /v0/invites/<invite key> across every circle. Beside them, the phone app
 // under /app/ and, on the relay whose SITE_HOST names the circle's bare domain, the hosted install
 // script at that domain's /install.sh (src/install.ts).
@@ -13,7 +13,7 @@ import { addressOf, baseOf, checkState, circlePath, databaseFor, found, homeRow,
 import { ensureCircle } from "./db.ts";
 import { INSTALL_PATH, installScript } from "./install.ts";
 import { ConfigError, homeOf, hostingOf, limitsOf, mailerOf, type HostingLimits, type Relay } from "./env.ts";
-import { circleMoved, empty, isMovingAbort, json, moving, Refusal } from "./errors.ts";
+import { empty, isMovingAbort, json, moving, Refusal } from "./errors.ts";
 import { confirmLink, linkPage } from "./links.ts";
 import { mail } from "./mail.ts";
 import { circle, invite, page } from "./read.ts";
@@ -150,10 +150,10 @@ async function serve(request: Request, env: Env): Promise<Response> {
     return circleRequest(context, scoped.root, scoped.rest);
   }
   if (request.method === "GET" && path.startsWith(INVITES) && path.length > INVITES.length) return inviteAnywhere(context, decodePath(path.slice(INVITES.length)));
-  // A circle route without a circle's address: the home circle's routes live only under its address.
+  // An unprefixed route: the home circle's, at the address every node used before relays hosted many circles.
   if (context.home === null) throw new Refusal(404, "circle_unknown", "this relay has no home circle: a circle's routes are under /c/<the 64 hex digits of its root>");
   await recordUnprefixed(env.DB, context.now);
-  throw circleMoved(addressOf(baseOf(env, url), context.home));
+  return circleRequest(context, context.home, path);
 }
 
 export default {

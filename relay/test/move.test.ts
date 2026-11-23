@@ -15,7 +15,7 @@ import { circleEpoch, ENVELOPE_COLUMNS, foldLog, forgetKeptFold, keyJson, loadKe
 import { beginMove, moveState, moveStep } from "../src/move.ts";
 import { circleDatabase, type CircleStore } from "../src/store.ts";
 import { RELAY } from "./helpers.ts";
-import { HOME, TEST_ROOT } from "./root.ts";
+import { TEST_ROOT } from "./root.ts";
 
 const realFetch = globalThis.fetch;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -50,7 +50,7 @@ async function rows(db: D1Database, table: string, order: string): Promise<unkno
 
 /** A summary by the member, appended at the home circle's unprefixed address. */
 async function summary(text: string): Promise<{ status: number; body: unknown; text: string }> {
-  return world.client(HOME, member.device).append(await world.summary(member.device, text));
+  return world.client(RELAY, member.device).append(await world.summary(member.device, text));
 }
 
 beforeAll(async () => {
@@ -62,11 +62,11 @@ beforeAll(async () => {
   };
   world = new World(
     { hostIdentity: Signer.fromSeed(circleFile.host_identity_seed), hostDevice: Signer.fromSeed(circleFile.host_device_seed), root: circleFile.root as SignedEnvelope, rootHash: circleFile.root_hash },
-    [HOME],
+    [RELAY],
   );
   await world.setup();
   [member] = (await world.members(["mover", "stayer"])) as [Member, Member];
-  for (let i = 0; i < 12; i++) await world.publish([HOME], member.device, await world.summary(member.device, `before the move ${i}`));
+  for (let i = 0; i < 12; i++) await world.publish([RELAY], member.device, await world.summary(member.device, `before the move ${i}`));
 });
 
 afterAll(() => {
@@ -137,10 +137,10 @@ describe("the home circle's move into its store", () => {
   });
 
   it("answers an append 503 moving while the copy drains, and keeps answering reads from D1", async () => {
-    const refused = await world.client(HOME, member.device).append(await world.summary(member.device, "during the drain"));
+    const refused = await world.client(RELAY, member.device).append(await world.summary(member.device, "during the drain"));
     expect(refused.status).toBe(503);
     expect((refused.body as { code: string }).code).toBe("moving");
-    expect((await world.client(HOME, member.device).circle()).status).toBe(200);
+    expect((await world.client(RELAY, member.device).circle()).status).toBe(200);
     // A write that reaches D1's tables behind the router's back is refused by D1 itself.
     await expect(env.DB.prepare("INSERT INTO mailed_digests (digest, sent_at) VALUES ('x', 'y')").run()).rejects.toThrow(/circle_moving/);
   });
@@ -163,11 +163,11 @@ describe("the home circle's move into its store", () => {
     expect(await circleEpoch(object)).toBe(fold.epoch);
 
     const held = (await env.DB.prepare("SELECT MAX(relay_id) AS last FROM envelopes").first<{ last: number }>())!.last;
-    const next = await world.client(HOME, member.device).append(await world.summary(member.device, "after the move"));
+    const next = await world.client(RELAY, member.device).append(await world.summary(member.device, "after the move"));
     expect(next.status, next.text).toBe(201);
     expect((next.body as { relay_id: number }).relay_id).toBe(held + 1);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM envelopes WHERE relay_id > ?").bind(held).first("n")).toBe(0);
-    const page = await world.client(HOME, member.device).fetchAll();
+    const page = await world.client(RELAY, member.device).fetchAll();
     expect(page.map((e) => e.relay_id)).toEqual([...page.map((e) => e.relay_id)].sort((a, b) => a - b));
     expect(page[page.length - 1]?.relay_id).toBe(held + 1);
   });

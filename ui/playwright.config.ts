@@ -1,22 +1,4 @@
-import { mkdirSync } from 'node:fs';
 import { defineConfig, devices } from '@playwright/test';
-
-/**
- * On a Fly builder the fleet names a directory here (devops Chromium_net_log, ISS-114501): Chromium
- * writes its net log into it, one file per worker process, and the test ledger reads what its
- * network-change notifier saw beside a net::ERR_NETWORK_CHANGED failure. A log keeps its newest
- * 20 MB, a few specs' worth: a failure ends its worker's browser, so the newest events are the ones
- * around it, and an unbounded log runs to gigabytes over a suite.
- */
-const NET_LOG_DIR = process.env['DEV_CHROMIUM_NET_LOG_DIR'];
-if (NET_LOG_DIR) mkdirSync(NET_LOG_DIR, { recursive: true });
-const netLog = NET_LOG_DIR
-  ? {
-      launchOptions: {
-        args: [`--log-net-log=${NET_LOG_DIR}/${String(process.pid)}-${String(Date.now())}.json`, '--net-log-max-size-mb=20']
-      }
-    }
-  : {};
 
 /** The suite drives `vite dev` against the mock node; PORT picks a free port on a shared machine. */
 const PORT = Number(process.env['PORT'] ?? '5391');
@@ -40,8 +22,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:' + String(PORT),
     trace: 'retain-on-failure',
-    ...(AGAINST_NODE ? { storageState: 'playwright/.auth/node.json' } : {}),
-    ...netLog
+    ...(AGAINST_NODE ? { storageState: 'playwright/.auth/node.json' } : {})
   },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },

@@ -38,8 +38,8 @@ the fold's import graph ever reaches a Node built-in.
 
 ## Running against a relay
 
-A relay under test hosts the test circle as its home circle: its `HOME_ROOT` is the test circle's
-root hash (Hosted circles, in `docs/protocol.md`):
+A relay under test is configured with the test circle's root hash, the way a real relay is configured
+with its circle's:
 
 ```sh
 node conformance/bin/digestif-conformance.ts circle show

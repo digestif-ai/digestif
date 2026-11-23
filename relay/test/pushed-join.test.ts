@@ -3,7 +3,7 @@
 // guest's own unsigned append is judged at that clock and refused, the same join pushed by an
 // admitted member's device is judged by its created_at and accepted, and a refold replays it at the
 // clock it was judged at. append() is called directly so the relay's clock can be chosen.
-import { HOME, relayExtras, TEST_ROOT } from "./root.ts";
+import { relayExtras, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { jcs } from "../../conformance/src/encoding.ts";
@@ -18,8 +18,7 @@ import { releaseSignersOf } from "../src/signers.ts";
 import { DEFAULT_LIMITS, type Relay } from "../src/env.ts";
 import { Refusal } from "../src/errors.ts";
 
-// The home circle's address: every circle route answers only under it.
-const RELAY = HOME;
+const RELAY = "http://relay.test";
 const DAY_MS = 24 * 3600 * 1000;
 const realFetch = globalThis.fetch;
 

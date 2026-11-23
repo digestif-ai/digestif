@@ -11870,8 +11870,6 @@ let approvals () =
   (* A decline ends one; nothing else counts after it. *)
   let _, two = call ~meth:"POST" ~body:invite_form "approvals" in
   pia_answers (s "id" two) Approval.Decline;
-  (* The run loop's pass after the sync settles its item (DIG-374); a GET leaves that to it. *)
-  keep_up n;
   let _, two = call ("items/" ^ s "item" two) in
   Alcotest.(check string)
     "declined" "declined"
@@ -12047,117 +12045,6 @@ let approvals () =
 (* ISS-88476: a reply joins the notice it answers and is new activity for whoever it names or who
    answered it; an archived item comes back on it; Waiting on names each member who has not answered;
    the member's own question closed by the clock is New again, out of the Archive. *)
-(* DIG-374: an Inbox item read stays off the approvals' upkeep. Signed invites whose effect this node
-   still owes (the last signature arrived by sync) are the run loop's to take (Api.keep_up) and a
-   write's: a GET of an item takes none of them and reads no invite secret from the keystore, and
-   settles no approval at all, so its cost does not grow with the approvals still open. *)
-let item_read_leaves_approval_effects () =
-  let reads = ref 0 in
-  let counting =
-    let m = Keystore.memory () in
-    {
-      m with
-      get =
-        (fun name ->
-          if String.starts_with ~prefix:"invite:" name then incr reads;
-          m.get name);
-    }
-  in
-  let n = Node.open_ ~keystore:counting (tmpdir ()) in
-  Store.init n.log;
-  ok (Demo.seed n);
-  let c = session n in
-  let call = call n c in
-  let my_raw =
-    raw_key (Keys.encryption_public (Result.get_ok (Node.encryption_key n)))
-  in
-  Log.add_relay n.log "https://relay-1.example";
-  let pia = join_peer n "Pia Gale" in
-  let rk_ada = Crypto.generate_signing_key ()
-  and rk_pia = Crypto.generate_signing_key () in
-  Digestif_update.State.save
-    (Digestif_update.Schedule.state_path n.Node.dir)
-    {
-      (Digestif_update.State.initial ()) with
-      trust =
-        {
-          signers =
-            [
-              { name = "Ada Park"; key = Keys.public rk_ada };
-              { name = "Pia Gale"; key = Keys.public rk_pia };
-            ];
-          revoked = [];
-        };
-    };
-  let doc j = ok (B64url.decode (s "document" j)) in
-  let release_sig k d = Keys.sign k (Approval.domain Invite ^ d) in
-  let invite i =
-    let _, inv =
-      call ~meth:"POST"
-        ~body:
-          (`Assoc
-             [
-               ("kind", `String "invite");
-               ( "to",
-                 `String (Printf.sprintf "Guest %d <guest%d@example.com>" i i)
-               );
-               ("email_subject", `String "Join the circle on Digestif");
-               ( "email_body",
-                 `String "Hi,\n\n{{install_command}}\n{{expires_at}}\n\nAda" );
-             ])
-        "approvals"
-    in
-    let id = s "id" inv in
-    let st, _ =
-      call ~meth:"POST"
-        ~body:
-          (`Assoc
-             [
-               ("key", `String (Keys.public rk_ada));
-               ("signature", `String (release_sig rk_ada (doc inv)));
-             ])
-        ("approvals/" ^ id ^ "/signatures")
-    in
-    Alcotest.(check int) "Ada signs" 200 st;
-    (id, s "item" inv, doc inv)
-  in
-  let invites = List.init 4 invite in
-  (* Pia's signatures arrive from her node, as a sync brings them: each invite is signed, and its
-     effect (the dinner this node writes) is still owed. *)
-  List.iter
-    (fun (id, _, d) ->
-      ignore
-        (peer_write n pia "approval_answer"
-           (`Assoc
-              [
-                ("approval", `String id);
-                ( "sealed",
-                  Item.seal
-                    ~keys:[ my_raw; pia.p_enc.public ]
-                    (Approval.reply_to_json
-                       (Signature
-                          {
-                            key = Keys.public rk_pia;
-                            signature = release_sig rk_pia d;
-                            completes = None;
-                          })) );
-              ])))
-    invites;
-  let effected id = (Option.get (Store.Approvals.find n.log id)).effected_at in
-  let _, item, _ = List.hd invites in
-  reads := 0;
-  let st, _ = call ("items/" ^ item) in
-  Alcotest.(check int) "the item reads" 200 st;
-  Alcotest.(check int) "no invite secret read" 0 !reads;
-  Alcotest.(check bool)
-    "no effect taken by the read" true
-    (List.for_all (fun (id, _, _) -> effected id = None) invites);
-  (* The run loop's pass after the sync takes every effect. *)
-  keep_up n;
-  Alcotest.(check bool)
-    "the run loop takes them" true
-    (List.for_all (fun (id, _, _) -> effected id <> None) invites)
-
 let inbox_replies_waiting_and_the_clock () =
   let n = demo () in
   let c = session n in
@@ -14848,8 +14735,6 @@ let () =
           Alcotest.test_case "the Inbox: a read racing a send" `Quick
             inbox_send_raced_by_a_read;
           Alcotest.test_case "approvals" `Quick approvals;
-          Alcotest.test_case "an item read leaves approval effects" `Quick
-            item_read_leaves_approval_effects;
           Alcotest.test_case "the Inbox: delivery and statuses" `Quick
             inbox_delivery_and_statuses;
           Alcotest.test_case "the Inbox: replies, Waiting on and the clock"

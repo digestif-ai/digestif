@@ -4,7 +4,7 @@
 // fake Resend endpoint received. Conformance cases cannot cover these routes black-box (a real
 // relay would email, and the suite cannot hold the relay's sealing key), so this file is their
 // test.
-import { HOME, relayExtras, TEST_ROOT } from "./root.ts";
+import { relayExtras, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { jcs } from "../../conformance/src/encoding.ts";
@@ -46,7 +46,7 @@ const BEHAVIOR: ChoiceSpec = {
 
 function post(signer: Author | Member, body: string, options: SignOptions = {}): Promise<HttpResult> {
   const author = "device" in signer ? signer.device : signer;
-  return world.client(ADDRESS, author).send("POST", "/v0/mail", body, options);
+  return world.client(RELAY, author).send("POST", "/v0/mail", body, options);
 }
 
 async function mailed(): Promise<number> {
@@ -54,7 +54,7 @@ async function mailed(): Promise<number> {
 }
 
 async function decisionsHeld(): Promise<StoredEnvelope[]> {
-  const all = await world.client(ADDRESS, mike.device).fetchAll();
+  const all = await world.client(RELAY, mike.device).fetchAll();
   return all.filter((s) => s.envelope.kind === "decision");
 }
 
@@ -71,7 +71,7 @@ function linkUrlOf(digest: Digest, label: string): string {
 }
 
 /** The test circle's address on the relay under test: what its answer links name. */
-const ADDRESS = HOME;
+const ADDRESS = `${RELAY}/c/${TEST_ROOT.slice("sha256:".length)}`;
 
 async function confirm(url: string, secret?: string): Promise<string> {
   const target = new URL(url);
@@ -101,7 +101,7 @@ beforeAll(async () => {
     root: circleFile.root as SignedEnvelope,
     rootHash: circleFile.root_hash,
   };
-  world = new World(circle, [ADDRESS]);
+  world = new World(circle, [RELAY]);
   await world.setup();
   [mike, ada] = (await world.members(["mike", "ada"])) as [Member, Member];
   mailKey = await world.addDevice(mike, "mail");
@@ -284,7 +284,7 @@ describe("GET /v0/links/:id", () => {
 
   it("renders a page for an unknown link, a wrong secret and a missing one", async () => {
     const url = new URL(linkUrlOf(digest, "Not now"));
-    expect(await page(`${ADDRESS}/v0/links/${"A".repeat(22)}?s=${url.searchParams.get("s")!}`)).toContain("Unknown link");
+    expect(await page(`${RELAY}/v0/links/${"A".repeat(22)}?s=${url.searchParams.get("s")!}`)).toContain("Unknown link");
     expect(await page(`${RELAY}${url.pathname}?s=${"B".repeat(43)}`)).toContain("Link incomplete");
     expect(await page(`${RELAY}${url.pathname}?s=not*base64url`)).toContain("Link incomplete");
     expect(await page(`${RELAY}${url.pathname}`)).toContain("Link incomplete");
@@ -320,7 +320,7 @@ describe("GET /v0/links/:id", () => {
     const item = await node.choice(BEHAVIOR);
     const digest = await node.digest([{ hash: item, spec: BEHAVIOR }], { mailKey });
     expect((await post(mike, await node.mailRequest(digest))).status).toBe(202);
-    await world.post(mike.device, "", [ADDRESS], "decision", { ask: item, sealed: `conformance pick ${world.tag}` });
+    await world.post(mike.device, "", [RELAY], "decision", { ask: item, sealed: `conformance pick ${world.tag}` });
     expect(await page(linkUrlOf(digest, "Not now"))).toContain(">Confirm<");
   });
 
@@ -382,7 +382,7 @@ describe("POST /v0/links/:id", () => {
     const before = (await decisionsHeld()).length;
     expect(await confirm(linkUrlOf(digest, "Not now"), "C".repeat(43))).toContain("Link incomplete");
     expect(await confirm(linkUrlOf(digest, "Not now"), "")).toContain("Link incomplete");
-    expect(await confirm(`${ADDRESS}/v0/links/${"D".repeat(22)}?s=x`)).toContain("Unknown link");
+    expect(await confirm(`${RELAY}/v0/links/${"D".repeat(22)}?s=x`)).toContain("Unknown link");
     expect(await decisionsHeld()).toHaveLength(before);
     expect(await countRows(env.DB, "links", "ask = ? AND used_at IS NULL", item)).toBe(2);
   });
@@ -441,8 +441,8 @@ describe("POST /v0/links/:id", () => {
     const item = await boNode.choice(BEHAVIOR);
     const digest = await boNode.digest([{ hash: item, spec: BEHAVIOR }], { mailKey: boMail });
     expect((await post(bo, await boNode.mailRequest(digest))).status).toBe(202);
-    const revoke = await world.revoke(bo.device, bo.identity, boMail.key, [], ADDRESS, undefined, { [boMail.key]: [] });
-    await world.publish([ADDRESS], bo.device, revoke);
+    const revoke = await world.revoke(bo.device, bo.identity, boMail.key, [], RELAY, undefined, { [boMail.key]: [] });
+    await world.publish([RELAY], bo.device, revoke);
     const before = (await decisionsHeld()).length;
     expect(await confirm(linkUrlOf(digest, "Install"))).toContain("not_admitted");
     expect(await decisionsHeld()).toHaveLength(before);

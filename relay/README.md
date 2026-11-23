@@ -5,8 +5,8 @@ implements [spec/digestif-relay.json](../spec/digestif-relay.json) and the relay
 [docs/protocol.md](../docs/protocol.md), and passes the relay cases of the suite in
 [conformance/](../conformance). One deployment hosts many circles, each at its own address,
 `<base>/c/<the 64 hex digits of its root>` (docs/protocol.md, Hosted circles). Its home circle,
-`HOME_ROOT`, is its operator's own, and a circle route without an address answers `410 circle_moved`
-naming the home circle's; a freshly deployed relay has none and hosts nothing. Every other circle opens with its root's bootstrap append, vouched
+`HOME_ROOT`, is its operator's own and also answers every circle route unprefixed; a freshly deployed
+relay has none and hosts nothing. Every other circle opens with its root's bootstrap append, vouched
 for by a member of a circle the relay already hosts.
 
 The relay's own routes, outside every circle:
@@ -14,10 +14,10 @@ The relay's own routes, outside every circle:
 | Route | What it does |
 |---|---|
 | `GET /v0/version` | Unsigned: `relay_version` alone, the same value `GET /v0/circle` reports (`{}` when unstamped), so anyone can read which release a relay runs. |
-| `GET /v0/relay` | Unsigned: `relay_version`, `mailer` and the mailer's `encryption_key`, `hosting` (whether it opens a new circle now), `home` (the home circle's root, `null` with none) and `last_unprefixed_at`, the last request on a circle route without a circle's address. |
+| `GET /v0/relay` | Unsigned: `relay_version`, `mailer` and the mailer's `encryption_key`, `hosting` (whether it opens a new circle now), `home` (the home circle's root, `null` with none) and `last_unprefixed_at`, the last request on an unprefixed circle route. |
 | `GET /v0/invites/:invite_key` | The bootstrap read across every hosted circle: the dinner listing an open invite, to the invite key alone, with `circle`, the address of the circle it opens. |
 
-Each circle's routes, under its address and nowhere else:
+Each circle's routes, under its address (and unprefixed for the home circle):
 
 | Route | What it does |
 |---|---|
@@ -31,9 +31,8 @@ Each circle's routes, under its address and nowhere else:
 | `/app/` | The phone app: static assets from `app/`, `index.html` for any path the build has no file for. |
 
 The three mailer routes answer `404 not_mailer` on a relay whose `MAILER` is not `"1"`. A circle the
-relay does not host answers `404 circle_unknown`, a circle route without an address `410 circle_moved`
-(its message and `Location` header naming the home circle's address), a suspended one `410
-circle_suspended` at every route, and the home circle answers a write `503 moving` (`Retry-After: 5`) for the seconds its move
+relay does not host answers `404 circle_unknown`, a suspended one `410 circle_suspended` at every
+route, and the home circle answers a write `503 moving` (`Retry-After: 5`) for the seconds its move
 into its store drains ("Each circle's store").
 
 ## Layout
@@ -74,7 +73,7 @@ Worker variables, in `wrangler.jsonc` (`vars`) or per deployment with `wrangler 
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `HOME_ROOT` | `sha256:<hex>` of the home circle's root (a circle, or a founding dinner): the operator's own circle, which carries the relay's releases, needs no voucher and is the address an unprefixed circle route names. Left unset by the setup below; `digestif circle found --relay` sets it, and every deploy keeps it. | unset: no home |
+| `HOME_ROOT` | `sha256:<hex>` of the home circle's root (a circle, or a founding dinner): the operator's own circle, which carries the relay's releases, needs no voucher and answers the unprefixed routes. Left unset by the setup below; `digestif circle found --relay` sets it, and every deploy keeps it. | unset: no home |
 | `CIRCLE_ROOT` | The home circle while `HOME_ROOT` is unset, as a deployment configured before relays hosted many circles names it. | the conformance test circle's root, at the top level only |
 | `HOSTING` | `"off"` (or `"0"`) stops the relay opening new circles: a founding answers `403 not_hosting`. | on |
 | `RELAY_STORAGE` | Bytes every hosted circle's reserved `CIRCLE_STORAGE` must fit in together: a founding past it answers `507 relay_full`. Under the Workers Free plan's 5 GB of Durable Object storage. | 4294967296 (4 GiB) |

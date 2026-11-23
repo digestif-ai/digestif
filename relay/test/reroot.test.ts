@@ -15,8 +15,7 @@ async function wranglerOutput(): Promise<string> {
   return JSON.stringify([{ results, success: true, meta: { duration: 1 } }], null, 2);
 }
 
-// The circle's own address: CIRCLE_ROOT names the home circle, whose routes answer only there.
-const getCircle = (root: string) => worker.fetch(new Request(`http://relay.test/c/${root.slice("sha256:".length)}/v0/circle`), { ...env, CIRCLE_ROOT: root });
+const getCircle = (root: string) => worker.fetch(new Request("http://relay.test/v0/circle"), { ...env, CIRCLE_ROOT: root });
 
 describe("re-rooting a database", () => {
   beforeEach(async () => {

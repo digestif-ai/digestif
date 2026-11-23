@@ -190,10 +190,6 @@
           "description": "The relay's operator suspended this circle: every route of it answers 410 until it is resumed."
         },
         {
-          "name": "circle_moved",
-          "description": "A circle route reached without a circle's address: every circle route answers only under <base>/c/<root hex>. The message and the Location header name the home circle's address."
-        },
-        {
           "name": "moving",
           "description": "The home circle's log is moving into its own store: a write is refused for a few seconds; retry after Retry-After."
         },
@@ -475,7 +471,7 @@
         {
           "name": "root",
           "type": "string",
-          "description": "sha256:<hex> of the root of the circle at the address this GET /v0/circle was made to: its circle envelope, or the dinner that founded it."
+          "description": "sha256:<hex> of the circle root this relay is configured with: its circle envelope, or the dinner that founded it."
         },
         {
           "name": "epoch",
@@ -705,7 +701,7 @@
           "name": "last_unprefixed_at",
           "type": "date-time-iso8601",
           "required": false,
-          "description": "The last request on a circle route without a circle's address, which answers 410 circle_moved; null when none has arrived since the relay hosted many circles."
+          "description": "The last request on an unprefixed circle route, which only the home circle answers; null when none has arrived since the relay hosted many circles."
         }
       ]
     }
@@ -748,7 +744,7 @@
             },
             "410": {
               "type": "relay_error",
-              "description": "circle_suspended, or circle_moved at a path without a circle's address."
+              "description": "circle_suspended."
             },
             "503": {
               "type": "relay_error",

@@ -1,5 +1,5 @@
 // The Worker's surface before any envelope: routes, error shapes, and the shared crypto in workerd.
-import { HOME, TEST_ROOT } from "./root.ts";
+import { TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { envelopeHash, verifyEnvelope, type SignedEnvelope } from "../../conformance/src/envelope.ts";
@@ -17,13 +17,13 @@ describe("the shared conformance modules under nodejs_compat", () => {
 
 describe("routes", () => {
   it("answers 401 not_admitted to an unsigned GET /v0/circle", async () => {
-    const response = await SELF.fetch(`${HOME}/v0/circle`);
+    const response = await SELF.fetch("http://relay.test/v0/circle");
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ code: "not_admitted" });
   });
 
   it("answers 401 not_admitted to an unsigned GET /v0/envelopes", async () => {
-    const response = await SELF.fetch(`${HOME}/v0/envelopes?after=0`);
+    const response = await SELF.fetch("http://relay.test/v0/envelopes?after=0");
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ code: "not_admitted" });
   });
@@ -35,7 +35,7 @@ describe("routes", () => {
       ["DELETE", "/v0/envelopes"],
       ["GET", "/v0/invites/"],
     ]) {
-      const response = await SELF.fetch(`${HOME}${path}`, { method });
+      const response = await SELF.fetch(`http://relay.test${path}`, { method });
       expect(response.status, `${method} ${path}`).toBe(404);
       expect(await response.json()).toMatchObject({ code: "malformed" });
     }
@@ -43,7 +43,7 @@ describe("routes", () => {
 
   it("answers 400 malformed to a path whose escape decodes to nothing", async () => {
     for (const path of ["/v0/invites/%E0%A4%A", "/v0/links/%zz?s=def"]) {
-      const response = await SELF.fetch(`${HOME}${path}`);
+      const response = await SELF.fetch(`http://relay.test${path}`);
       expect(response.status, path).toBe(400);
       expect(await response.json()).toMatchObject({ code: "malformed" });
     }
@@ -56,7 +56,7 @@ describe("routes", () => {
         ["GET", "/v0/links/abc?s=def"],
         ["POST", "/v0/links/abc"],
       ]) {
-        const response = await worker.fetch(new Request(`${HOME}${path}`, { method }), { ...env, MAILER: mailer });
+        const response = await worker.fetch(new Request(`http://relay.test${path}`, { method }), { ...env, MAILER: mailer });
         expect(response.status, `${method} ${path} with MAILER ${String(mailer)}`).toBe(404);
         expect(await response.json()).toMatchObject({ code: "not_mailer" });
       }
@@ -65,14 +65,14 @@ describe("routes", () => {
 
   it("answers 500 when MAILER is on without its secrets", async () => {
     for (const missing of ["RELAY_SEALING_KEY", "RESEND_API_KEY"]) {
-      const response = await worker.fetch(new Request(`${HOME}/v0/links/abc?s=def`), { ...env, [missing]: undefined });
+      const response = await worker.fetch(new Request("http://relay.test/v0/links/abc?s=def"), { ...env, [missing]: undefined });
       expect(response.status, missing).toBe(500);
       expect(await response.text()).toContain(missing);
     }
   });
 
   it("writes the circle row from CIRCLE_ROOT on first use", async () => {
-    await SELF.fetch(`${HOME}/v0/circle`);
+    await SELF.fetch("http://relay.test/v0/circle");
     const row = await env.DB.prepare("SELECT root, epoch FROM circle WHERE id = 1").first<{ root: string; epoch: number }>();
     expect(row).toEqual({ root: TEST_ROOT, epoch: 0 });
   });

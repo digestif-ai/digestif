@@ -44,7 +44,6 @@ export enum ErrorCode {
   UnknownDigest = 'unknown_digest',
   CircleUnknown = 'circle_unknown',
   CircleSuspended = 'circle_suspended',
-  CircleMoved = 'circle_moved',
   Moving = 'moving',
   NotVouched = 'not_vouched',
   NotHosting = 'not_hosting',
@@ -157,7 +156,7 @@ export interface ApprovalAnswer {
 }
 
 export interface Circle {
-  /** sha256:<hex> of the root of the circle at the address this GET /v0/circle was made to: its circle envelope, or the dinner that founded it. */
+  /** sha256:<hex> of the circle root this relay is configured with: its circle envelope, or the dinner that founded it. */
   root: string;
   /** The current epoch by this relay's fold. */
   epoch: number;
@@ -248,7 +247,7 @@ export interface RelayInfo {
   hosting: boolean;
   /** The home circle's root, sha256:<hex>; absent or null on a relay with no home, which hosts nothing. */
   home?: string;
-  /** The last request on a circle route without a circle's address, which answers 410 circle_moved; null when none has arrived since the relay hosted many circles. */
+  /** The last request on an unprefixed circle route, which only the home circle answers; null when none has arrived since the relay hosted many circles. */
   last_unprefixed_at?: ISODateTimeString;
 }
 
