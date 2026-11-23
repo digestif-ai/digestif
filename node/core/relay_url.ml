@@ -58,3 +58,75 @@ let from_circle url =
       match ipv4 host with
       | Some ab -> not (private_ipv4 ab)
       | None -> not (local_name host))
+
+(* A circle's address on a relay that hosts many circles (docs/protocol.md, Hosted circles):
+   <base>/c/<root hex>, where the root hex is the 64 hex digits of its root hash. A root's relays
+   name each relay's base url; a node keeps the address as its relay url. *)
+
+let root_hex root =
+  if String.starts_with ~prefix:Keys.sha256_prefix root then
+    String.sub root
+      (String.length Keys.sha256_prefix)
+      (String.length root - String.length Keys.sha256_prefix)
+  else root
+
+let strip_slash u =
+  if String.length u > 1 && String.ends_with ~suffix:"/" u then
+    String.sub u 0 (String.length u - 1)
+  else u
+
+let is_hex64 s =
+  String.length s = 64
+  && String.for_all
+       (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
+       s
+
+(* The base url and root an address names, or None for a url that names no circle (a base url, the
+   address every node used before relays hosted many circles). *)
+let split_address url =
+  let url = strip_slash url in
+  let n = String.length url in
+  if n < 68 then None
+  else
+    let hex = String.sub url (n - 64) 64 in
+    if String.sub url (n - 67) 3 = "/c/" && is_hex64 hex then
+      Some (String.sub url 0 (n - 67), Keys.sha256_prefix ^ hex)
+    else None
+
+(* The relay's base url, whether [url] is a base url or a circle's address there. *)
+let base_of url =
+  match split_address url with Some (b, _) -> b | None -> strip_slash url
+
+(* The address of the circle [root] on the relay at [base]; a [base] that already names a circle's
+   address is taken from its base url, so the answer never nests two. *)
+let address ~base ~root = base_of base ^ "/c/" ^ root_hex root
+
+(* The host a voucher names: the authority of the base url as the founding node addresses it,
+   host and port, as a URL's host reads. *)
+let voucher_host url =
+  let url = base_of url in
+  let rest =
+    match String.index_opt url ':' with
+    | Some i when i + 3 <= String.length url && String.sub url i 3 = "://" ->
+        String.sub url (i + 3) (String.length url - i - 3)
+    | _ -> url
+  in
+  let authority =
+    match String.index_opt rest '/' with
+    | Some i -> String.sub rest 0 i
+    | None -> rest
+  in
+  let authority = String.lowercase_ascii authority in
+  (* A URL's host leaves out the scheme's default port. *)
+  let drop suffix s =
+    if String.ends_with ~suffix s then
+      String.sub s 0 (String.length s - String.length suffix)
+    else s
+  in
+  if String.starts_with ~prefix:"https://" url then drop ":443" authority
+  else drop ":80" authority
+
+(* A root's short form on every screen: its first 12 hex digits (docs/design.md, Circles). *)
+let short_root root =
+  let hex = root_hex root in
+  if String.length hex <= 12 then hex else String.sub hex 0 12

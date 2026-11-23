@@ -1148,13 +1148,32 @@ let ask q =
   flush stdout;
   Option.value (In_channel.input_line stdin) ~default:""
 
-let on_node f =
-  match
-    Approve.with_node ~transport:Relay_client.curl
-      ~data_dir:(Node.default_dir ()) f
-  with
+let on_node ?(data_dir = Node.default_dir ()) f =
+  match Approve.with_node ~transport:Relay_client.curl ~data_dir f with
   | Ok () -> 0
   | Error e -> exit_err e
+
+(* The circle approve acts in: --circle ID, the folder under ~/digestif, else the default node. *)
+let approve_circle =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "circle" ] ~docv:"ID"
+        ~doc:
+          "The circle whose approval to sign: its id under ~/digestif \
+           (digestif circle list names each). Defaults to the default node.")
+
+let circle_dir = function
+  | None -> Ok (Node.default_dir ())
+  | Some id -> Circles.dir id
+
+(* The circle's own admin key, which digestif circle found made and keeps in the keystore beside the
+   circle's device key: an admin signs that circle's admissions with it, no phrase and no signer.json
+   needed (docs/design.md, Admins of each circle). *)
+let circle_admin_key data_dir =
+  match Keystore.get_signing_key (Keystore.default ~scope:data_dir) "admin" with
+  | Ok (Some k) -> Some k
+  | _ -> None
 
 (* The release key, read the way sign --next reads it (Sign_next.key_reader): the command
    signer.json names, else a hidden prompt on a terminal; into memory only. A key that is not
@@ -1195,23 +1214,34 @@ let approver () =
 
 let approve_cmd =
   let id = Arg.(value & pos 0 (some string) None & info [] ~docv:"APPROVAL") in
-  let go id =
-    match approver () with
+  let go circle id =
+    match circle_dir circle with
     | Error e -> exit_err e
-    | Ok (me, read_secret) ->
-        on_node (fun api ->
-            match id with
-            | None -> Approve.list ~api ~me ~say:print_endline
-            | Some id ->
-                Approve.sign_as ~api ~me ~read_secret ~ask ~say:print_endline id)
+    | Ok data_dir -> (
+        let approver =
+          match circle_admin_key data_dir with
+          | Some k -> Ok (Keys.public k, fun () -> Ok k)
+          | None -> approver ()
+        in
+        match approver with
+        | Error e -> exit_err e
+        | Ok (me, read_secret) ->
+            on_node ~data_dir (fun api ->
+                match id with
+                | None -> Approve.list ~api ~me ~say:print_endline
+                | Some id ->
+                    Approve.sign_as ~api ~me ~read_secret ~ask
+                      ~say:print_endline id))
   in
   Cmd.v
     (Cmd.info "approve"
        ~doc:
-         "Sign APPROVAL with your release key and hand the signature to this \
+         "Sign APPROVAL with your admin key and hand the signature to this \
           machine's node; with no APPROVAL, list the approvals waiting on your \
-          key. The key is read only once you answer y.")
-    Term.(const go $ id)
+          key. The key is the circle's own admin key when its folder's \
+          keystore holds one (digestif circle found made it), else your \
+          release key, read only once you answer y.")
+    Term.(const go $ approve_circle $ id)
 
 let signers_propose_cmd =
   let replace =

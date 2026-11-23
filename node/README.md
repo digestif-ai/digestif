@@ -66,20 +66,33 @@ so it never lands in an argv or a shell history.
                                              its chain re-signed (docs/protocol.md, The envelope)
     digestif relay add <url> [--mine] | remove <url> | list
                                              the relays this node uses; --mine publishes a relay message,
-                                             and every node adds the relay of an admitted member's message
+                                             and every node adds the relay of an admitted member's message.
+                                             A relay hosting many circles, named by its base url, is asked
+                                             to host this circle (--circle <id>): the root with a fresh
+                                             voucher from your other circle there, then its relay message
     digestif relay operate <url> [--remove] | status
                                              set up this node to deploy the relay you operate (deploy token
                                              at a hidden prompt), and what it deploys (docs/releases.md,
                                              Relay releases)
+    digestif relay circles | suspend <root> | resume <root>
+                                             on the operator's node: the circles its relay hosts (short root,
+                                             opened, size, last append, who vouched, state), and stopping or
+                                             restoring one (410 circle_suspended); <root> is any prefix of 8+
+                                             hex digits naming one circle, through the D1 query API
     digestif circle                          the fold: epoch, admitted keys, cards, relays, refusals
-    digestif circle found --name <n> [--guest "Name <email>"]... [--message <text|->] [--from <n>] [--admin-key <key>]
-                                             found a circle with this node's identity as founder: a circle
-                                             root naming it, any first guests and the founder's admin key
-                                             (signer.json's public_key, or --admin-key) as the circle's own
-                                             admins, who sign every later invite; no dinner; prints the
-                                             root hash each relay is configured with. A node holds one
-                                             circle; a second is founded from its own node, --circle <id>
-    digestif circle list                     every circle's node on this machine: id, name, root, data dir
+    digestif circle found --name <n> [--circle <id>] [--guest "Name <email>"]... [--message <text|->]
+                          [--from <n>] [--admin-key <key>] [--ask <url>]... [--relay <url>]
+                                             found a circle in one command: its folder ~/digestif/<id>, a
+                                             recovery phrase shown once, its keys and an admin key of its
+                                             own; sign the root (founder, first guests, admin key, every
+                                             relay asked) and ask each relay to host it, vouched by your
+                                             other circle there (default: every relay your circles use);
+                                             prints each refusal and the relay add line for it, and removes
+                                             everything when no relay hosts it. --relay <url> founds a first
+                                             circle on the relay you operate, which has no home: its
+                                             Cloudflare details and token, HOME_ROOT, and its deploy setup
+    digestif circle list                     every circle's node on this machine: id, name, short root, UI
+                                             address, last sync, data dir
     digestif circle link [<id>]              make ~/digestif/<id> a link to this node (default: the slug of
                                              its circle's name); the node stays where it is
     digestif log | show <hash> | faults      the log, one envelope, forks and gaps

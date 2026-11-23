@@ -93,17 +93,29 @@ the app.
 
 ## Flows
 
-**Founding a circle.** A member founds a circle with `digestif circle found --name <name>`
-(node/README.md), naming any first guests with `--guest`. The node signs the circle's root, a
-`circle` message naming the circle and the founder's identity and listing those guests
-(protocol.md, circle), makes it the node's circle, and emails each guest as an invite does
-(Joining). Nothing about a dinner is asked or written: no date, no label. Each relay serving the
-circle is configured with the root's hash, which the command prints. The root admits its founder by
+**Founding a circle.** A member founds a circle with one command, `digestif circle found --name
+<name>` (node/README.md), naming any first guests with `--guest`. It sets up the circle's folder,
+`~/digestif/<circle id>` (`--circle <id>`, else the name's slug), a recovery phrase it shows once,
+the node's keys and an admin key of the circle's own, kept in the keystore beside the device key.
+It signs the circle's root, a `circle` message naming the circle and the founder's identity,
+listing those guests and naming every relay it asks by base url (protocol.md, circle), and asks
+each relay to host the circle at its address there (protocol.md, Hosted circles): the relays the
+founder's other circles on this machine use, unless `--ask <url>` names them, each asked with a
+voucher the founder's own node for the other circle there signs. Each refusal is printed beside its
+relay with what it means and when it clears, and `digestif relay add <url> --circle <id>` asks a
+refused relay again once it clears. When no relay hosts the circle, the command removes everything
+it made and exits non-zero: no circle exists that no relay holds. The machine's service starts the
+new folder's node, and each guest is emailed as an invite does (Joining). A person in no circle
+founds their first on the relay they operate, which has no home yet, with `digestif circle found
+--relay <url>`: it takes the relay's Cloudflare details and deploy token, makes the new circle the
+relay's home (`HOME_ROOT`), and sets the new folder's node up to deploy the relay. Nothing about a
+dinner is asked or written: no date, no label. The root admits its founder by
 the message itself and admits its first guests by their invite keys alone; every later guest is
 invited with the admins' signed admission (protocol.md, Approvals). The admins are the circle's
 own: the root names the founder's admin key as its first, and the circle promotes the rest, so the
 release signers never sign for a circle they are not in, or learn who is
-in it. The founding circle, rooted in a dinner, keeps the release signers as its admins. A dinner is an event a circle
+in it. A per-circle admin key keeps founding one command, and no key ties a founder's circles
+together. The founding circle, rooted in a dinner, keeps the release signers as its admins. A dinner is an event a circle
 holds: a member who hosts one invites its guests the same way, and its dinner message carries the
 night and the label. The founding circle, rooted in dinner 2's dinner message, keeps that root; a
 dinner root folds exactly as a circle root does.
@@ -128,10 +140,11 @@ digits and single hyphens, at most 32 characters. It names the node on this mach
 circle on the wire stays its root hash, and two members may file the same circle under different
 ids. It is not the root hash because the node, and with it the keystore scope its path sets, exists
 before the root is signed. Every command takes `--circle <id>` in place of `--data-dir`, `digestif
-circle list` prints every circle's id, name, root and data directory, and a command given neither
-acts on the default node. A second node founds its circle with `digestif init --circle <id>` and
-`digestif circle found --circle <id>`, or joins with `digestif join --circle <id>`; only those two
-set up an id that names nothing yet, so a mistyped id is refused rather than set up empty.
+circle list` prints every circle's id, name, root (its short form, the first 12 hex digits), web UI
+address, last sync and data directory, and a command given neither acts on the default node. A
+circle's node is set up by `digestif circle found`, `digestif join --circle <id>` or `digestif init
+--circle <id>`; only those set up an id that names nothing yet, so a mistyped id is refused rather
+than set up empty.
 
 The parent holds circle nodes and links to them and nothing else. `~/digestif` is also where a
 member naturally clones this repository, and a node set up inside that working tree would put

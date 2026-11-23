@@ -381,6 +381,69 @@ let the_token_is_never_an_argument () =
     "no argument carries a token" false
     (Array.exists (fun a -> contains a "Bearer") Cf.curl_argv)
 
+(* DIG-349: the circles an operator's relay hosts, named by a root's short form or any prefix of at
+   least 8 that names one. *)
+let hosted root state : O.hosted =
+  {
+    root;
+    opened_at = "2026-11-22T00:00:00.000Z";
+    size = 3 * 1048576;
+    last_append_at = None;
+    vouched_by = Some ("sha256:" ^ String.make 64 'f');
+    state;
+  }
+
+let a = "sha256:7c1ea90d3f21" ^ String.make 52 '0'
+let b = "sha256:7c1ea90d3f22" ^ String.make 52 '0'
+
+let roots_by_prefix () =
+  let circles = [ hosted a "open"; hosted b "suspended" ] in
+  check_str "the short form names one" a
+    (ok (O.resolve_root circles "7c1ea90d3f21")).root;
+  check_str "so does the full root" b (ok (O.resolve_root circles b)).root;
+  (match O.resolve_root circles "7c1ea90d3f2" with
+  | Error e ->
+      Alcotest.(check bool)
+        "an ambiguous prefix lists each match's short form" true
+        (contains e "ambiguous_root"
+        && contains e "7c1ea90d3f21" && contains e "7c1ea90d3f22")
+  | Ok _ -> Alcotest.fail "an ambiguous prefix is refused");
+  Alcotest.(check bool)
+    "fewer than 8 digits is refused" true
+    (Result.is_error (O.resolve_root circles "7c1ea9"));
+  let line = O.circle_line (hosted a "open") in
+  Alcotest.(check bool)
+    "a line: short root, size, who vouched, state" true
+    (contains line "7c1ea90d3f21\t"
+    && contains line "3.0 MiB"
+    && contains line "vouched by ffffffffffff"
+    && contains line "open")
+
+let home_root_settings () =
+  let kept =
+    [
+      ("DB", "d1", `Null);
+      ("RESEND_API_KEY", "secret_text", `Null);
+      ("HOME_ROOT", "plain_text", `Null);
+    ]
+  in
+  let j = Cf.var_settings ~kept ~name:"HOME_ROOT" (Some a) in
+  let s = Yojson.Safe.to_string j in
+  Alcotest.(check bool)
+    "every other binding is inherited, never resent with a value" true
+    (contains s {|{"type":"inherit","name":"DB"}|}
+    && contains s {|{"type":"inherit","name":"RESEND_API_KEY"}|});
+  Alcotest.(check bool)
+    "HOME_ROOT is the new root as plain text" true
+    (contains s
+       (Printf.sprintf {|{"type":"plain_text","name":"HOME_ROOT","text":"%s"}|}
+          a));
+  Alcotest.(check bool)
+    "clearing it leaves it out" false
+    (contains
+       (Yojson.Safe.to_string (Cf.var_settings ~kept ~name:"HOME_ROOT" None))
+       "HOME_ROOT")
+
 let () =
   Ci_alcotest.run "digestif-relay-deploy"
     [
@@ -403,6 +466,11 @@ let () =
           Alcotest.test_case "remove deletes both" `Quick remove_deletes_both;
           Alcotest.test_case "the token is never an argument" `Quick
             the_token_is_never_an_argument;
+        ] );
+      ( "circles",
+        [
+          Alcotest.test_case "a root by its prefix" `Quick roots_by_prefix;
+          Alcotest.test_case "HOME_ROOT's settings" `Quick home_root_settings;
         ] );
       ( "operator",
         [

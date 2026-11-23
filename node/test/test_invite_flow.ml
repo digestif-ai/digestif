@@ -1659,6 +1659,200 @@ let cursor_kept_in_a_list () =
   let w' = ok (Host_watch.load_watch host.dir) in
   Alcotest.(check bool) "expect keeps it" true (w'.cursor = w.cursor)
 
+(* ---- founding against relays that host many circles (DIG-349) ---- *)
+
+let hex64 = String.make 64 'a'
+let root_a = "sha256:" ^ hex64
+
+let circle_addresses () =
+  let address = Relay_url.address ~base:"https://r.test/" ~root:root_a in
+  Alcotest.(check string)
+    "the address is <base>/c/<root hex>"
+    ("https://r.test/c/" ^ hex64)
+    address;
+  Alcotest.(check (option (pair string string)))
+    "an address names its base and root"
+    (Some ("https://r.test", root_a))
+    (Relay_url.split_address address);
+  Alcotest.(check (option (pair string string)))
+    "a base url names no circle" None
+    (Relay_url.split_address "https://r.test");
+  Alcotest.(check string)
+    "the base of an address" "https://r.test"
+    (Relay_url.base_of address);
+  Alcotest.(check string)
+    "a root's short form is its first 12 hex digits" "aaaaaaaaaaaa"
+    (Relay_url.short_root root_a);
+  Alcotest.(check string)
+    "a voucher names the host, without the scheme's default port" "r.test"
+    (Relay_url.voucher_host "https://r.test:443/c/x");
+  Alcotest.(check string)
+    "and keeps any other" "127.0.0.1:8787"
+    (Relay_url.voucher_host "http://127.0.0.1:8787")
+
+let voucher_signs () =
+  let device = Crypto.generate_signing_key () in
+  let header =
+    Voucher.sign ~now:1_000_000. device ~root:root_a ~relay:"https://r.test"
+      ~circle:"sha256:home"
+  in
+  match String.split_on_char '.' header with
+  | [ doc; signature ] ->
+      let bytes = ok (B64url.decode doc) in
+      Alcotest.(check bool)
+        "the device key signs the domain line and the document's bytes" true
+        (Keys.verify ~pub:(Keys.public device) ~signature
+           ("DIGESTIF-VOUCHER-V0\n" ^ bytes));
+      let j = Yojson.Safe.from_string bytes in
+      let field k = Yojson.Safe.Util.(member k j |> to_string) in
+      Alcotest.(check (list string))
+        "the document's fields"
+        [
+          "digestif-voucher-v0";
+          root_a;
+          "r.test";
+          "sha256:home";
+          Keys.public device;
+        ]
+        (List.map field [ "format"; "root"; "relay"; "circle"; "key" ]);
+      Alcotest.(check bool)
+        "it expires inside ten minutes" true
+        (match Time_fmt.to_unix (field "expires_at") with
+        | Some t -> t > 1_000_000. && t <= 1_000_600.
+        | None -> false);
+      Alcotest.(check string)
+        "the bytes are the document's canonical form" bytes (Jcs.encode j)
+  | _ -> Alcotest.fail "a voucher is <document>.<signature>"
+
+(* A transport answering a founding append by the relay's host: [answers] maps a host to its status
+   and body, and every request is recorded with its headers. *)
+let founding_transport answers =
+  let seen = ref [] in
+  let t : Relay_client.transport =
+   fun ~meth ~url ~headers ~body:_ ->
+    seen := (meth, url, headers) :: !seen;
+    let host = Relay_url.voucher_host url in
+    match List.assoc_opt host answers with
+    | Some (status, body) -> Ok { Relay_client.status; body }
+    | None -> Error "no such relay"
+  in
+  (t, seen)
+
+let founding_answers () =
+  let host = new_node () in
+  ignore (ok (Node.init host ~phrase:(Phrase.generate ())));
+  let inv =
+    ok
+      (Invite_node.found host ~add_relays:false ~admins ~name:"Hosted"
+         ~relays:urls [])
+  in
+  Alcotest.(check (list string))
+    "a founding against relays stores no base url" []
+    (List.map (fun (r : Log.relay_row) -> r.url) (Log.relays host.log));
+  let root = inv.dinner_hash in
+  let signed = (Option.get (Log.find host.log root)).signed in
+  let transport, seen =
+    founding_transport
+      [
+        ("a.test", (201, Printf.sprintf {|{"relay_id":1,"hash":"%s"}|} root));
+        ( "b.test",
+          ( 429,
+            {|{"code":"too_many_circles","message":"the next opens on 2026-12-01"}|}
+          ) );
+      ]
+  in
+  let answers = Founding.ask_all ~transport [] ~root signed urls in
+  let address = Relay_url.address ~base:"https://a.test" ~root in
+  Alcotest.(check (list (pair string string)))
+    "the relay that took the root hosts it at the circle's address"
+    [ ("https://a.test", address) ]
+    (Founding.hosted answers);
+  Alcotest.(check bool)
+    "each was asked at the circle's address" true
+    (List.for_all
+       (fun (_, url, _) ->
+         String.ends_with
+           ~suffix:("/c/" ^ Relay_url.root_hex root ^ "/v0/envelopes")
+           url)
+       !seen);
+  let line =
+    Founding.answer_line ~base:"https://b.test" ~root
+      (List.assoc "https://b.test" answers)
+  in
+  Alcotest.(check bool)
+    "a refusal names its code and when it clears" true
+    (Astring_contains.contains line "refused too_many_circles"
+    && Astring_contains.contains line "2026-12-01");
+  seen := [];
+  ignore
+    (Founding.ask ~transport ~voucher:"doc.sig" ~base:"https://a.test" ~root
+       signed);
+  Alcotest.(check (list (option string)))
+    "the voucher travels in its header" [ Some "doc.sig" ]
+    (List.map (fun (_, _, h) -> List.assoc_opt "Digestif-Voucher" h) !seen)
+
+let relay_rewritten () =
+  let n = new_node () in
+  ignore (ok (Node.init n ~phrase:(Phrase.generate ())));
+  Node.set_root n root_a;
+  List.iter (Log.add_relay n.log) urls;
+  Log.set_cursor n.log "https://a.test" 7;
+  Log.add_sighting n.log ~relay:"https://a.test" ~relay_id:7 ~hash:"sha256:x"
+    ~received_at:None;
+  let transport, _ =
+    founding_transport
+      [
+        ( "a.test",
+          ( 200,
+            {|{"relay_version":"0.2.0","mailer":false,"hosting":true,"home":null,"last_unprefixed_at":null}|}
+          ) );
+        ("b.test", (404, {|{"code":"malformed","message":"no route"}|}));
+      ]
+  in
+  let moved = Relay_addresses.rewrite ~transport n in
+  let address = Relay_url.address ~base:"https://a.test" ~root:root_a in
+  Alcotest.(check (list (pair string string)))
+    "a relay that hosts many circles is read at the circle's address"
+    [ ("https://a.test", address) ]
+    moved;
+  Alcotest.(check (list (pair string int)))
+    "its cursor carried, and a relay that does not stays as it is"
+    [ (address, 7); ("https://b.test", 0) ]
+    (List.map (fun (r : Log.relay_row) -> (r.url, r.cursor)) (Log.relays n.log));
+  Alcotest.(check (list string))
+    "its sightings carried" [ address ]
+    (List.map (fun (r, _, _) -> r) (Log.sightings n.log "sha256:x"));
+  Alcotest.(check (list (pair string string)))
+    "an address is never asked again" []
+    (Relay_addresses.rewrite ~transport n
+    |> List.filter (fun (f, _) -> f = address));
+  (* A relay message named the address first: the two rows become one, at the further cursor. *)
+  Log.add_relay n.log "https://c.test";
+  Log.set_cursor n.log "https://c.test" 3;
+  let c = Relay_url.address ~base:"https://c.test" ~root:root_a in
+  Log.add_relay n.log c;
+  Log.set_cursor n.log c 5;
+  Log.rename_relay n.log ~from:"https://c.test" ~to_:c;
+  Alcotest.(check (list (pair string int)))
+    "merged at the further cursor"
+    [ (c, 5) ]
+    (List.filter_map
+       (fun (r : Log.relay_row) ->
+         if Relay_url.base_of r.url = "https://c.test" then
+           Some (r.url, r.cursor)
+         else None)
+       (Log.relays n.log))
+
+let join_reads_the_address () =
+  let address = Relay_url.address ~base:"https://a.test" ~root:root_a in
+  Alcotest.(check (list string))
+    "a guest reads each relay the root lists at the circle's address"
+    [ address; Relay_url.address ~base:"https://b.test" ~root:root_a ]
+    (Join.relays_at ~circle:(Some address) urls);
+  Alcotest.(check (list string))
+    "a relay serving one circle names none, and its url is the circle's" urls
+    (Join.relays_at ~circle:None urls)
+
 let () =
   Ci_alcotest.run "digestif-invite-flow"
     [
@@ -1693,6 +1887,18 @@ let () =
             approved_invite;
           Alcotest.test_case "the signed email's marks" `Quick
             approved_email_marks;
+        ] );
+      ( "founding",
+        [
+          Alcotest.test_case "a circle's address on a relay" `Quick
+            circle_addresses;
+          Alcotest.test_case "the founding voucher" `Quick voucher_signs;
+          Alcotest.test_case "each relay asked, hosted or refused" `Quick
+            founding_answers;
+          Alcotest.test_case "stored relay urls rewritten to the address" `Quick
+            relay_rewritten;
+          Alcotest.test_case "a guest reads the circle's address" `Quick
+            join_reads_the_address;
         ] );
       ( "setup",
         [

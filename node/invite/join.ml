@@ -31,21 +31,36 @@ let error_message = function
   | Bad_dinner m ->
       "The relay answered with a guest list that does not verify: " ^ m
 
-(* The bootstrap read against the relay the code names, signed by the invite key. *)
+(* The bootstrap read against the relay the code names, signed by the invite key. Answers the
+   envelope and the circle's address the relay named beside it, when it hosts many circles. *)
 let read_dinner ~transport code =
   match
-    Relay_client.invite transport ~base:code.Invite_code.relay
+    Relay_client.invite_at transport ~base:code.Invite_code.relay
       ~key:(Invite_code.invite_key code)
   with
   | Error (Relay_client.Refused (404, _)) ->
       Error (Unreadable "no open invite with this code")
   | Error e -> Error (Unreadable (Relay_client.error_to_string e))
-  | Ok (s : Relay_client.stored) -> (
+  | Ok ((s : Relay_client.stored), circle) -> (
       match Envelope.hash_result s.signed.envelope with
       | Error m -> Error (Bad_dinner m)
       | Ok h when h <> s.hash ->
           Error (Bad_dinner "the relay's hash does not match the envelope")
-      | Ok _ -> Ok s.signed)
+      | Ok _ -> Ok (s.signed, circle))
+
+(* The urls a guest reads and appends at: each relay the dinner lists, at the circle's address there
+   when the relay named one (docs/protocol.md, Hosted circles), since a root's relays name each
+   relay's base url. A relay that serves one circle names none, and its url is the circle's. *)
+let relays_at ~circle relays =
+  match Option.bind circle Relay_url.split_address with
+  | None -> relays
+  | Some (_, root) ->
+      List.map
+        (fun r ->
+          match Relay_url.split_address r with
+          | Some _ -> r
+          | None -> Relay_url.address ~base:r ~root)
+        relays
 
 (* Checks what the relay handed back before anything is signed against it: the dinner envelope
    verifies, and it names this invite key, unexpired. Returns the dinner's hash, its parsed body and
@@ -97,7 +112,7 @@ type written = {
 let write ~transport ~now ~code ~identity ~device =
   match read_dinner ~transport code with
   | Error e -> Error e
-  | Ok sg -> (
+  | Ok (sg, circle) -> (
       match check_dinner ~now ~code sg with
       | Error e -> Error e
       | Ok (dinner_hash, dinner, _) ->
@@ -108,7 +123,7 @@ let write ~transport ~now ~code ~identity ~device =
             List.map
               (fun relay ->
                 (relay, Relay_client.append transport ~base:relay ~key:None join))
-              dinner.parsed_relays
+              (relays_at ~circle dinner.parsed_relays)
           in
           Ok { dinner_hash; dinner; join; appended })
 

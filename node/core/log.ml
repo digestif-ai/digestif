@@ -469,6 +469,38 @@ let relays t =
        "SELECT url, cursor, last_sync_at, last_error FROM relays ORDER BY url"
        [])
 
+(* The relay at [from] is now read at [to_], the same relay's address for this circle (docs/protocol.md,
+   Hosted circles): its cursor, sightings and replica refusals carry across, since the relay ids are
+   the same. When [to_] is already a relay here (a relay message named the address first), the two
+   rows become one, at the further cursor. *)
+let rename_relay t ~from ~to_ =
+  if from <> to_ then
+    transaction t (fun () ->
+        let cursor_of url =
+          match rows t "SELECT cursor FROM relays WHERE url = ?" [ s url ] with
+          | [ [| c |] ] -> Some (int c)
+          | _ -> None
+        in
+        (match (cursor_of from, cursor_of to_) with
+        | None, _ -> ()
+        | Some c, None ->
+            exec t "UPDATE relays SET url = ?, cursor = ? WHERE url = ?"
+              [ s to_; i c; s from ]
+        | Some c, Some c' ->
+            exec t "UPDATE relays SET cursor = ? WHERE url = ?"
+              [ i (max c c'); s to_ ];
+            exec t "DELETE FROM relays WHERE url = ?" [ s from ]);
+        List.iter
+          (fun table ->
+            exec t
+              (Printf.sprintf
+                 "UPDATE OR IGNORE %s SET relay = ? WHERE relay = ?" table)
+              [ s to_; s from ];
+            exec t
+              (Printf.sprintf "DELETE FROM %s WHERE relay = ?" table)
+              [ s from ])
+          [ "sightings"; "replica_refusals" ])
+
 let set_cursor t url cursor =
   exec t "UPDATE relays SET cursor = ? WHERE url = ?" [ i cursor; s url ]
 
