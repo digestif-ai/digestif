@@ -4149,6 +4149,30 @@ let setup =
       setup_guard;
     ]
 
+(* The adapter's honoured Keeps (docs/protocol.md, Member review): the id of every Keep sealed to this
+   node's encryption key that Member_review.honoured_by honours by the fold's signer set at its
+   created_at, once however many copies arrived. *)
+let conformance_keeps (n : Node.t) fold =
+  match Node.encryption_key n with
+  | Error _ -> []
+  | Ok enc ->
+      List.sort_uniq compare
+        (List.filter_map
+           (fun (r : Log.row) ->
+             match r.signed.body with
+             | Some b when r.retracted_by = None -> (
+                 match
+                   Option.bind
+                     (Digestif_web.Item.open_sealed ~priv:enc.secret b)
+                     Digestif_web.Member_review.of_json
+                 with
+                 | Some k
+                   when Digestif_web.Member_review.honoured_by fold k <> None ->
+                     Some (Digestif_web.Member_review.id k)
+                 | _ -> None)
+             | _ -> None)
+           (Log.of_kind n.log "keep"))
+
 (* The adapter's faults: every fork, and every envelope a relay served that did not verify, once per
    hash. Sync records the latter as an invalid_envelope fault whose detail is "<relay> <hash> <reason>",
    one per relay that served it. *)
@@ -4198,11 +4222,18 @@ let conformance_sync =
   let root =
     Arg.(value & opt (some string) None & info [ "root" ] ~docv:"HASH")
   in
+  let encryption_file =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "encryption-seed-file" ] ~docv:"FILE")
+  in
   cmd "sync"
-    "Sync a throwaway node holding the given device seed and print its fold, \
-     feed, faults and gaps as JSON."
+    "Sync a throwaway node holding the given device seed, and the encryption \
+     key it opens sealed bodies with, and print its fold, feed, faults, gaps \
+     and honoured Keeps as JSON."
     Term.(
-      const (fun home seed_file relays root ->
+      const (fun home seed_file relays root encryption_file ->
           let seed =
             String.trim
               (In_channel.with_open_bin seed_file In_channel.input_all)
@@ -4215,6 +4246,19 @@ let conformance_sync =
             | _ -> die "%s does not hold a base64url 32-byte seed" seed_file
           in
           ok_or_die (Keystore.put_signing_key ks "device" key);
+          Option.iter
+            (fun file ->
+              match
+                B64url.decode
+                  (String.trim
+                     (In_channel.with_open_bin file In_channel.input_all))
+              with
+              | Ok s when String.length s = 32 ->
+                  ok_or_die
+                    (Keystore.put_encryption_key ks "encryption"
+                       (ok_or_die (Crypto.encryption_key_of_secret s)))
+              | _ -> die "%s does not hold a base64url 32-byte secret" file)
+            encryption_file;
           let n = Node.open_ ~keystore:ks home in
           Log.set_config n.log Node.k_device (Keys.public key);
           List.iter (Log.add_relay n.log) relays;
@@ -4274,9 +4318,14 @@ let conformance_sync =
                                    `List (List.map (fun s -> `Int s) seqs) );
                                ])
                            (View.gaps n.log fold)) );
+                    ( "keeps",
+                      `List
+                        (List.map
+                           (fun id -> `String id)
+                           (conformance_keeps n fold)) );
                   ]));
           Node.close n)
-      $ home $ seed_file $ relays $ root)
+      $ home $ seed_file $ relays $ root $ encryption_file)
 
 let main =
   Cmd.group

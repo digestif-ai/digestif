@@ -13,11 +13,13 @@
 // key up to `after_seq`, a mail key by the hashes `mail_read` lists. created_at is the author's clock,
 // and a thief holding the key writes it.
 import "./node-crypto.ts"; // installs the node:crypto SuiteCrypto: this module only runs on Node
+import { keepId, verifiedKeep } from "./bodies.ts";
 import { hashOf, type Json } from "./encoding.ts";
 import { envelopeHash, isCircleState, verifyEnvelope, type Envelope, type StoredEnvelope } from "./envelope.ts";
 import { Fold, type FoldBreak } from "./fold.ts";
 import { Signer } from "./keys.ts";
 import { RelayClient } from "./request.ts";
+import { openSealed, type EncryptionKey } from "./sealing.ts";
 
 /** What `<node> sync` prints, one JSON object on stdout. Every list is sorted, so two states compare as text. */
 export interface NodeState {
@@ -31,6 +33,13 @@ export interface NodeState {
    */
   faults: Array<{ kind: "fork" | "invalid_envelope"; author: string; seq: number; hashes: string[] }>;
   gaps: Array<{ author: string; missing: number[] }>;
+  /**
+   * The id of every Keep the node honours (docs/protocol.md, Member review), once however many
+   * copies it opened: sealed to the node's encryption key, its signature by an admitted device of
+   * an identity other than the member kept, bound to a key of the signer set the fold held at the
+   * Keep's created_at.
+   */
+  keeps: string[];
 }
 
 /** Rules the reference node can be told to get wrong, so the self-test can prove each node case catches it. */
@@ -53,7 +62,9 @@ export type NodeBreak =
   | "admin-revoke"
   | "admin-revoke-admin"
   | "replicate"
-  | "join-floor";
+  | "join-floor"
+  | "keep-admin"
+  | "keep-at";
 
 interface Held {
   hash: string;
@@ -97,7 +108,29 @@ export function union(pages: StoredEnvelope[][], breaks: ReadonlySet<NodeBreak> 
 }
 
 /** Folds the envelopes in canonical order, leaving out `excluded`. Returns the fold and what it folded, in order. */
-function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<string>, breaks: ReadonlySet<NodeBreak>): { fold: Fold; folded: Held[] } {
+/** The identities bound to a key of the signer set from `at` on: one per root or signer_set the fold applied, in fold order. */
+interface Seats {
+  at: string;
+  seated: ReadonlySet<string>;
+}
+
+interface Folded {
+  fold: Fold;
+  folded: Held[];
+  seats: Seats[];
+}
+
+function seatsOf(fold: Fold, at: string): Seats {
+  const set = fold.signerSet;
+  const seated = new Set<string>();
+  for (const key of set?.keys ?? []) {
+    const identity = set?.identities.get(key);
+    if (identity !== undefined) seated.add(identity);
+  }
+  return { at, seated };
+}
+
+function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<string>, breaks: ReadonlySet<NodeBreak>): Folded {
   const foldBreaks: FoldBreak[] = [];
   if (breaks.has("revocation")) foldBreaks.push("revocation");
   if (breaks.has("bootstrap")) foldBreaks.push("spent", "expiry");
@@ -118,6 +151,7 @@ function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<stri
     admission: { cutover: Number.MAX_SAFE_INTEGER, signers: [] },
   });
   const folded: Held[] = [];
+  const seats: Seats[] = [];
   // The root first: an envelope sharing its created_at and sorting ahead of it by hash would
   // otherwise miss the first pass, and a later envelope could fold ahead of it in that pass.
   const rootFirst = (a: Held, b: Held) => (a.hash === root ? -1 : b.hash === root ? 1 : byTimeThenHash(a, b));
@@ -137,6 +171,7 @@ function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<stri
             : fold.apply({ hash: held.hash, envelope: held.envelope, body: held.body, position, now: new Date(held.envelope.created_at) });
       if (error === null) {
         folded.push(held);
+        if (held.hash === root || held.envelope.kind === "signer_set") seats.push(seatsOf(fold, held.envelope.created_at));
         progress = true;
       } else {
         remaining.push(held);
@@ -144,7 +179,7 @@ function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<stri
     }
     pending = remaining;
   }
-  return { fold, folded };
+  return { fold, folded, seats };
 }
 
 /**
@@ -153,7 +188,7 @@ function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<stri
  * again, until nothing folded is past a cutoff. A backdated envelope can have admitted guests or keys
  * of its own, which is why it is refolded rather than dropped from the feed.
  */
-function foldUnion(root: string, envelopes: Held[], breaks: ReadonlySet<NodeBreak>): { fold: Fold; folded: Held[] } {
+function foldUnion(root: string, envelopes: Held[], breaks: ReadonlySet<NodeBreak>): Folded {
   const excluded = new Set<string>();
   for (;;) {
     const result = foldInOrder(root, envelopes, excluded, breaks);
@@ -179,9 +214,42 @@ function firstServed(floor: number, chain: Map<number, Held[]>): number | undefi
   return first;
 }
 
+/**
+ * The ids of the Keeps the fold honours, of every folded `keep` sealed to `encryption`: the Keep
+ * verifies, `by` is an admitted device of an identity other than the member kept, and that identity
+ * is bound to a key of the set the fold held at the Keep's created_at, the last applied whose
+ * envelope is dated at or before it.
+ */
+function honouredKeeps({ fold, folded, seats }: Folded, encryption: EncryptionKey | undefined, breaks: ReadonlySet<NodeBreak>): string[] {
+  if (encryption === undefined) return [];
+  const seatedAt = (at: string, identity: string): boolean => {
+    const held = breaks.has("keep-at") ? seats[seats.length - 1] : [...seats].reverse().find((s) => s.at <= at);
+    return held?.seated.has(identity) ?? false;
+  };
+  const ids = new Set<string>();
+  for (const held of folded) {
+    const body = held.body;
+    if (held.envelope.kind !== "keep" || typeof body !== "object" || body === null || Array.isArray(body)) continue;
+    const keep = verifiedKeep(openSealed(body["sealed"], encryption));
+    if (keep === undefined) continue;
+    const by = fold.keys.get(keep.by);
+    if (by?.role !== "device" || by.identity === keep.member) continue;
+    if (breaks.has("keep-admin") || seatedAt(keep.created_at, by.identity)) ids.add(keepId(keep));
+  }
+  return [...ids].sort();
+}
+
 /** Computes the state `reader` concludes: its join epoch floors the gap scan (0 for a founder, and for a key the fold has not admitted). */
-export function computeState(root: string, envelopes: Held[], invalid: Fault[], reader: string, breaks: ReadonlySet<NodeBreak> = new Set()): NodeState {
-  const { fold, folded } = foldUnion(root, envelopes, breaks);
+export function computeState(
+  root: string,
+  envelopes: Held[],
+  invalid: Fault[],
+  reader: string,
+  breaks: ReadonlySet<NodeBreak> = new Set(),
+  encryption?: EncryptionKey,
+): NodeState {
+  const result = foldUnion(root, envelopes, breaks);
+  const { fold, folded } = result;
   const floor = breaks.has("join-floor") ? 0 : (fold.keys.get(reader)?.join_epoch ?? 0);
 
   const roleOf = (key: string) => fold.keys.get(key)?.role;
@@ -230,6 +298,7 @@ export function computeState(root: string, envelopes: Held[], invalid: Fault[], 
     feed,
     faults: faults.sort((a, b) => (`${a.author}/${a.seq}/${a.kind}` < `${b.author}/${b.seq}/${b.kind}` ? -1 : 1)),
     gaps: gaps.sort((a, b) => (a.author < b.author ? -1 : 1)),
+    keeps: honouredKeeps(result, encryption, breaks),
   };
 }
 
@@ -262,7 +331,7 @@ async function replicate(device: Signer, relays: string[], pages: StoredEnvelope
  * Reads every relay as `device`, replicates to each what it lacks of the admitted set, and computes
  * the state. The circle root is what the relays report.
  */
-export async function sync(device: Signer, relays: string[], breaks: ReadonlySet<NodeBreak> = new Set()): Promise<NodeState> {
+export async function sync(device: Signer, relays: string[], breaks: ReadonlySet<NodeBreak> = new Set(), encryption?: EncryptionKey): Promise<NodeState> {
   const pages: StoredEnvelope[][] = [];
   let root: string | undefined;
   for (const url of relays) {
@@ -277,5 +346,5 @@ export async function sync(device: Signer, relays: string[], breaks: ReadonlySet
   if (root === undefined) throw new Error("no relays");
   const { envelopes, invalid } = union(pages, breaks);
   if (!breaks.has("replicate")) await replicate(device, relays, pages, foldUnion(root, envelopes, breaks).folded);
-  return computeState(root, envelopes, invalid, device.key, breaks);
+  return computeState(root, envelopes, invalid, device.key, breaks, encryption);
 }

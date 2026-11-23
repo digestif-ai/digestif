@@ -11741,23 +11741,31 @@ let member_review_rules () =
        ~now:(at "2026-11-23T00:00:00.000Z")
        ~kept_at:(at k.created_at) ~note:None)
 
-(* The set this node judges by, saved in its update state as the approvals test does: every key
-   named as the card of the member who holds it. *)
-let save_admins n names =
-  Digestif_update.State.save
-    (Digestif_update.Schedule.state_path n.Node.dir)
-    {
-      (Digestif_update.State.initial ()) with
-      trust =
-        {
-          signers =
-            List.map
-              (fun name : Digestif_update.Release.signer ->
-                { name; key = Keys.public (Crypto.generate_signing_key ()) })
-              names;
-          revoked = [];
-        };
-    }
+(* The signer set Review judges Keeps by (Api.Review.bindings_at), as the fold would hold it: each
+   call seats [ids], a fresh key bound to each, from [from] on, so a Keep dated earlier is judged by
+   the set before. [unbind_admins] puts the fold's own back. *)
+let fold_bindings = !Api.Review.bindings_at
+let binding_history = ref []
+
+let bind_admins ?(from = "1970-01-01T00:00:00.000Z") ids =
+  binding_history :=
+    ( from,
+      List.map
+        (fun i -> (Keys.public (Crypto.generate_signing_key ()), Some i))
+        ids )
+    :: !binding_history;
+  Api.Review.bindings_at :=
+    fun _ ~at ->
+      let found =
+        match at with
+        | None -> List.nth_opt !binding_history 0
+        | Some at -> List.find_opt (fun (c, _) -> c <= at) !binding_history
+      in
+      Option.fold ~none:[] ~some:snd found
+
+let unbind_admins () =
+  binding_history := [];
+  Api.Review.bindings_at := fold_bindings
 
 let member_named call name =
   List.find (fun m -> s "name" m = name) (list (snd (call "members")))
@@ -11796,7 +11804,9 @@ let member_review () =
   Alcotest.(check string)
     "a member who is no admin sees nobody's review" ""
     (s "in_review_since" (member_named call "Dee Rao"));
-  save_admins n [ "Ada Park" ];
+  let ada_id = Option.get (Log.get_config n.log Node.k_identity) in
+  bind_admins [ ada_id ];
+  Fun.protect ~finally:unbind_admins @@ fun () ->
   let dee () = member_named call "Dee Rao" in
   Alcotest.(check bool)
     "an admin sees Dee in review" true
@@ -11878,7 +11888,7 @@ let member_review () =
       Alcotest.(check bool) "sealed to Dee" true (List.mem dee_id to_)
   | l -> Alcotest.failf "two keep envelopes, got %d" (List.length l));
   (* Pia is promoted: Ada's node forwards the Keep still in force, sealed to her. *)
-  save_admins n [ "Ada Park"; "Pia Gale" ];
+  bind_admins ~from:(Time_fmt.now ()) [ ada_id; Keys.public pia.p_identity ];
   keep_up n;
   let forwarded =
     List.filter
@@ -11946,6 +11956,156 @@ let members_list_a_revoked_member () =
     (List.exists
        (fun m -> s "identity" m = pia_id)
        (list (member "members" (snd (call "search?q=Pia")))))
+
+(* DIG-395 (docs/protocol.md, revoke): an admin removes a member through the node: the node drafts
+   the revoke's claim, digestif-update remove signs it with the admin key, and the node posts it
+   with its own device key, which the fold counts. A circle founded with one admin key binds it to
+   the founder; [dee_admin] founds it with a second key bound to Dee, who is then a sitting admin. *)
+let removal_circle ~dee_admin =
+  let module I = Digestif_invite.Invite_node in
+  let host = Core_node.open_ ~keystore:(Keystore.memory ()) (fixture ()) in
+  Store.init host.log;
+  ignore (ok (Core_node.init host ~phrase:(Phrase.generate ())));
+  let host_identity =
+    Option.get (Log.get_config host.log Core_node.k_identity)
+  in
+  let dee_phrase = Phrase.generate () in
+  let dee_identity = Keys.public (ok (Phrase.derive dee_phrase)).identity in
+  let admin = Crypto.generate_signing_key () in
+  let admins =
+    {
+      Approval.name = "Ada";
+      key = Keys.public admin;
+      identity = Some host_identity;
+    }
+    ::
+    (if dee_admin then
+       [
+         {
+           Approval.name = "Dee";
+           key = Keys.public (Crypto.generate_signing_key ());
+           identity = Some dee_identity;
+         };
+       ]
+     else [])
+  in
+  let urls = [ "https://a.test"; "https://b.test" ] in
+  let inv =
+    ok
+      (I.found host ~admins ~name:"Sunday" ~relays:urls ~message:"Join us."
+         [
+           {
+             Digestif_invite.Dinner.name = "Dee Rao";
+             email = "dee@example.com";
+           };
+         ])
+  in
+  let net =
+    Fake_relay.network
+      (List.map (fun url -> Fake_relay.create ~url ~root:inv.dinner_hash) urls)
+  in
+  ignore (ok (I.sync ~transport:net host));
+  ignore (ok (I.expect host ~guest:"Dee Rao"));
+  let dee = Core_node.open_ ~keystore:(Keystore.memory ()) (fixture ()) in
+  let code =
+    ok
+      (Digestif_invite.Invite_code.parse
+         (Digestif_invite.Invite_code.to_url (List.hd inv.dinner.invites).code))
+  in
+  ignore (ok (I.join ~transport:net dee ~code ~phrase:dee_phrase));
+  ignore (ok (I.sync ~transport:net host));
+  (Api.Phones.sync_first := fun n -> ignore (I.sync ~transport:net n));
+  (host, host_identity, dee_identity, admin)
+
+let admin_removes_member () =
+  let host, host_identity, dee, admin = removal_circle ~dee_admin:false in
+  Alcotest.(check bool)
+    "Dee is admitted" true
+    (Fold.find (Core_node.fold host) dee <> None);
+  let call = call host (session host) ~meth:"POST" in
+  let by = Keys.public admin in
+  let refused ?(by = by) id =
+    let st, j =
+      call
+        ~body:(`Assoc [ ("by", `String by) ])
+        ("members/" ^ enc id ^ "/revocation_drafts")
+    in
+    (st, match j with `List (e :: _) -> s "code" e | _ -> "")
+  in
+  Alcotest.(check (pair int string))
+    "a key outside the set is no admin" (422, "not_admin")
+    (refused ~by:(Keys.public (Crypto.generate_signing_key ())) dee);
+  Alcotest.(check (pair int string))
+    "an admin does not remove themselves" (422, "self") (refused host_identity);
+  let st, d =
+    call
+      ~body:(`Assoc [ ("by", `String by) ])
+      ("members/" ^ enc dee ^ "/revocation_drafts")
+  in
+  Alcotest.(check int) "the draft" 201 st;
+  Alcotest.(check string) "of Dee" dee (s "target" d);
+  let cutoffs k =
+    Option.value (Yojson.Safe.Util.member k d |> Option.some) ~default:`Null
+  in
+  let r =
+    ok
+      (Bodies.parse_revoke
+         (`Assoc
+            [
+              ("target", `String dee);
+              ("by", `String by);
+              ("after_seq", cutoffs "after_seq");
+              ("mail_read", cutoffs "mail_read");
+              ("signature", `String "");
+            ]))
+  in
+  Alcotest.(check bool) "it stops Dee's device" true (r.after_seq <> []);
+  let signed signature =
+    `Assoc
+      [
+        ("by", `String by);
+        ("after_seq", cutoffs "after_seq");
+        ("mail_read", cutoffs "mail_read");
+        ("signature", `String signature);
+      ]
+  in
+  let claim =
+    Bodies.revoke_claim ~target:dee ~by ~after_seq:r.after_seq
+      ~mail_read:r.mail_read
+  in
+  let forged = Keys.sign_json (Crypto.generate_signing_key ()) claim in
+  let st, _ =
+    call ~body:(signed forged) ("members/" ^ enc dee ^ "/revocations")
+  in
+  Alcotest.(check int) "a signature of another key is refused" 422 st;
+  Alcotest.(check bool)
+    "and nothing was posted" false
+    ((Option.get (Fold.find (Core_node.fold host) dee)).revoked_by <> None);
+  let st, _ =
+    call
+      ~body:(signed (Keys.sign_json admin claim))
+      ("members/" ^ enc dee ^ "/revocations")
+  in
+  Alcotest.(check int) "the admin's revoke is posted" 201 st;
+  let f = Core_node.fold host in
+  Alcotest.(check (list (pair string string)))
+    "the fold refuses nothing" [] f.rejected;
+  Alcotest.(check bool)
+    "Dee reads Revoked" true
+    ((Option.get (Fold.find f dee)).revoked_by <> None);
+  Alcotest.(check (pair int string))
+    "a second removal is refused" (422, "revoked") (refused dee)
+
+let admin_removal_refuses_sitting_admin () =
+  let host, _, dee, admin = removal_circle ~dee_admin:true in
+  let st, j =
+    call host (session host) ~meth:"POST"
+      ~body:(`Assoc [ ("by", `String (Keys.public admin)) ])
+      ("members/" ^ enc dee ^ "/revocation_drafts")
+  in
+  Alcotest.(check (pair int string))
+    "a sitting admin is refused" (422, "sitting_admin")
+    (st, match j with `List (e :: _) -> s "code" e | _ -> "")
 
 (* DIG-394: a member in review is told by their own node, in a notice their digest carries; Ada has
    just joined and written nothing, and her dinner was weeks ago. *)
@@ -15400,6 +15560,11 @@ let () =
           Alcotest.test_case "member review: Last note" `Quick
             last_note_counts_no_status_note;
           Alcotest.test_case "member review" `Quick (cleaned member_review);
+          Alcotest.test_case "member review: an admin removes a member" `Quick
+            (cleaned admin_removes_member);
+          Alcotest.test_case "member review: a sitting admin is not removed"
+            `Quick
+            (cleaned admin_removal_refuses_sitting_admin);
           Alcotest.test_case "member review: the member's notice" `Quick
             member_review_notice;
           Alcotest.test_case "Members lists a revoked member" `Quick

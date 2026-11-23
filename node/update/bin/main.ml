@@ -1243,6 +1243,42 @@ let approve_cmd =
           release key, read only once you answer y.")
     Term.(const go $ approve_circle $ id)
 
+let remove_cmd =
+  let identity =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"IDENTITY"
+          ~doc:
+            "The member's identity key, as their member page and the review \
+             item show it.")
+  in
+  let go circle identity =
+    match circle_dir circle with
+    | Error e -> exit_err e
+    | Ok data_dir -> (
+        let remover =
+          match circle_admin_key data_dir with
+          | Some k -> Ok (Keys.public k, fun () -> Ok k)
+          | None -> approver ()
+        in
+        match remover with
+        | Error e -> exit_err e
+        | Ok (me, read_secret) ->
+            on_node ~data_dir (fun api ->
+                Remove.remove_as ~api ~me ~read_secret ~ask ~say:print_endline
+                  identity))
+  in
+  Cmd.v
+    (Cmd.info "remove"
+       ~doc:
+         "Remove the member IDENTITY from the circle: a revoke signed with \
+          your admin key, posted by this machine's node. A member who still \
+          holds an admin key is refused: a removal approval takes that key out \
+          first. The key is read as $(b,digestif-update approve) reads it, \
+          only once you answer y.")
+    Term.(const go $ approve_circle $ identity)
+
 let signers_propose_cmd =
   let replace =
     Arg.(
@@ -1298,6 +1334,7 @@ let () =
              circle_body_cmd;
              circle_receive_cmd;
              approve_cmd;
+             remove_cmd;
              signers_cmd;
            ])
     with Sys_error e -> exit_err e

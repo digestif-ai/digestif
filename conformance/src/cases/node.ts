@@ -1,13 +1,14 @@
 // Node cases: each builds relay histories on fresh local fake relays, runs the node's sync through
 // the adapter contract, and checks what the node concluded. Two checked relays play honest relays
 // that saw different subsets; an unchecked one plays a relay that accepted what it should not have.
-import { namedItemBody, pickBody, retractBody, summaryBody } from "../bodies.ts";
+import { keepId, namedItemBody, pickBody, retractBody, signKeep, summaryBody, type Keep } from "../bodies.ts";
 import { isoTime, jcs } from "../encoding.ts";
 import { envelopeHash, signEnvelope, unsignedPart, type Author, type SignedEnvelope } from "../envelope.ts";
 import { accepted, check, equal, type Case } from "../harness.ts";
 import { Signer } from "../keys.ts";
 import type { NodeRunner } from "../node-runner.ts";
 import type { NodeState } from "../reference-node.ts";
+import { EncryptionKey, seal } from "../sealing.ts";
 import type { World } from "../world.ts";
 import { LINES } from "./lines.ts";
 
@@ -349,6 +350,28 @@ export const nodeCases: Case<NodeContext>[] = [
       check(key(state, second!.identity.key)?.revoked === false, "the sitting admin is not revoked");
       check(key(state, second!.device.key)?.revoked === false, "nor their device");
       check(key(state, member!.identity.key)?.revoked === false, "the member is not revoked by a key outside the set, nor from another member's device");
+    },
+  },
+  {
+    id: "node.keep.admins-only",
+    covers: LINES.keep,
+    title:
+      "A Keep from an admin's device is honoured; one from a member who is no admin, and one the admin dated before a signer_set bound them, are ignored",
+    async run(context) {
+      const { world, a } = await context.ownCircle();
+      const [first, second, member, bystander] = await world.members(["keeping admin", "other admin", "member in review", "keeping bystander"], [a]);
+      // The node's own key, which every Keep is sealed to beside the admins and the member.
+      const reader = EncryptionKey.random();
+      const to = [first!, second!, member!].map((m) => m.identity.key).sort();
+      const post = (author: typeof first, keep: Keep) => world.post(author!.device, "", [a], "keep", { to, sealed: seal({ member: keep.member, created_at: keep.created_at, by: keep.by, signature: keep.signature }, [reader.raw]) });
+      const early = signKeep(first!.device.signer, member!.identity.key, new Date(Date.now() - 3600 * 1000));
+      await world.bindAdmins([first!, second!], [a]);
+      const later = new Date(Date.now() + 1000);
+      const byAdmin = signKeep(first!.device.signer, member!.identity.key, later);
+      const byBystander = signKeep(bystander!.device.signer, member!.identity.key, later);
+      for (const [author, keep] of [[first, early], [first, byAdmin], [bystander, byBystander]] as const) await post(author, keep);
+      const state = await context.node.sync(world.host.device.signer, [a], reader);
+      equal(state.keeps, [keepId(byAdmin)], "the Keeps the node honours: the admin's, dated after the signer_set that seats them");
     },
   },
   {

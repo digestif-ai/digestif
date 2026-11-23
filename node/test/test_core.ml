@@ -1846,7 +1846,28 @@ let admin_revokes_member () =
   Alcotest.(check (list (pair string (option string))))
     "the fold reports each key's binding"
     [ (Keys.public a, Some host_identity); (Keys.public b, Some host_identity) ]
-    (Fold.admin_bindings (fold [ both ]))
+    (Fold.admin_bindings (fold [ both ]));
+  (* DIG-399 (protocol.md, Member review): a Keep is judged by the set the fold held at its
+     created_at, each binding from the envelope that made it on. *)
+  let promoted =
+    bind ~seq:51 ~n:3 [ Some host_identity; Some roman_identity ]
+  in
+  let f = fold [ both; promoted ] in
+  Alcotest.(check (list bool))
+    "the dinner's set binds nobody, the first change the host, the second \
+     Roman too"
+    [ false; true; false; true; true ]
+    [
+      Fold.seated_at f ~at:(at 0) host_identity;
+      Fold.seated_at f ~at:(at 1) host_identity;
+      Fold.seated_at f ~at:(at 2) roman_identity;
+      Fold.seated_at f ~at:(at 3) roman_identity;
+      Fold.seated_at f ~at:(at 4) host_identity;
+    ];
+  Alcotest.(check (list (pair string (option string))))
+    "the set at a time is the set after the change ordered at or before it"
+    (Fold.admin_bindings f)
+    (Fold.admin_bindings_at f ~at:(at 3))
 
 (* docs/protocol.md, circle: a root naming one admin and no identity binds that admin's key to its
    host; a root naming the identity binds it as named. *)
