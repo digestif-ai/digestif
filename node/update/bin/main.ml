@@ -1218,19 +1218,20 @@ let approve_cmd =
     match circle_dir circle with
     | Error e -> exit_err e
     | Ok data_dir -> (
-    let approver =
-      match circle_admin_key data_dir with
-      | Some k -> Ok (Keys.public k, fun () -> Ok k)
-      | None -> approver ()
-    in
-    match approver with
-    | Error e -> exit_err e
-    | Ok (me, read_secret) ->
-        on_node ~data_dir (fun api ->
-            match id with
-            | None -> Approve.list ~api ~me ~say:print_endline
-            | Some id ->
-                Approve.sign_as ~api ~me ~read_secret ~ask ~say:print_endline id))
+        let approver =
+          match circle_admin_key data_dir with
+          | Some k -> Ok (Keys.public k, fun () -> Ok k)
+          | None -> approver ()
+        in
+        match approver with
+        | Error e -> exit_err e
+        | Ok (me, read_secret) ->
+            on_node ~data_dir (fun api ->
+                match id with
+                | None -> Approve.list ~api ~me ~say:print_endline
+                | Some id ->
+                    Approve.sign_as ~api ~me ~read_secret ~ask
+                      ~say:print_endline id))
   in
   Cmd.v
     (Cmd.info "approve"
