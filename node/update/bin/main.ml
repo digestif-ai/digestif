@@ -221,13 +221,22 @@ let clone_address ~repo ~branch checkout =
     let* () =
       git
         [
-          "clone"; "--quiet"; "--depth"; "1"; "--filter=blob:none"; "--sparse";
-          "--branch"; branch; url; checkout;
+          "clone";
+          "--quiet";
+          "--depth";
+          "1";
+          "--filter=blob:none";
+          "--sparse";
+          "--branch";
+          branch;
+          url;
+          checkout;
         ]
     in
     git ~cwd:checkout [ "sparse-checkout"; "set"; channel_dir ]
   else
-    git [ "clone"; "--quiet"; "--depth"; "1"; "--branch"; branch; url; checkout ]
+    git
+      [ "clone"; "--quiet"; "--depth"; "1"; "--branch"; branch; url; checkout ]
 
 (* Commit and push what the checkout at [checkout] holds changed, as one commit on [branch]. Answers
    whether it pushed a commit; Error when the push lost a race or failed. *)
@@ -235,12 +244,15 @@ let push_if_changed ~branch ~message checkout =
   let ( let* ) = Result.bind in
   let* () = git ~cwd:checkout [ "add"; "--all"; "." ] in
   match
-    Proc.run ~timeout:60. [| "git"; "-C"; checkout; "diff"; "--cached"; "--quiet" |]
+    Proc.run ~timeout:60.
+      [| "git"; "-C"; checkout; "diff"; "--cached"; "--quiet" |]
   with
   | Ok { code = 0; _ } -> Ok false
   | Ok { code = 1; _ } ->
       let* () = git ~cwd:checkout [ "commit"; "--quiet"; "-m"; message ] in
-      let* () = git ~cwd:checkout [ "push"; "--quiet"; "origin"; "HEAD:" ^ branch ] in
+      let* () =
+        git ~cwd:checkout [ "push"; "--quiet"; "origin"; "HEAD:" ^ branch ]
+      in
       Ok true
   | Ok { code; stderr; _ } ->
       Error (Printf.sprintf "git diff exited %d: %s" code (String.trim stderr))
@@ -625,9 +637,9 @@ let revoke_cmd =
             else
               Printf.printf "signed the revocation of %s already in %s\n"
                 revoked (where ~channel ~repo);
-            print_endline
-              "post it on the circle from a machine running a node:";
-            Printf.printf "  printf '%%s' '%s' | digestif post --kind %s --body -\n"
+            print_endline "post it on the circle from a machine running a node:";
+            Printf.printf
+              "  printf '%%s' '%s' | digestif post --kind %s --body -\n"
               (Yojson.Safe.to_string (Circle_revocation.to_body w.revocation))
               Circle_revocation.kind;
             0)
@@ -785,8 +797,8 @@ let verify_cmd =
       & opt (some string) None
       & info [ "channel" ] ~docv:"BASE"
           ~doc:
-            "A release channel (a URL or a checkout of the channel branch) \
-             whose signers/ changes the set is advanced by, each checked \
+            "A release channel (a URL or a directory laid out as release/ on \
+             main) whose signers/ changes the set is advanced by, each checked \
              against the set before it.")
   in
   let version =
@@ -1046,9 +1058,7 @@ let relay_publish_cmd =
     | Error e -> exit_err e
     | Ok version -> (
         match
-          Relay_publish.run
-            (relay_publish_env ~repo ~data_dir ())
-            ~version
+          Relay_publish.run (relay_publish_env ~repo ~data_dir ()) ~version
         with
         | Ok (Relay_publish.Held _) -> 75
         | Ok _ -> 0

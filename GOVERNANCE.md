@@ -13,7 +13,11 @@ node enforces it.
 
 A node installs only a release both signers signed. The keys a build trusts are in
 [`node/update/release-signers.json`](node/update/release-signers.json); until both public keys are
-there, a node installs no update. Each signer makes their key with `digestif-update keygen` and keeps
+there, a node installs no update. A signer's take-backs (a recall, a revocation, a signer-set
+change) are written by their own `digestif-update` to both of the channel's addresses, `release/` on
+main, which nodes read, and the `channel` branch, which nodes older than that move still read; so
+each signer runs `digestif-update signer install` again once their node runs the first version that
+reads `release/` on main, and their signing job's pinned copy writes both too. Each signer makes their key with `digestif-update keygen` and keeps
 the secret in their own password manager (1Password, or the macOS Keychain behind its password),
 never in a plain file on the disk of a machine that runs a node. A signer
 signs a version with `digestif-update sign --next`, which reads the key from the password manager,
@@ -39,8 +43,10 @@ The node accepts nothing else as a change of signers.
 
 ## A compromised release key
 
-1. The other signer publishes a revocation of the key, signed with their own release key, in
-   `revocations/` on the `channel` branch and on the circle.
+1. The other signer publishes a revocation of the key, signed with their own release key, with
+   `digestif-update revoke <key> --reason "..."`, which writes it to the channel's `revocations/` at
+   both of its addresses (`release/` on main and the `channel` branch), and posts it on the circle
+   ([docs/releases.md](docs/releases.md), Revoking a release key).
 2. Nodes refuse every ordinary release while the revoked key is in the set.
 3. Every current key, the revoked one included, signs a signer-set change naming a set without the
    revoked key; adopting it clears the halt, of updates and of admissions. A revoked key never returns to a signer set.
@@ -81,4 +87,5 @@ cannot, and the change to this file is the record that they agreed.
 
 The repo lives in the `digestif-ai` organization on GitHub, at
 [github.com/digestif-ai/digestif](https://github.com/digestif-ai/digestif). Nodes read the release
-channel from that address, so none depends on GitHub's redirect from an earlier one.
+channel from that address, `release/` on main (and a node older than the move, the `channel`
+branch), so none depends on GitHub's redirect from an earlier one.

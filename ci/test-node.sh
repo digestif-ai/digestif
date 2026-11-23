@@ -2,16 +2,21 @@
 #
 # One test node (docs/releases.md, Test nodes): on a throwaway runner, takes a signed version the
 # way a member's node does, before any member can. It installs the last published version under its
-# supervisor and the service manager, runs `digestif update apply --feed <candidate>`, restarts the
-# service for the trial, restarts it again so the new version's own supervisor runs, and runs one
-# more update pass with the new version's code. With nothing published yet, the version installs
-# directly and the rest is the same.
+# supervisor and the service manager, runs `digestif update apply --feed <feed>`, restarts the
+# service for the trial, restarts it again so the new version's own supervisor runs, runs one more
+# update pass with the new version's code against the feed, and a last one against the channel the
+# new version reads by default, which proves that version reads release/ on main. With nothing
+# published yet, the version installs directly and the rest is the same.
 #
 #   ci/test-node.sh VERSION [--feed DIR_OR_URL] [--channel DIR_OR_URL]
 #
-# --feed is the candidate feed and --channel the published one; by default both are on the channel
-# branch of this repository. A local directory is what the rehearsal uses
-# (ci/test-node-rehearsal.sh).
+# --feed is the version's one-entry feed, by default the one `ci/release.sh feed` lays out from the
+# prerelease and the channel's take-backs, and
+# --channel the published one the starting version comes from: by default release/ on main of this
+# repository, and the channel branch while main's list names no version, so the first version that
+# reads main is tested making the move from the branch every member's node makes. A local directory
+# is what the rehearsal uses (ci/test-node-rehearsal.sh); given --channel, the last pass reads it
+# too.
 #
 # Exits 0 when the node took the version, 1 when the version failed on it (refused, rolled back, or
 # its own supervisor or update pass did not work), and 75 when this run observed nothing about the
@@ -49,14 +54,15 @@ unobserved() {
   echo "test-node.sh: this replaces the machine's Digestif service, so it runs only on a CI runner" >&2
   exit 2
 }
-[ $# -ge 1 ] || {
+usage() {
   echo "usage: ci/test-node.sh VERSION [--feed DIR_OR_URL] [--channel DIR_OR_URL]" >&2
   exit 2
 }
+[ $# -ge 1 ] || usage
 version="$1"
 shift
 repo="${GITHUB_REPOSITORY:-digestif-ai/digestif}"
-channel="https://raw.githubusercontent.com/$repo/channel/"
+channel=""
 feed=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -65,9 +71,16 @@ while [ $# -gt 0 ]; do
     *) echo "test-node.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$feed" ] || feed="${channel%/}/candidate/"
+# The channel the new version's last pass reads: --channel's, else its own default, release/ on main.
+last_feed=()
+[ -z "$channel" ] || last_feed=(--feed "$channel")
 
 work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/test-node.XXXXXX")"
+if [ -z "$feed" ]; then
+  feed="$work/feed"
+  "$(dirname "${BASH_SOURCE[0]}")/release.sh" feed --version "$version" --dir "$feed" ||
+    unobserved "the feed of $version could not be laid out"
+fi
 label=com.digestif.node
 unit=digestif.service
 
@@ -142,6 +155,19 @@ last_published() {
     [ .releases[].version | select(key < ($v | key)) ] | sort_by(key) | last // empty'
 }
 
+# Where the channel's entry for $1 says its manifest is: an https url as it stands, else a path in
+# the channel.
+manifest_of() {
+  local rel
+  rel="$(fetch "${channel%/}/index.json" |
+    jq -r --arg v "$1" 'first(.releases[] | select(.version == $v) | .manifest) // empty')" || return 1
+  [ -n "$rel" ] || return 1
+  case "$rel" in
+    https://*) echo "$rel" ;;
+    *) echo "${channel%/}/$rel" ;;
+  esac
+}
+
 # Unpacks this platform's archive of the manifest at $1 into $2, checking its sha256.
 unpack() {
   local manifest="$1" into="$2" url want got archive
@@ -178,6 +204,13 @@ step "$platform: the service manager"
 prepare_service_manager || unobserved "the runner gave no service manager"
 
 step "what is published"
+if [ -z "$channel" ]; then
+  channel="https://raw.githubusercontent.com/$repo/main/release/"
+  if listed="$(fetch "${channel}index.json" | jq '.releases | length')" && [ "$listed" = 0 ]; then
+    echo "main's release list names no version yet, so the start comes from the channel branch"
+    channel="https://raw.githubusercontent.com/$repo/channel/"
+  fi
+fi
 if ! start="$(last_published)"; then
   unobserved "the channel's index.json could not be read"
 fi
@@ -185,7 +218,8 @@ fi
 manifest="$work/manifest.json"
 if [ -n "$start" ]; then
   step "install the last published version, $start"
-  fetch "${channel%/}/$start/manifest.json" >"$manifest" || unobserved "the manifest of $start could not be read"
+  url="$(manifest_of "$start")" || unobserved "the channel names no manifest of $start"
+  fetch "$url" >"$manifest" || unobserved "the manifest of $start could not be read"
   unpack "$manifest" "$work/start"
   case $? in
     0) ;;
@@ -239,7 +273,8 @@ if [ -n "$start" ]; then
   echo "$version is healthy on trial"
 else
   step "nothing to update from: install $version directly"
-  fetch "${feed%/}/$version/manifest.json" >"$manifest" || unobserved "the manifest of $version could not be read"
+  url="$(channel="$feed" manifest_of "$version")" || unobserved "the feed names no manifest of $version"
+  fetch "$url" >"$manifest" || unobserved "the manifest of $version could not be read"
   unpack "$manifest" "$work/version"
   case $? in
     0) ;;
@@ -275,6 +310,21 @@ state="$(check)" || no "update check failed: $state"
 echo "$state"
 grep -qx "installed $version" <<<"$state" || no "the node does not say it installed $version"
 grep -q '^refused for good' <<<"$state" && no "the node refused a version: $state"
+
+step "a last update pass, the channel $version reads by default"
+for attempt in 1 2 3; do
+  out="$("$data/current/bin/digestif" update apply --data-dir "$data" ${last_feed[@]+"${last_feed[@]}"} 2>&1)"
+  status=$?
+  echo "$out"
+  case "$status:$out" in
+    0:*"could not be read"* | 0:*"update check failed"*) ;;
+    0:*"was refused"* | 0:*"was not installed"*) no "the last pass refused something: $out" ;;
+    0:*"nothing switched"*) break ;;
+    *) no "the last pass did not finish: $out" ;;
+  esac
+  [ "$attempt" -lt 3 ] || no "the last pass could not read its channel: $out"
+  sleep 30
+done
 
 show_logs
 step "$platform took $version"

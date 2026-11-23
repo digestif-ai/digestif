@@ -3170,7 +3170,8 @@ let test_recall_two_addresses () =
     | Error e -> Alcotest.fail e
   in
   Alcotest.(check int) "on main" 1 (List.length (recalls main));
-  Alcotest.(check int) "not on a branch that never listed it" 0
+  Alcotest.(check int)
+    "not on a branch that never listed it" 0
     (List.length (recalls branch));
   ignore (recall ~secret:roman ~reason:"old" ~dirs:[ branch ] "0.2.0");
   let w = recall ~secret:mike ~reason:"mine" ~dirs:[ main; branch ] "0.2.0" in
@@ -3178,9 +3179,7 @@ let test_recall_two_addresses () =
   Alcotest.(check string) "the branch's reason stands" "old" w.recall.doc.reason;
   List.iter
     (fun dir ->
-      match
-        Policy.recall_of (trust founders) (recalls dir) (v "0.2.0")
-      with
+      match Policy.recall_of (trust founders) (recalls dir) (v "0.2.0") with
       | Some r ->
           Alcotest.(check bool) (dir ^ ": both signers") true r.every_signer
       | None -> Alcotest.fail (dir ^ ": the recall did not count"))
@@ -3206,8 +3205,7 @@ let test_revocation_two_addresses () =
   let revoke ~secret ~reason =
     match
       Revocation_channel.write_revocations ~dirs:[ main; branch ] ~secret
-        ~key:(Keys.public roman) ~reason
-        ~revoked_at:"2026-11-01T00:00:00.000Z"
+        ~key:(Keys.public roman) ~reason ~revoked_at:"2026-11-01T00:00:00.000Z"
     with
     | Ok w -> w
     | Error e -> Alcotest.fail e
@@ -3216,18 +3214,21 @@ let test_revocation_two_addresses () =
   Alcotest.(check bool) "wrote it" true w.first;
   let w = revoke ~secret:roman ~reason:"it was mine" in
   Alcotest.(check bool) "signed the same document" false w.first;
-  Alcotest.(check string) "the first reason stands" "laptop stolen"
-    w.revocation.doc.reason;
+  Alcotest.(check string)
+    "the first reason stands" "laptop stolen" w.revocation.doc.reason;
   List.iter
     (fun dir ->
       match Feed.read Feed.default_fetch ~base:dir ~installed:(v "0.1.0") with
       | Error e -> Alcotest.fail e
       | Ok f ->
           Alcotest.(check (list string)) "no problems" [] f.problems;
-          Alcotest.(check int) (dir ^ ": listed once") 1
+          Alcotest.(check int)
+            (dir ^ ": listed once") 1
             (List.length f.revocations);
           let t = Policy.apply_revocations (trust founders) f.revocations in
-          Alcotest.(check bool) (dir ^ ": Roman's key revoked") true
+          Alcotest.(check bool)
+            (dir ^ ": Roman's key revoked")
+            true
             (Policy.is_revoked t (Keys.public roman)))
     [ main; branch ]
 
@@ -3907,7 +3908,8 @@ let relay_answer f ?node_draft ?draft ?extra ?manifest_digest
   | [ "release"; "upload"; _; path; "--repo"; "o/r"; "--clobber" ] ->
       f.r_uploaded := Some path;
       f.r_upload_bytes :=
-        !(f.r_upload_bytes) @ [ In_channel.with_open_bin path In_channel.input_all ];
+        !(f.r_upload_bytes)
+        @ [ In_channel.with_open_bin path In_channel.input_all ];
       Ok ""
   | [
    "release";
@@ -4271,7 +4273,7 @@ let test_relay_publish_reuses_the_manifest () =
     "each step timed"
     [
       "settle announce";
-            "settle listing";
+      "settle listing";
       "settle manifest";
       "settle release-edit";
       "settle signatures";

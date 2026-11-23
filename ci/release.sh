@@ -386,7 +386,7 @@ cmd_signatures() {
 # first main-reading version, and the root of the `channel` branch, which an older node reads until
 # it updates. Here only publish writes it; a recall, a revocation and a signer-set change are a
 # signer's own, written to both addresses by `digestif-update`. The branch holds no workflow, so a
-# push to it starts nothing, and the Release workflow ignores a push to main touching only release/.
+# push to it starts nothing.
 channel_branch=channel
 channel_dir=release
 # How many of the newest published versions the release list keeps (docs/releases.md, The channel).
@@ -494,8 +494,7 @@ channel_commit() {
 # Runs `$@ <worktree>` on a worktree of origin/main and pushes what it changed under release/ as one
 # commit on main titled $message; a push that lost a race starts again from main's new head, as
 # Land pushes main. A commit touching only release/ is no new code: ci/release-paths and
-# ci/relay-release-paths name none of it, so its rollout tags nothing, and the Release workflow
-# ignores it.
+# ci/relay-release-paths name none of it, so its rollout tags nothing.
 main_commit() {
   local message="$1" attempt wt head
   shift
@@ -1085,11 +1084,13 @@ fold_branch_takebacks() {
 }
 
 # The channel as every check here reads it, laid out in the directory $1: release/ of origin/main as
-# fetched (a feed with no releases where main holds none), with every take-back the branch holds
+# fetched now (a feed with no releases where main holds none), with every take-back the branch holds
 # that main lacks (fold_branch_takebacks).
 channel_read() {
   local dir="$1"
   mkdir -p "$dir"
+  git -C "$root" fetch --quiet --force origin main:refs/remotes/origin/main ||
+    unread "could not fetch main"
   if git -C "$root" cat-file -e "refs/remotes/origin/main:$channel_dir/index.json" 2>/dev/null; then
     git -C "$root" archive "refs/remotes/origin/main" "$channel_dir" | tar -x -C "$dir" --strip-components 1 ||
       unread "could not export main's $channel_dir/"
@@ -1193,8 +1194,6 @@ cmd_feed() {
   [ -n "$version" ] && [ -n "$out" ] || usage
   valid_version "$version" || die "$version is not MAJOR.MINOR.PATCH"
   tag="v$version"
-  git -C "$root" fetch --quiet --force origin main:refs/remotes/origin/main ||
-    unread "could not fetch main"
   channel_read "$out"
   jq --arg v "$version" --arg m "$(asset_url "$tag" manifest.json)" \
     --arg s "$(asset_url "$tag" manifest.sig.json)" \

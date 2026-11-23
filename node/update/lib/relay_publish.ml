@@ -144,7 +144,8 @@ let verified env ?manifest ~version () =
 
 (* Step 2's file: the signatures kept, as manifest.sig.json, uploaded to the release so a reader
    of one signatures file (the break-glass deploy) finds every signer's in it. *)
-let upload_signatures env ~tag (signed : Release.relay_manifest Release.signed) =
+let upload_signatures env ~tag (signed : Release.relay_manifest Release.signed)
+    =
   let dir = Filename.temp_dir "digestif-relay-publish" "" in
   let path = Filename.concat dir "manifest.sig.json" in
   Fun.protect
@@ -156,7 +157,8 @@ let upload_signatures env ~tag (signed : Release.relay_manifest Release.signed) 
           Out_channel.output_string oc
             (Release.signatures_to_string signed.signatures));
       Result.map ignore
-        (env.gh [ "release"; "upload"; tag; path; "--repo"; env.repo; "--clobber" ]))
+        (env.gh
+           [ "release"; "upload"; tag; path; "--repo"; env.repo; "--clobber" ]))
 
 (* Step 3's rule. A relay deployed before relay releases does not know the relay_release kind and
    answers its append 422 malformed, which a node's sync reads as a permanent refusal: it would

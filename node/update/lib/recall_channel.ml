@@ -23,7 +23,8 @@ let entry v =
 
 (* The index with [v]'s recall listed, or unchanged when it is already. Every other field of the
    index is kept as it is. *)
-let index_with_recall json v = Takeback.index_with json ~list:"recalls" ~entry:(entry v)
+let index_with_recall json v =
+  Takeback.index_with json ~list:"recalls" ~entry:(entry v)
 
 (* Whether the channel checked out at [dir] lists [version]. *)
 let lists ~dir version =

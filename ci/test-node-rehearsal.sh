@@ -64,9 +64,10 @@ build() {
   chmod 755 "$tool"
 }
 
-# Writes $1's signed manifest under $2 of the channel.
+# Writes $1's signed manifest into the version's own feed, as `ci/release.sh feed` lays one out.
+feed="$work/feed"
 sign_into() {
-  local version="$1" dir="$channel/$2/$1"
+  local version="$1" dir="$feed/$1"
   mkdir -p "$dir"
   "$tool" manifest "$version" --notes "A rehearsal." --platforms "$work/platforms.json" \
     --url-base "$work/archives" \
@@ -84,34 +85,34 @@ index() {
 }
 
 build 0.0.1
-sign_into 0.0.1 candidate
-index 0.0.1 >"$channel/candidate/index.json"
+sign_into 0.0.1
+index 0.0.1 >"$feed/index.json"
 
 step "the first version installs directly"
-"$root/ci/test-node.sh" 0.0.1 --channel "$channel" --feed "$channel/candidate"
+"$root/ci/test-node.sh" 0.0.1 --channel "$channel" --feed "$feed"
 
 step "publish 0.0.1"
-mv "$channel/candidate/0.0.1" "$channel/0.0.1"
+mv "$feed/0.0.1" "$channel/0.0.1"
 index 0.0.1 >"$channel/index.json"
 
 build 0.0.2
-sign_into 0.0.2 candidate
-index 0.0.2 >"$channel/candidate/index.json"
+sign_into 0.0.2
+index 0.0.2 >"$feed/index.json"
 
 step "the next version updates from the last published one"
-"$root/ci/test-node.sh" 0.0.2 --channel "$channel" --feed "$channel/candidate"
+"$root/ci/test-node.sh" 0.0.2 --channel "$channel" --feed "$feed"
 
 step "publish 0.0.2"
-mv "$channel/candidate/0.0.2" "$channel/0.0.2"
+mv "$feed/0.0.2" "$channel/0.0.2"
 index 0.0.2 >"$channel/index.json"
 
 # A manifest calling the 0.0.2 archive 0.0.3: its binary fails the self-test, as a bad version does.
 step "a version that fails its self-test is a no, not a silence"
 cp "$work/archives/digestif-$platform-0.0.2.tar.gz" "$work/archives/digestif-$platform-0.0.3.tar.gz"
-sign_into 0.0.3 candidate
-index 0.0.3 >"$channel/candidate/index.json"
+sign_into 0.0.3
+index 0.0.3 >"$feed/index.json"
 status=0
-"$root/ci/test-node.sh" 0.0.3 --channel "$channel" --feed "$channel/candidate" || status=$?
+"$root/ci/test-node.sh" 0.0.3 --channel "$channel" --feed "$feed" || status=$?
 [ "$status" = 1 ] || {
   echo "test-node-rehearsal.sh: a bad version exited $status, not 1" >&2
   exit 1
