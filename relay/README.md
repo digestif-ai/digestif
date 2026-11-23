@@ -258,14 +258,16 @@ node whose deploy keeps failing), deploy the release both signers signed, never 
 
 It runs nothing against the account until every check has passed:
 
-1. downloads `relay/<version>/manifest.json` and `relay/<version>/manifest.sig.json` from the
-   channel (`https://raw.githubusercontent.com/digestif-ai/digestif/channel/`; `DIGESTIF_CHANNEL`
-   names another, a url or a directory), and refuses a version the channel does not hold;
+1. downloads `manifest.json` and the combined `manifest.sig.json` from the version's GitHub release,
+   `https://github.com/digestif-ai/digestif/releases/download/relay-v<version>/`
+   (`DIGESTIF_RELEASES` names another place holding `relay-v<version>/`, a url or a directory), and
+   refuses a version with no published release;
 2. checks the signatures with `digestif-update verify --expect-version <version>`, which prints
    `signed NAME` or `missing NAME` per signer and passes only when every key of the release signer
    set signed and none is revoked. The `digestif-update` is never the release's own: `DIGESTIF_UPDATE`
    names one, else the node's (`<data dir>/good/bin/digestif-update`), else one on `PATH`, else the
-   newest published node release's `digestif-update-<platform>`;
+   `digestif-update-<platform>` of the newest version the release list on main names that no recall
+   takes out (the channel branch's list while main's names none);
 3. downloads the bundle the manifest names and checks its sha256 and size against the manifest
    before unpacking it, then that its `migrations/` are exactly the manifest's, each with its
    sha256 (`scripts/release.ts`);

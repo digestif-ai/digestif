@@ -64,7 +64,7 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
   sha="$(shasum -a 256 "$tmp/digestif-$platform.tar.gz" | awk '{ print $1 }')"
 fi
-link="https://github.com/digestif-ai/digestif/tree/channel/9.9.9"
+link="https://github.com/digestif-ai/digestif/releases/tag/v9.9.9"
 
 # A matching archive installs.
 manifest "$sha" > "$tmp/manifest.json"

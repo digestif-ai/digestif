@@ -295,7 +295,7 @@ as a fault. Appending a recall the circle already carries is harmless.
 ```
 
 It announces one signed relay release to every node. `document` is the release's manifest
-(`digestif-relay-release-v1`) exactly as the channel publishes it under `relay/<version>/`, and
+(`digestif-relay-release-v1`) exactly as its GitHub release `relay-v<version>` holds it, and
 `signatures` is the list from its `manifest.sig.json`; each signature is over
 `DIGESTIF-RELAY-RELEASE-V0\n<decoded document bytes>`. A relay checks the envelope and the two
 fields, nothing more, as for the other two release kinds, and serves it in full to every reader, so
