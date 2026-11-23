@@ -8,7 +8,7 @@
   import FeedRow from '#lib/components/FeedRow.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { clockTime, memberStage, relativeTime, shortKey } from '#lib/format.ts';
+  import { clockTime, memberRowStage, relativeTime, shortKey } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
@@ -79,7 +79,7 @@
   <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
     <dt class="dg-muted">Stage</dt>
     <dd>
-      <StatusBadge status={member.status === 'revoked' ? { label: 'Revoked', tone: 'bad' } : memberStage(member.stage)} />
+      <StatusBadge status={memberRowStage(member)} />
     </dd>
     <dt class="dg-muted">Role</dt>
     <dd data-testid="member-role">{isAdmin(member) ? 'Admin' : 'Member'}</dd>

@@ -20,6 +20,7 @@ import {
   mailTime,
   logPassages,
   logRows,
+  memberRowStage,
   memberStage,
   memberStatus,
   messageStatus,
@@ -71,6 +72,11 @@ describe('stages', () => {
     expect(memberStage(Stage.Paused)).toEqual({ label: 'Paused', tone: 'warn' });
     expect(memberStage(Stage.Onboarding).label).toBe('Onboarding');
     expect(memberStage(MemberStage.Invited).label).toBe('Invited');
+  });
+
+  it('reads Revoked in the Stage of a revoked member, whatever stage they last held (DES-376)', () => {
+    expect(memberRowStage({ status: MemberStatus.Revoked, stage: Stage.Active })).toEqual({ label: 'Revoked', tone: 'bad' });
+    expect(memberRowStage({ status: MemberStatus.Active, stage: Stage.Paused }).label).toBe('Paused');
   });
 });
 

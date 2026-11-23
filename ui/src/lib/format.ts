@@ -278,6 +278,9 @@ export function problemLines(problems: Problem[], now: Date = new Date()): Probl
 }
 export const memberStatus = (s: MemberStatus): StatusLabel => MEMBER[s];
 export const memberStage = (s: string): StatusLabel => STAGE[s] ?? { label: s, tone: 'neutral' };
+/** A member's Stage cell: Revoked once their identity is revoked (DES-376), else their stage. */
+export const memberRowStage = (m: { status: MemberStatus; stage: string }): StatusLabel =>
+  m.status === 'revoked' ? memberStatus(m.status) : memberStage(m.stage);
 
 const SOURCE_KIND: Record<SourceKind, string> = { claude_code: 'Claude Code sessions', git: 'Git repositories', command: 'Command' };
 export const sourceKind = (k: SourceKind): string => SOURCE_KIND[k];

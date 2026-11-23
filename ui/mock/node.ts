@@ -123,6 +123,8 @@ function item(m: MockMessage): FeedItem {
 
 /** Members: Active first, then Paused, then Onboarding, the newest note first within each. */
 const STAGE_RANK: Record<string, number> = { active: 0, paused: 1, onboarding: 2 };
+/** Members' order, as the node's: by stage, and every revoked identity after Onboarding (DES-376). */
+const memberRank = (m: Member): number => (m.status === 'revoked' ? 3 : (STAGE_RANK[m.stage] ?? 2));
 
 function summary(m: Member): MemberSummary {
   const { joined_at: _j, devices: _d, recent: _r, ...rest } = m;
@@ -365,12 +367,8 @@ export class MockNode {
         'members',
         (_p, _b, q) =>
           page(
-            s.members
-              .filter((m) => m.status !== 'revoked')
-              .sort(
-                (x, y) =>
-                  (STAGE_RANK[x.stage] ?? 2) - (STAGE_RANK[y.stage] ?? 2) || (y.last_note_at ?? '').localeCompare(x.last_note_at ?? '')
-              )
+            [...s.members]
+              .sort((x, y) => memberRank(x) - memberRank(y) || (y.last_note_at ?? '').localeCompare(x.last_note_at ?? ''))
               .map((m) => summary(this.member(m))),
             q,
             (m) => m.identity

@@ -45,7 +45,7 @@ let feed: Item[]; // newest first
 let requests: string[];
 let hang: Set<string>;
 let stall: Set<string>; // answered with 200 headers and the body's first byte, then nothing
-let extraMembers: { identity: string; is_self: boolean; muted?: boolean }[];
+let extraMembers: { identity: string; is_self: boolean; muted?: boolean; name?: string; status?: string }[];
 let messages: Record<string, { voice: string; reply_to?: string; text?: string; kind?: string; author?: { identity: string }; created_at?: string }>; // what GET /messages/:hash knows
 let quiet: { start: string; end: string; active: boolean; ends_at?: string } | null; // GET /rules/quiet_hours; null is a 404
 let nodeLog: string; // the fake `digestif` appends its arguments here
@@ -573,6 +573,17 @@ const batchOf = (r: { stdin: string }) => {
   const lines = r.stdin.split("one JSON object a line:\n")[1]!.trim().split("\n");
   return lines.map((l) => JSON.parse(l) as { ref: string; hash: string; type: string; text: string; link?: string });
 };
+
+test("a revoked member, a row of Members (DES-376), is no one the Inbox agent can address", async () => {
+  extraMembers = [{ identity: "ed25519:gone", name: "GONE MEMBER", is_self: false, status: "revoked" }];
+  feed = [item(1)];
+  messages = { "sha256:1": { voice: "agent", kind: "summary", text: "NOTE TEXT: shipped the parser" } };
+  assert.equal(await go(), 0);
+  const runs = inboxRuns();
+  assert.equal(runs.length, 1);
+  assert.match(runs[0]!.stdin, /The circle's members/);
+  assert.ok(!runs[0]!.stdin.includes("ed25519:gone"), "the revoked identity is left out");
+});
 
 test("one run reads the batch: other members' notes and the items that reached the member, framed as untrusted data, under the member's Inbox prompt", async () => {
   mkdirSync(readStateDir(data), { recursive: true });

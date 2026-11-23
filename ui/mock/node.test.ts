@@ -135,6 +135,19 @@ describe('mock node', () => {
     expect(node.handle('GET', '/api/v0/rules/quiet_hours').status).toBe(404);
   });
 
+  it('lists a revoked member after Onboarding, and leaves them out of search (DES-376)', () => {
+    const node = new MockNode();
+    const gone = node.store.members.find((m) => m.identity !== node.store.self && m.stage === 'active');
+    expect(gone).toBeDefined();
+    if (gone === undefined) return;
+    gone.status = 'revoked' as Member['status'];
+    const rows = body<Member[]>(node, 'GET', 'members');
+    expect(rows[rows.length - 1]?.identity).toBe(gone.identity);
+    expect(rows[rows.length - 1]?.status).toBe('revoked');
+    const found = body<{ members: Member[] }>(node, 'GET', 'search?q=' + encodeURIComponent(gone.name)).members;
+    expect(found.map((m) => m.identity)).not.toContain(gone.identity);
+  });
+
   it('will not let a member mute themselves', () => {
     const node = new MockNode();
     expect(node.handle('PUT', '/api/v0/members/' + encodeURIComponent(node.store.self) + '/mute', { muted: true }).status).toBe(422);

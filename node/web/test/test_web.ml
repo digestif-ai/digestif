@@ -11912,6 +11912,41 @@ let member_review () =
          k.member = dee_id && Member_review.verifies k)
        opened)
 
+(* DIG-404 (DES-376, "A removed member reads Revoked everywhere"): a revoked identity is a row of
+   Members after Onboarding, reading revoked, and no search hit. Pia joins, then leaves. *)
+let members_list_a_revoked_member () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  Alcotest.(check string)
+    "Pia is in the circle" "active"
+    (s "status" (member_named call "Pia Gale"));
+  ignore
+    (peer_write n pia "revoke"
+       (Bodies.make_revoke ~by:pia.p_identity ~target:pia_id
+          ~after_seq:[ (Keys.public pia.p_device, pia.p_seq) ]
+          ~mail_read:[]));
+  keep_up n;
+  let rows = list (snd (call "members")) in
+  (match List.rev rows with
+  | last :: rest ->
+      Alcotest.(check string) "Pia is the last row" pia_id (s "identity" last);
+      Alcotest.(check string) "reading revoked" "revoked" (s "status" last);
+      Alcotest.(check bool)
+        "every row before her is in the circle" true
+        (List.for_all (fun m -> s "status" m = "active") rest)
+  | [] -> Alcotest.fail "no members");
+  Alcotest.(check int)
+    "a page holds her" 200
+    (fst (call ("members?limit=1&cursor=" ^ enc pia_id)));
+  Alcotest.(check bool)
+    "search leaves her out" false
+    (List.exists
+       (fun m -> s "identity" m = pia_id)
+       (list (member "members" (snd (call "search?q=Pia")))))
+
 (* DIG-394: a member in review is told by their own node, in a notice their digest carries; Ada has
    just joined and written nothing, and her dinner was weeks ago. *)
 let member_review_notice () =
@@ -15367,6 +15402,8 @@ let () =
           Alcotest.test_case "member review" `Quick (cleaned member_review);
           Alcotest.test_case "member review: the member's notice" `Quick
             member_review_notice;
+          Alcotest.test_case "Members lists a revoked member" `Quick
+            members_list_a_revoked_member;
           Alcotest.test_case "suggestion rounds" `Quick suggestion_rounds;
           Alcotest.test_case "a suggestion adopted" `Quick suggestion_flow;
           Alcotest.test_case "a suggestion with judges" `Quick suggestion_judges;

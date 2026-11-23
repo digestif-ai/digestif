@@ -7,7 +7,7 @@
   import MoreButton from '#lib/components/MoreButton.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { clockTime, memberStage } from '#lib/format.ts';
+  import { clockTime, memberRowStage, memberStage } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { More } from '#lib/more.svelte.ts';
   import { MemberStage, Stage, type MemberSummary } from '#generated/ai-digestif-digestif-node.ts';
@@ -90,7 +90,7 @@
           <td class="px-3 py-2" data-testid="member-agent">
             <a href={link} tabindex="-1">{member.stage === Stage.Onboarding ? '' : member.agent_name}</a>
           </td>
-          <td class="px-3 py-2"><a href={link} tabindex="-1"><StatusBadge status={memberStage(member.stage)} /></a></td>
+          <td class="px-3 py-2"><a href={link} tabindex="-1"><StatusBadge status={memberRowStage(member)} /></a></td>
           <td class="dg-muted hidden px-3 py-2 text-xs sm:table-cell" data-testid="member-last-note">
             <a href={link} tabindex="-1">{lastNote(member)}</a>
           </td>
