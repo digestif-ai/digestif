@@ -65,7 +65,10 @@ let xml_escape s =
     s;
   Buffer.contents b
 
-let launchd_plist ?(command = [ "run" ]) ~exe ~dir ~log_dir ~path () =
+(* [env] is set in the service beside PATH: the machine's service carries DIGESTIF_CIRCLES when
+   the shell that installed it named one, so its supervisor finds the circles that shell does. *)
+let launchd_plist ?(command = [ "run" ]) ?(env = []) ~exe ~dir ~log_dir ~path ()
+    =
   let args = (exe :: command) @ [ "--data-dir"; dir ] in
   String.concat "\n"
     ([
@@ -85,6 +88,15 @@ let launchd_plist ?(command = [ "run" ]) ~exe ~dir ~log_dir ~path () =
         "  <dict>";
         "    <key>PATH</key>";
         "    <string>" ^ xml_escape path ^ "</string>";
+      ]
+    @ List.concat_map
+        (fun (k, v) ->
+          [
+            "    <key>" ^ xml_escape k ^ "</key>";
+            "    <string>" ^ xml_escape v ^ "</string>";
+          ])
+        env
+    @ [
         "  </dict>";
         "  <key>RunAtLoad</key>";
         "  <true/>";
@@ -120,26 +132,32 @@ let systemd_quote s =
 (* systemd expands %-specifiers in Environment= and ExecStart=; %% is a literal %. *)
 let systemd_escape s = String.concat "%%" (String.split_on_char '%' s)
 
-let systemd_unit ?(command = [ "run" ]) ~exe ~dir ~path () =
+let systemd_unit ?(command = [ "run" ]) ?(env = []) ~exe ~dir ~path () =
   String.concat "\n"
-    [
-      "[Unit]";
-      "Description=Digestif node";
-      "After=network-online.target";
-      "Wants=network-online.target";
-      "";
-      "[Service]";
-      "Environment=" ^ systemd_quote (systemd_escape ("PATH=" ^ path));
-      "ExecStart="
-      ^ String.concat " "
-          (List.map systemd_quote ((exe :: command) @ [ "--data-dir"; dir ]));
-      "Restart=always";
-      "RestartSec=30";
-      "";
-      "[Install]";
-      "WantedBy=default.target";
-      "";
-    ]
+    ([
+       "[Unit]";
+       "Description=Digestif node";
+       "After=network-online.target";
+       "Wants=network-online.target";
+       "";
+       "[Service]";
+       "Environment=" ^ systemd_quote (systemd_escape ("PATH=" ^ path));
+     ]
+    @ List.map
+        (fun (k, v) ->
+          "Environment=" ^ systemd_quote (systemd_escape (k ^ "=" ^ v)))
+        env
+    @ [
+        "ExecStart="
+        ^ String.concat " "
+            (List.map systemd_quote ((exe :: command) @ [ "--data-dir"; dir ]));
+        "Restart=always";
+        "RestartSec=30";
+        "";
+        "[Install]";
+        "WantedBy=default.target";
+        "";
+      ])
 
 let home () = Option.value (Sys.getenv_opt "HOME") ~default:"."
 
@@ -190,7 +208,7 @@ let legacy ~fixed_path dir =
         runs_dir ~contents dir || runs_dir ~contents (Node.canonical_dir dir)
     | exception Sys_error _ -> false
 
-let launchd_plan ?command ~exe ~dir ~path () =
+let launchd_plan ?command ?env ~exe ~dir ~path () =
   let name = label_of dir in
   let file = launchd_path name in
   let domain = "gui/" ^ string_of_int (Unix.getuid ()) in
@@ -200,20 +218,20 @@ let launchd_plan ?command ~exe ~dir ~path () =
   let old = if legacy ~fixed_path:fixed dir then [ label ] else [] in
   {
     path = file;
-    contents = launchd_plist ?command ~exe ~dir ~log_dir:dir ~path ();
+    contents = launchd_plist ?command ?env ~exe ~dir ~log_dir:dir ~path ();
     load = [ [| "/bin/launchctl"; "bootstrap"; domain; file |] ];
     unload = List.map bootout (old @ [ name ]);
     loaded = List.map probe (old @ [ name ]);
     retire = (if old = [] then [] else [ fixed ]);
   }
 
-let systemd_plan ?command ~exe ~dir ~path () =
+let systemd_plan ?command ?env ~exe ~dir ~path () =
   let name = unit_name_of dir in
   let fixed = systemd_path unit_name in
   let old = if legacy ~fixed_path:fixed dir then [ unit_name ] else [] in
   {
     path = systemd_path name;
-    contents = systemd_unit ?command ~exe ~dir ~path ();
+    contents = systemd_unit ?command ?env ~exe ~dir ~path ();
     load =
       [
         [| "systemctl"; "--user"; "daemon-reload" |];
@@ -227,9 +245,9 @@ let systemd_plan ?command ~exe ~dir ~path () =
     retire = (if old = [] then [] else [ fixed ]);
   }
 
-let plan ?command ~exe ~dir ~path () =
-  if Keystore.is_macos () then launchd_plan ?command ~exe ~dir ~path ()
-  else systemd_plan ?command ~exe ~dir ~path ()
+let plan ?command ?env ~exe ~dir ~path () =
+  if Keystore.is_macos () then launchd_plan ?command ?env ~exe ~dir ~path ()
+  else systemd_plan ?command ?env ~exe ~dir ~path ()
 
 let run_all cmds =
   List.fold_left
@@ -310,3 +328,165 @@ let uninstall p =
   in
   List.iter remove (p.path :: p.retire);
   r
+
+(* The machine's one service (DIG-347): the standard node's service runs `digestif supervise`,
+   which runs every circle folder's node beside the standard one. Each per-node service DIG-264
+   installed for a node the machine's service now runs is retired: its job unloaded and its file
+   removed, so no node ever runs twice. *)
+
+let index_from s i sub =
+  let n = String.length s and m = String.length sub in
+  let rec go i =
+    if i + m > n then None
+    else if String.sub s i m = sub then Some i
+    else go (i + 1)
+  in
+  go i
+
+(* Every [sub] in [s] replaced by [by]. *)
+let replace_all ~sub ~by s =
+  let b = Buffer.create (String.length s) in
+  let rec go i =
+    match index_from s i sub with
+    | Some j ->
+        Buffer.add_string b (String.sub s i (j - i));
+        Buffer.add_string b by;
+        go (j + String.length sub)
+    | None -> Buffer.add_string b (String.sub s i (String.length s - i))
+  in
+  go 0;
+  Buffer.contents b
+
+(* xml_escape undone; &amp; last, so an escaped entity stays what it was. *)
+let xml_unescape s =
+  s
+  |> replace_all ~sub:"&lt;" ~by:"<"
+  |> replace_all ~sub:"&gt;" ~by:">"
+  |> replace_all ~sub:"&quot;" ~by:"\""
+  |> replace_all ~sub:"&amp;" ~by:"&"
+
+(* The words of a systemd ExecStart= line, as systemd_quote and systemd_escape wrote them. *)
+let systemd_words line =
+  let words = ref [] and b = Buffer.create 64 and quoted = ref false in
+  let started = ref false in
+  let n = String.length line in
+  let i = ref 0 in
+  let flush () =
+    if !started then words := Buffer.contents b :: !words;
+    Buffer.clear b;
+    started := false
+  in
+  while !i < n do
+    let c = line.[!i] in
+    if c = '\\' && !i + 1 < n then (
+      Buffer.add_char b line.[!i + 1];
+      started := true;
+      incr i)
+    else if c = '"' then (
+      quoted := not !quoted;
+      started := true)
+    else if c = '%' && !i + 1 < n && line.[!i + 1] = '%' then (
+      Buffer.add_char b '%';
+      started := true;
+      incr i)
+    else if c = ' ' && not !quoted then flush ()
+    else (
+      Buffer.add_char b c;
+      started := true);
+    incr i
+  done;
+  flush ();
+  List.rev !words
+
+let rec after_data_dir = function
+  | "--data-dir" :: d :: _ -> Some d
+  | _ :: rest -> after_data_dir rest
+  | [] -> None
+
+(* The data directory a launchd plist or systemd unit runs a node for, read from its own
+   --data-dir argument. None when it names none. *)
+let data_dir_of ~contents =
+  let plist_marker = "<string>--data-dir</string>" in
+  match index_from contents 0 plist_marker with
+  | Some i -> (
+      let from = i + String.length plist_marker in
+      match index_from contents from "<string>" with
+      | None -> None
+      | Some j -> (
+          let start = j + String.length "<string>" in
+          match index_from contents start "</string>" with
+          | None -> None
+          | Some k ->
+              Some (xml_unescape (String.sub contents start (k - start)))))
+  | None ->
+      String.split_on_char '\n' contents
+      |> List.find_map (fun line ->
+          let p = "ExecStart=" in
+          let m = String.length p in
+          if String.length line > m && String.sub line 0 m = p then
+            after_data_dir
+              (systemd_words (String.sub line m (String.length line - m)))
+          else None)
+
+(* A per-node service DIG-264 installed: its launchd label or systemd unit name, its file, and
+   the data directory it runs. *)
+type unit_file = { name : string; file : string; data_dir : string option }
+
+let starts_with ~prefix s =
+  String.length s >= String.length prefix
+  && String.sub s 0 (String.length prefix) = prefix
+
+let ends_with ~suffix s =
+  let n = String.length s and m = String.length suffix in
+  n >= m && String.sub s (n - m) m = suffix
+
+(* Every per-node service file on this machine: com.digestif.node.<slug>.plist in
+   ~/Library/LaunchAgents, or digestif-<slug>.service among the systemd user units. The standard
+   node's fixed names are never among them. *)
+let per_node_units () =
+  let dir, keep, name_of =
+    if Keystore.is_macos () then
+      ( Filename.dirname (launchd_path label),
+        (fun f ->
+          f <> label ^ ".plist"
+          && starts_with ~prefix:(label ^ ".") f
+          && ends_with ~suffix:".plist" f),
+        fun f -> Filename.chop_suffix f ".plist" )
+    else
+      ( Filename.dirname (systemd_path unit_name),
+        (fun f ->
+          starts_with ~prefix:"digestif-" f && ends_with ~suffix:".service" f),
+        Fun.id )
+  in
+  match Sys.readdir dir with
+  | exception Sys_error _ -> []
+  | files ->
+      Array.to_list files |> List.sort compare |> List.filter keep
+      |> List.map (fun f ->
+          let file = Filename.concat dir f in
+          let data_dir =
+            match In_channel.with_open_bin file In_channel.input_all with
+            | contents -> data_dir_of ~contents
+            | exception Sys_error _ -> None
+          in
+          { name = name_of f; file; data_dir })
+
+(* Unload a per-node service and remove its file. It answers only once the service manager no
+   longer holds the job, so the node it ran is stopped before anything else runs it. *)
+let retire u =
+  let result =
+    if Keystore.is_macos () then (
+      let domain = "gui/" ^ string_of_int (Unix.getuid ()) in
+      run_each [ [| "/bin/launchctl"; "bootout"; domain ^ "/" ^ u.name |] ];
+      wait_until_gone [| "/bin/launchctl"; "print"; domain ^ "/" ^ u.name |])
+    else (
+      run_each [ [| "systemctl"; "--user"; "disable"; "--now"; u.name |] ];
+      Ok ())
+  in
+  match result with
+  | Error e -> Error e
+  | Ok () ->
+      remove u.file;
+      if not (Keystore.is_macos ()) then
+        run_each [ [| "systemctl"; "--user"; "daemon-reload" |] ];
+      Ok ()

@@ -1931,6 +1931,81 @@ let with_temp_home f =
       List.iter (fun (k, v) -> Unix.putenv k (Option.value v ~default:"")) saved)
     (fun () -> f home)
 
+(* The data directory a per-node service runs is read back from its own --data-dir, whatever the
+   path holds, and every per-node service file on the machine is found, the standard node's never
+   among them. DIG-347 *)
+let service_unit_data_dir () =
+  let dir = "/home/x/my circles/a&b<c>\"q\" 50%" in
+  let plist =
+    Service.launchd_plist ~command:[ "supervise" ] ~exe:"/x/digestif" ~dir
+      ~log_dir:dir ~path:"/bin"
+      ~env:[ ("DIGESTIF_CIRCLES", "/home/x/c") ]
+      ()
+  in
+  Alcotest.(check (option string))
+    "from a plist" (Some dir)
+    (Service.data_dir_of ~contents:plist);
+  Alcotest.(check bool)
+    "the plist carries the env it is given" true
+    (Astring_contains.contains plist
+       "<key>DIGESTIF_CIRCLES</key>\n    <string>/home/x/c</string>");
+  let unit =
+    Service.systemd_unit ~command:[ "supervise" ] ~exe:"/x/digestif" ~dir
+      ~path:"/bin"
+      ~env:[ ("DIGESTIF_CIRCLES", "/home/x/c") ]
+      ()
+  in
+  Alcotest.(check (option string))
+    "from a systemd unit" (Some dir)
+    (Service.data_dir_of ~contents:unit);
+  Alcotest.(check bool)
+    "the unit carries the env it is given" true
+    (Astring_contains.contains unit "Environment=DIGESTIF_CIRCLES=/home/x/c\n");
+  Alcotest.(check (option string))
+    "a file naming none" None
+    (Service.data_dir_of ~contents:"[Service]\nExecStart=/x/digestif run\n")
+
+let service_per_node_units () =
+  with_temp_home @@ fun home ->
+  let second = Filename.concat home "digestif/second" in
+  let other = Filename.concat home "elsewhere" in
+  let write_plan dir =
+    let p = Service.plan ~exe:"/x/digestif" ~dir ~path:"/bin" () in
+    Node.mkdir_p (Filename.dirname p.path);
+    Out_channel.with_open_bin p.path (fun oc -> output_string oc p.contents);
+    p.path
+  in
+  let standard = write_plan (Node.standard_dir ()) in
+  let a = write_plan second in
+  let b = write_plan other in
+  Out_channel.with_open_bin
+    (Filename.concat (Filename.dirname a) "unrelated.plist")
+    (fun oc -> output_string oc "x");
+  let units = Service.per_node_units () in
+  Alcotest.(check (list string))
+    "each per-node file, and not the standard node's"
+    (List.sort compare [ a; b ])
+    (List.map (fun (u : Service.unit_file) -> u.file) units);
+  Alcotest.(check bool)
+    "the standard node's is there" true (Sys.file_exists standard);
+  Alcotest.(check (list (option string)))
+    "each with the directory it runs"
+    (List.map
+       (fun f -> if f = a then Some second else Some other)
+       (List.map (fun (u : Service.unit_file) -> u.file) units))
+    (List.map (fun (u : Service.unit_file) -> u.data_dir) units);
+  Alcotest.(check (list string))
+    "named by its label or unit"
+    (List.map
+       (fun (u : Service.unit_file) ->
+         if u.data_dir = Some second then
+           if Keystore.is_macos () then Service.label_of second
+           else Service.unit_name_of second
+         else if Keystore.is_macos () then Service.label_of other
+         else Service.unit_name_of other)
+       units)
+    (List.map (fun (u : Service.unit_file) -> u.name) units)
+
 (* An installed service file a release changes is rewritten in place; one never installed stays
    missing. DIG-323 *)
 let service_refresh () =
@@ -2532,5 +2607,9 @@ let () =
             service_per_data_directory;
           Alcotest.test_case "service waits for unload" `Quick
             service_waits_for_unload;
+          Alcotest.test_case "service unit data dir" `Quick
+            service_unit_data_dir;
+          Alcotest.test_case "service per node units" `Quick
+            service_per_node_units;
         ] );
     ]

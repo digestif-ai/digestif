@@ -363,7 +363,10 @@ A node runs under a supervisor once `digestif service install` has set up `relea
 and `good`: the launchd agent or systemd unit runs `good/bin/digestif supervise`, the binary of the
 last healthy release, and the supervisor runs `current/bin/digestif run` as its child
 (`node/update/lib/supervisor.ml`). On a node not yet supervised a pass stages the release and the
-digest says to run its `service install` once.
+digest says to run its `service install` once. Releases live once per machine: the first node's
+supervisor runs every circle folder's node from the release its `good` names, and those nodes
+never update themselves, so one switch, trial or recall moves every circle on the machine
+(node/README.md).
 
 `digestif service install` makes the binary it runs the node's release: the release directory the
 binary sits in, else the staged release holding the same binary (an archive staged with `digestif

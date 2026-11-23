@@ -6510,6 +6510,201 @@ let test_approve_needs_a_node () =
         "says no node" true
         (contains ~sub:"no node runs here" e)
 
+(* The machine's one service runs every circle folder's node (DIG-347). *)
+
+type circles_sim = {
+  mutable now : float;
+  mutable folders : string list;
+  mutable release : string option;
+  mutable refuse : (string * string) list; (* dir, why prepare refuses *)
+  mutable exited : (int * Supervisor.exit_status) list;
+  mutable next_pid : int;
+  mutable spawned : (string * string * int) list; (* dir, release, pid *)
+  mutable stopped : int list;
+  mutable lines : string list;
+}
+
+let circles_sim () =
+  {
+    now = 1000.;
+    folders = [];
+    release = Some "r1";
+    refuse = [];
+    exited = [];
+    next_pid = 100;
+    spawned = [];
+    stopped = [];
+    lines = [];
+  }
+
+let circles_ops sim =
+  {
+    Circle_nodes.folders = (fun () -> sim.folders);
+    release = (fun () -> sim.release);
+    prepare =
+      (fun ~dir ~release:_ ->
+        match List.assoc_opt dir sim.refuse with
+        | Some why -> Error why
+        | None -> Ok ());
+    spawn =
+      (fun ~dir ~release ->
+        let pid = sim.next_pid in
+        sim.next_pid <- pid + 1;
+        sim.spawned <- sim.spawned @ [ (dir, release, pid) ];
+        Ok pid);
+    poll = (fun pid -> List.assoc_opt pid sim.exited);
+    terminate = (fun pid -> sim.stopped <- sim.stopped @ [ pid ]);
+    now = (fun () -> sim.now);
+    log = (fun l -> sim.lines <- sim.lines @ [ l ]);
+  }
+
+let spawned_on sim = List.map (fun (d, r, _) -> d ^ "@" ^ r) sim.spawned
+
+let pid_of sim dir =
+  List.fold_left
+    (fun acc (d, _, p) -> if d = dir then Some p else acc)
+    None sim.spawned
+  |> Option.get
+
+let test_circle_nodes_start_each_folder () =
+  let sim = circles_sim () in
+  let ops = circles_ops sim in
+  sim.folders <- [ "/c/a"; "/c/b" ];
+  let t = Circle_nodes.tick ops Circle_nodes.empty in
+  Alcotest.(check (list string))
+    "each folder's node runs the machine's good release"
+    [ "/c/a@r1"; "/c/b@r1" ] (spawned_on sim);
+  let t = Circle_nodes.tick ops t in
+  Alcotest.(check int) "and once" 2 (List.length sim.spawned);
+  (* A folder that appears is started at the next look. *)
+  sim.folders <- sim.folders @ [ "/c/new" ];
+  let t = Circle_nodes.tick ops t in
+  Alcotest.(check (list string))
+    "a folder that appears starts"
+    [ "/c/a@r1"; "/c/b@r1"; "/c/new@r1" ]
+    (spawned_on sim);
+  (* A folder that goes stops its node. *)
+  let b = pid_of sim "/c/b" in
+  sim.folders <- [ "/c/a"; "/c/new" ];
+  let t = Circle_nodes.tick ops t in
+  Alcotest.(check (list int)) "a folder that goes stops" [ b ] sim.stopped;
+  Circle_nodes.stop ops t;
+  Alcotest.(check (list int))
+    "stopping the supervisor stops every node"
+    [ b; pid_of sim "/c/a"; pid_of sim "/c/new" ]
+    sim.stopped
+
+let test_circle_nodes_restart_with_a_pause () =
+  let sim = circles_sim () in
+  let ops = circles_ops sim in
+  sim.folders <- [ "/c/a" ];
+  let t = Circle_nodes.tick ops Circle_nodes.empty in
+  let first = pid_of sim "/c/a" in
+  sim.exited <- [ (first, Supervisor.Exited 1) ];
+  sim.now <- sim.now +. 5.;
+  let t = Circle_nodes.tick ops t in
+  Alcotest.(check int) "not at once" 1 (List.length sim.spawned);
+  sim.now <- sim.now +. Circle_nodes.first_pause;
+  let t = Circle_nodes.tick ops t in
+  Alcotest.(check int) "after the pause" 2 (List.length sim.spawned);
+  (* A second quick exit waits twice as long. *)
+  sim.exited <- [ (pid_of sim "/c/a", Supervisor.Exited 1) ];
+  sim.now <- sim.now +. 1.;
+  let t = Circle_nodes.tick ops t in
+  sim.now <- sim.now +. Circle_nodes.first_pause +. 1.;
+  let t = Circle_nodes.tick ops t in
+  Alcotest.(check int)
+    "a quick exit again waits longer" 2 (List.length sim.spawned);
+  sim.now <- sim.now +. Circle_nodes.first_pause;
+  ignore (Circle_nodes.tick ops t);
+  Alcotest.(check int) "then starts" 3 (List.length sim.spawned);
+  Alcotest.(check (float 0.))
+    "the pause doubles to its bound" Circle_nodes.longest_pause
+    (Circle_nodes.pause 30)
+
+let test_circle_nodes_follow_the_release () =
+  let sim = circles_sim () in
+  let ops = circles_ops sim in
+  sim.release <- None;
+  sim.folders <- [ "/c/a" ];
+  let t = Circle_nodes.tick ops Circle_nodes.empty in
+  Alcotest.(check int)
+    "nothing runs before good exists" 0 (List.length sim.spawned);
+  sim.release <- Some "r1";
+  let t = Circle_nodes.tick ops t in
+  let first = pid_of sim "/c/a" in
+  sim.release <- Some "r2";
+  ignore (Circle_nodes.tick ops t);
+  Alcotest.(check (list int))
+    "the old release's node stops" [ first ] sim.stopped;
+  Alcotest.(check (list string))
+    "and the node starts on the kept release at once" [ "/c/a@r1"; "/c/a@r2" ]
+    (spawned_on sim)
+
+let test_circle_nodes_refused_prepare () =
+  let sim = circles_sim () in
+  let ops = circles_ops sim in
+  sim.folders <- [ "/c/a"; "/c/b" ];
+  sim.refuse <- [ ("/c/a", "its own service could not be retired") ];
+  let t = Circle_nodes.tick ops Circle_nodes.empty in
+  let t = Circle_nodes.tick ops t in
+  sim.now <- sim.now +. Circle_nodes.retry_prepare;
+  let t = Circle_nodes.tick ops t in
+  Alcotest.(check (list string))
+    "a folder that cannot prepare holds up no other" [ "/c/b@r1" ]
+    (spawned_on sim);
+  Alcotest.(check int)
+    "its refusal is said once" 1
+    (List.length
+       (List.filter (fun l -> contains ~sub:"could not be retired" l) sim.lines));
+  sim.refuse <- [];
+  sim.now <- sim.now +. Circle_nodes.retry_prepare;
+  ignore (Circle_nodes.tick ops t);
+  Alcotest.(check (list string))
+    "and it starts once it can" [ "/c/b@r1"; "/c/a@r1" ] (spawned_on sim)
+
+let test_circle_nodes_folders () =
+  let machine = temp_dir () in
+  let a = temp_dir () in
+  let parent = temp_dir () in
+  let link = Filename.concat parent "machine-circle" in
+  Unix.symlink machine link;
+  let a_link = Filename.concat parent "a" in
+  Unix.symlink a a_link;
+  Alcotest.(check (list string))
+    "the machine's own node and a second spelling of one are left out" [ a ]
+    (Circle_nodes.folders ~machine [ link; a; a_link; machine ])
+
+(* A circle folder's node reads the machine's one release through its own links. *)
+let test_layout_share () =
+  let machine = supervised_node () in
+  let dir = temp_dir () in
+  (* Its own release, from a service of its own. *)
+  let own = Layout.release_dir dir "0.0.9" in
+  write (Layout.marker_in own)
+    (Layout.marker_json ~version:(v "0.0.9") ~source:"test");
+  Layout.point_current dir "0.0.9";
+  Layout.point_good dir "0.0.9";
+  write (Layout.trial_path dir) "{}";
+  Layout.share ~machine dir ~release:"0.1.0";
+  Alcotest.(check bool)
+    "its own releases are gone" false
+    (Sys.file_exists (Layout.release_dir dir "0.0.9"));
+  Alcotest.(check (option string)) "current" (Some "0.1.0") (Layout.current dir);
+  Alcotest.(check (option string)) "good" (Some "0.1.0") (Layout.good dir);
+  Alcotest.(check (option string))
+    "the version reads through the machine's releases" (Some "0.1.0")
+    (Option.map Version.to_string (Layout.version_of dir "0.1.0"));
+  Alcotest.(check bool)
+    "its binary is the machine's" true
+    (Sys.file_exists (Layout.binary_in (Layout.current_link dir)));
+  Alcotest.(check bool)
+    "its trial is gone" false
+    (Sys.file_exists (Layout.trial_path dir));
+  Layout.share ~machine dir ~release:"0.1.0";
+  Alcotest.(check (option string))
+    "sharing again changes nothing" (Some "0.1.0") (Layout.current dir)
+
 let () =
   let t name f = Alcotest.test_case name `Quick f in
   Ci_alcotest.run "digestif-update"
@@ -6725,6 +6920,16 @@ let () =
           t "wait for good" test_cli_links_wait_for_good;
           t "after an update" test_cli_links_after_an_update;
           t "the standard node's" test_cli_links_are_the_standard_nodes;
+        ] );
+      ( "circle nodes",
+        [
+          t "each folder starts" test_circle_nodes_start_each_folder;
+          t "an exit restarts after a pause"
+            test_circle_nodes_restart_with_a_pause;
+          t "nodes follow the kept release" test_circle_nodes_follow_the_release;
+          t "a refused prepare" test_circle_nodes_refused_prepare;
+          t "folders" test_circle_nodes_folders;
+          t "layout share" test_layout_share;
         ] );
       ( "supervisor",
         [
