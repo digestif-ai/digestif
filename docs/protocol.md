@@ -106,7 +106,7 @@ them.
   "circle": { "name": "Auto dealership roll-up" },
   "guests": [ { "name": "Ashmer Aslam", "invite_key": "ed25519:...", "expires_at": "2026-11-21T00:00:00.000Z" } ],
   "relays": [ "https://relay-1.example" ],
-  "admins": [ { "name": "Mike Bryzek", "key": "ed25519:<founder's admin key>" } ]
+  "admins": [ { "name": "Mike Bryzek", "key": "ed25519:<founder's admin key>", "identity": "ed25519:<founder identity key>" } ]
 }
 ```
 
@@ -118,7 +118,7 @@ invite keys alone, and may be empty or absent: the founder invites everyone else
 admins' signed admission, in a dinner message. A circle root carries no date and no dinner.
 
 `admins` is the circle's own signer set, and every circle root names it: a non-empty list of
-`{ name, key }`, each key an ed25519 admin key, none twice. `digestif circle found` names the
+`{ name, key, identity }`, each key an ed25519 admin key, none twice. `digestif circle found` names the
 founder's (the `public_key` of their `signer.json`, or `--admin-key`). Those admins, and not the
 release signers, sign every later invite's `digestif-admission-v0` and every change of their own set
 (Approvals), so the release signers never sign for, or learn who is in, a circle they are not in.
@@ -126,6 +126,14 @@ Only a founding dinner is judged by the release signer set. The set may start fr
 founder's; a change of it names at least two, as every signer-set change does. A missing or
 malformed `admins` makes the root malformed, so a circle root written before the field was defined
 admits nobody and its circle is founded again.
+
+An admin entry's `identity`, optional, is the circle identity of the admin who holds the key: it is
+how a relay and a node tell which member is a sitting admin, which the revoke rule reads (**revoke**,
+below) and a Keep is judged by (Member review). A root naming one admin with no `identity` binds that
+admin's key to its `host`, since only the founder writes the root. A `digestif-signers-v0` entry
+carries the same field ([releases.md](releases.md), "Changing the signer set"), and each set change
+binds every key it names afresh; an entry without one leaves its key unbound. A key is bound to one
+identity, and an identity to any number of keys.
 
 **dinner**, written by the host's device key:
 
@@ -140,8 +148,8 @@ admits nobody and its circle is founded again.
 ```
 
 A circle founded at a dinner has that **founding dinner** as its root instead of a `circle`: its
-`host` is admitted by the message itself, each relay is configured with the hash of its envelope,
-and it folds exactly as a circle root does, its label read as the circle's name. A relay has no
+`host` is admitted by the message itself, the circle is opened on each relay at its own address by
+its founding append, and it folds exactly as a circle root does, its label read as the circle's name. A relay has no
 root of its own. Any admitted member may write a later dinner, but after the circle's admission cutover a guest entry counts only
 when its `admission` is a `digestif-admission-v0` every key of the signer set signed (Approvals,
 below; The admission fold), so in practice the starting admin's node writes every dinner once the
@@ -181,7 +189,7 @@ A `mail` key is chainless: the relay accepts any `seq` it has not seen from it.
 **revoke**:
 
 ```json
-{ "target": "ed25519:<device or identity key>", "by": "ed25519:<identity key, or a dinner's device key>",
+{ "target": "ed25519:<device or identity key>", "by": "ed25519:<identity key, a dinner's device key, or an admin key>",
   "after_seq": { "ed25519:<device key>": 41 },
   "mail_read": { "ed25519:<mail key>": [ "sha256:<envelope hash>" ] },
   "signature": "<by over JCS({target, by, after_seq, mail_read})>" }
@@ -192,12 +200,28 @@ an admitted device of the same identity or by the new key itself. The second is 
 lost their only laptop gets a new one in: there is no other device left to post from.
 
 A device key is revoked by its identity. An identity is revoked by itself, by the host whose dinner
-admitted it, or, until 7 days after its join, by the device key that wrote that dinner. A revoke
+admitted it, until 7 days after its join by the device key that wrote that dinner, or by any key in
+the circle's admin signer set, of an identity whose own admin key is not in that set. A revoke
 whose `by` is a device key is authored by that key and stops an identity only; it is how the host's
 node revokes an unpicked join choice with no one at the keyboard (see "Invites"), since the identity
 key needs the recovery phrase. The window keeps a device key, which lives on disk, to newcomers its
 own dinner let in; evicting anyone else takes the phrase. A node judges the 7 days by the join's and
-the revoke's `created_at`, a relay by its own clock. `after_seq` maps each device key the revoke stops (the target, or every device
+the revoke's `created_at`, a relay by its own clock.
+
+A revoke whose `by` is an admin key is how the admins remove a member (docs/design.md, Member
+review): `digestif-update remove <identity>` signs it with the admin key, which the node never
+holds, and the admin's own node posts it, as it does an approval's signature. It counts when, in
+the signer set the fold holds at that point (the circle root's `admins`, or the release signer set
+in a circle founded at a dinner, changed by each `signer_set` that verifies against it, The
+admission fold): `by` is a key of the set; no key of the
+set is revoked; every key of the set is bound to an identity (circle, above); the envelope's
+author is an admitted, unrevoked device of the identity `by` is bound to; and the target is an
+admitted identity no key of the set is bound to. A sitting admin is therefore never revoked by
+another admin: their key leaves the set first, by a `removal` approval (Approvals), and a revoke
+of an identity whose key is still in the set would halt every admission and release while it
+stood. A set with an unbound key revokes nobody this way, since it cannot tell a sitting admin
+from a member; the next set change binds every key. A relay judges the rule by the set it folds,
+from any client: a hand-built envelope and an older node's are refused alike. `after_seq` maps each device key the revoke stops (the target, or every device
 key under a target identity) to the last `seq` of its honest chain, as the revoking node holds it; a
 device key it stops and does not list has a cutoff of 0. `mail_read` maps each mail key the revoke
 stops (the target, or every mail key under a target identity) to the hashes of that key's envelopes
@@ -373,8 +397,9 @@ A relay and every node compute the admitted set the same way, in relay order:
    spend the invite, increment the epoch, set the member's join epoch to the new epoch.
 4. `device` signed by an admitted identity and authored by a device of that identity or by the key
    it admits: admit the key with its role.
-5. `revoke` signed as above, by an identity or, inside the window, by the device key that wrote the
-   target's dinner: mark the target, and for an identity every key under it, revoked, and
+5. `revoke` signed as above, by an identity, inside the window by the device key that wrote the
+   target's dinner, or by an admin key of the signer set the fold holds at that point, of an
+   identity no key of that set is bound to: mark the target, and for an identity every key under it, revoked, and
    record each stopped device key's cutoff from `after_seq` and each stopped mail key's from
    `mail_read`.
 
@@ -799,7 +824,10 @@ the command `digestif-update approve <id>` in its detail), settled once they ans
   `DIGESTIF-SIGNERS-V0\n<document bytes>`. A promotion is the current set plus the member's key and
   a replacement the current set with one key in place of another; neither document exists until
   the new key's holder signs first, which names their key and completes it. A removal is the
-  current set less one key, and the removed admin signs it too.
+  current set less one key, and the removed admin signs it too. Every entry of the document names
+  its holder's `identity` (circle, above): a promotion's new entry the approval's `member`, a
+  replacement's new entry the identity the replaced key was bound to, and every other entry the
+  identity the current set binds its key to, so the admins' signatures bind each key afresh.
 
 **approval_answer**, written by any of the approval's readers:
 `{ "approval": "sha256:<approval envelope hash>", "sealed": <sealed> }`, sealed to the approval's
@@ -829,6 +857,38 @@ device key alone like a pick. Every reader's node folds the answers into the app
 
 A signature whose key the document does not need, or that does not verify, is ignored and shown as
 a fault. An approval is never restarted in place: the starting admin starts a new one.
+
+## Member review
+
+A member with no note on three whole UTC days in a row is in review (docs/design.md, Member
+review): every admin is asked to keep or remove them, and the member is told. Nothing on the wire
+opens a review: each node works it out from the notes, the join and the newest Keep it holds. One
+admin ends it for everyone, by a Keep or by a revoke signed with their admin key (**revoke**, above).
+
+**keep**, content, written by an admin's device key:
+`{ "to": [ "ed25519:<identity>", ... ], "sealed": <sealed> }`, sealed (see "Sealing") to every
+admin's card key and the member's, the author's own included, all named in `to` as for an item. The
+plaintext:
+
+```json
+{ "member": "ed25519:<identity of the member kept>",
+  "created_at": "2026-11-19T15:00:00.000Z",
+  "by": "ed25519:<the keeping admin's device key>",
+  "signature": "<by over JCS({member, created_at, by})>" }
+```
+
+The plaintext is the Keep and its id is `sha256(JCS(plaintext))`, never the envelope's hash, so a
+forwarded copy is the same Keep. A node honours a Keep only when `signature` verifies, `by` is an
+admitted device key, and the identity `by` belongs to is bound to a key of the signer set the fold
+holds at the Keep's `created_at` (the set after every circle-state envelope ordered before it). Any
+other Keep, the member's own included, is ignored: it ends no review and restarts no count. A
+relay checks only the envelope, as it does an item, since it cannot read the plaintext.
+
+An admin promoted after a Keep holds no copy of it, since it was sealed to the admins of the day.
+When a promotion takes effect (its `signer_set` folds), every admin's node, at its next upkeep,
+posts each Keep still in force (the newest honoured Keep per member, younger than three whole UTC
+days, with no note from the member since) as a new `keep` envelope sealed to the new admin and
+naming them in `to`, its plaintext unchanged. Copies from several nodes are one Keep by its id.
 
 ## Encryption
 
@@ -1248,6 +1308,14 @@ The repo's conformance suite runs these against any relay and any node:
 - Host device revoke: the device key that wrote a dinner revokes an identity a join on that dinner
   admitted, within 7 days of the join; any other device key, a device key target, or a revoke after
   the window is refused.
+- Admin revoke: a revoke signed by an admin key of the circle's signer set, every key of which is
+  bound to an identity, and authored by a device of the identity its key is bound to, revokes a
+  member whose identity holds no key of the set; one of an identity a key of the set is bound to, by
+  a key outside the set, or authored by another member's device is refused.
+- Keep: a relay accepts a `keep` from an admitted author as content, checking only the envelope, and
+  serves it, its sealed body intact, to a reader admitted before it; a node honours a Keep only from
+  a device of an identity bound to a key of the signer set at its `created_at`, and ignores any
+  other.
 - Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.
 - Bootstrap: a join from an unknown, spent or expired invite key is refused.
 - Pushed join: a join an admitted, unrevoked key pushes is judged by its `created_at`, so it is

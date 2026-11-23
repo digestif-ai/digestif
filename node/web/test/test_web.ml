@@ -107,6 +107,26 @@ let call n cookie ?(meth = "GET") ?body path =
 let keep_up n =
   match Api.keep_up n with Ok () -> () | Error e -> Alcotest.fail e
 
+(* An envelope reaching the log outside the API, as on a running node: one a sync brings (import)
+   or the node's own agent writes (write), each followed by the run loop's pass (keep_up), which
+   indexes it. A page's GET answers from that index and indexes nothing (DIG-375). [Core_node]
+   is the arrival alone, for a test of what a read does before the pass. *)
+module Core_node = Node
+
+module Node = struct
+  include Core_node
+
+  let write t ?key_name ?created_at ~kind body =
+    let r = Core_node.write t ?key_name ?created_at ~kind body in
+    if Result.is_ok r then keep_up t;
+    r
+
+  let import t sg =
+    let r = Core_node.import t sg in
+    if Result.is_ok r then keep_up t;
+    r
+end
+
 let member name = function
   | `Assoc f -> (
       match List.assoc_opt name f with Some v -> v | None -> `Null)
@@ -1373,6 +1393,8 @@ let paused_ask () =
     | _ -> Alcotest.fail "a note waiting 30 days pauses"
   in
   node_pauses ();
+  (* The run loop's pass indexes the ask the clock wrote. *)
+  keep_up n;
   let a = Option.get (Asks.find log "paused") in
   Alcotest.(check (option string)) "a paused ask" (Some "paused") a.kind;
   Alcotest.(check string) "Unpause recommended" "unpause" a.recommended;
@@ -1437,6 +1459,8 @@ let paused_ask () =
   (* The node pauses again: the ask is raised again, and an Unpause answered elsewhere and read at
      sync unpauses, once. *)
   node_pauses ();
+  (* The run loop's pass indexes the ask the clock wrote. *)
+  keep_up n;
   let a = Option.get (Asks.find log "paused") in
   Alcotest.(check bool)
     "raised again" true
@@ -8076,6 +8100,12 @@ let peer_write n p ?created_at kind body =
   ignore (ok (Node.import n sg));
   h
 
+(* [p]'s envelope in the log before the run loop's pass has indexed it. *)
+let peer_arrive n p ?created_at kind body =
+  let sg, h = peer_sign n p ?created_at kind body in
+  ignore (ok (Core_node.import n sg));
+  h
+
 let join_peer n name =
   let inv = Crypto.generate_signing_key () in
   let host = Option.get (Log.get_config n.Node.log Node.k_identity) in
@@ -9280,7 +9310,7 @@ let inbox_follow_up_revoke_after_decision () =
     "1: both counted before the revoke" [ Some true; Some true ]
     (stored_answers n h);
   ignore
-    (peer_write n quinn "revoke"
+    (peer_arrive n quinn "revoke"
        (Bodies.make_revoke ~by:quinn.p_identity
           ~target:(Keys.public quinn2.p_device)
           ~after_seq:[ (Keys.public quinn2.p_device, 1) ]
@@ -9569,7 +9599,7 @@ let inbox_follow_up_bare_upgrade () =
   Log.unset_config l Api.Inbox.k_fold;
   Alcotest.(check (list (option bool)))
     "1: undecided before" [ None ] (stored_answers n h1);
-  ignore (call "items");
+  keep_up n;
   Alcotest.(check (list (list (option bool))))
     "2: every row decided in the first pass"
     [ [ Some true ]; [ Some true ] ]
@@ -9634,7 +9664,7 @@ let inbox_follow_up_rule_version_recomputes () =
   let l = n.Node.log in
   Log.exec l "UPDATE ui_item_picks SET counts = 0" [];
   Log.set_config l Api.Inbox.k_rule "0";
-  ignore (call "items");
+  keep_up n;
   Alcotest.(check (list (option bool)))
     "2: a new rule version decides again" [ Some true; Some false ]
     (stored_picks n h);
@@ -12122,12 +12152,12 @@ let item_read_leaves_approval_effects () =
     (id, s "item" inv, doc inv)
   in
   let invites = List.init 4 invite in
-  (* Pia's signatures arrive from her node, as a sync brings them: each invite is signed, and its
-     effect (the dinner this node writes) is still owed. *)
+  (* Pia's signatures arrive from her node, as a sync brings them, and the run loop's pass has not
+     run yet: each invite is signed, and its effect (the dinner this node writes) is still owed. *)
   List.iter
     (fun (id, _, d) ->
       ignore
-        (peer_write n pia "approval_answer"
+        (peer_arrive n pia "approval_answer"
            (`Assoc
               [
                 ("approval", `String id);
@@ -12144,19 +12174,47 @@ let item_read_leaves_approval_effects () =
               ])))
     invites;
   let effected id = (Option.get (Store.Approvals.find n.log id)).effected_at in
+  let opened () =
+    List.filter
+      (fun (id, _, _) -> List.length (Store.Approvals.answers n.log id) > 1)
+      invites
+  in
   let _, item, _ = List.hd invites in
-  reads := 0;
-  let st, _ = call ("items/" ^ item) in
-  Alcotest.(check int) "the item reads" 200 st;
-  Alcotest.(check int) "no invite secret read" 0 !reads;
-  Alcotest.(check bool)
-    "no effect taken by the read" true
-    (List.for_all (fun (id, _, _) -> effected id = None) invites);
-  (* The run loop's pass after the sync takes every effect. *)
-  keep_up n;
-  Alcotest.(check bool)
-    "the run loop takes them" true
-    (List.for_all (fun (id, _, _) -> effected id <> None) invites)
+  (* DIG-375: a read does no catch-up work at all: neither the approvals' sync nor the Inbox
+     index runs on a GET. *)
+  let synced = ref 0 in
+  let approvals_sync = !Api.Inbox.sync_approvals in
+  (Api.Inbox.sync_approvals :=
+     fun c ->
+       if c.Api.node == n then incr synced;
+       approvals_sync c);
+  Fun.protect
+    ~finally:(fun () -> Api.Inbox.sync_approvals := approvals_sync)
+    (fun () ->
+      reads := 0;
+      let st, _ = call ("items/" ^ item) in
+      Alcotest.(check int) "the item reads" 200 st;
+      let st, _ = call "items" in
+      Alcotest.(check int) "the Inbox reads" 200 st;
+      let st, _ = call "status" in
+      Alcotest.(check int) "the status reads" 200 st;
+      Alcotest.(check int) "no approvals sync on a read" 0 !synced;
+      Alcotest.(check int) "no invite secret read" 0 !reads;
+      Alcotest.(check int)
+        "no signature opened by the read" 0
+        (List.length (opened ()));
+      Alcotest.(check bool)
+        "no effect taken by the read" true
+        (List.for_all (fun (id, _, _) -> effected id = None) invites);
+      (* The run loop's pass after the sync opens every signature and takes every effect. *)
+      keep_up n;
+      Alcotest.(check bool) "the run loop syncs the approvals" true (!synced > 0);
+      Alcotest.(check int)
+        "the run loop opens them" (List.length invites)
+        (List.length (opened ()));
+      Alcotest.(check bool)
+        "the run loop takes them" true
+        (List.for_all (fun (id, _, _) -> effected id <> None) invites))
 
 let inbox_replies_waiting_and_the_clock () =
   let n = demo () in
@@ -12258,6 +12316,8 @@ let inbox_replies_waiting_and_the_clock () =
     (s "status" (snd (call ("items/" ^ cq_id))));
   Store.Items.set_closed n.log cq_id ~closed:false
     ~closes_unix:(Some (Unix.gettimeofday () -. 10.));
+  (* The run loop's pass closes it by the clock. *)
+  keep_up n;
   let _, r = call ("items/" ^ cq_id) in
   Alcotest.(check (triple string bool bool))
     "closed by the clock: New, out of the Archive, closed" ("new", true, true)
@@ -12287,13 +12347,16 @@ let inbox_reply_is_not_a_pick () =
   in
   let ids = ref 0 in
   (* Ada's own sent choice, named to [named] with the keys [keys]. *)
-  let choice ?deadline named keys =
+  let choice ?deadline ?(same_pass = false) named keys =
     incr ids;
+    let body =
+      Item.item_body ~to_:(Members named) ~keys:(raw_key my_key :: keys)
+        (yes_no ?deadline (Printf.sprintf "Dinner %d?" !ids))
+    in
     let h, _ =
       ok
-        (Node.write n ~kind:"item"
-           (Item.item_body ~to_:(Members named) ~keys:(raw_key my_key :: keys)
-              (yes_no ?deadline (Printf.sprintf "Dinner %d?" !ids))))
+        (if same_pass then Core_node.write n ~kind:"item" body
+         else Node.write n ~kind:"item" body)
     in
     h
   in
@@ -12503,7 +12566,7 @@ let inbox_reply_is_not_a_pick () =
     "own: no New, no Inbox" ("read", true)
     (status h, not (listed h));
   (* Indexed in one pass, an own item and a peer's counted answer: no New (DIG-535). *)
-  let h = choice both both_keys in
+  let h = choice ~same_pass:true both both_keys in
   reply_both pia h;
   Alcotest.(check string) "same pass: the item stays Read" "read" (status h);
   (* 11. A circle choice with a reply only. *)

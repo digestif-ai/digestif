@@ -10,20 +10,26 @@ type ctx = {
   now : float;
   on_write : unit -> unit;  (** a new envelope of ours wants a sync *)
   upkeep_waits : bool;
-      (** whether upkeep a reader can go without (the Inbox index) waits for the
-          log's write lock: a GET never does, so a page never waits on
-          background work (ISS-78820) *)
+      (** whether this is a write or the run loop, which bring the indexes up to
+          the log (catch_up) and wait for the write lock to: a GET does neither,
+          so a page never waits on background work (ISS-78820, DIG-375) *)
 }
 
 let log c = c.node.log
 
-(* Upkeep a read can go without (the Inbox index, a note first found readable), under the write lock.
-   A GET runs it only when the lock is free and otherwise answers from the store as it stands: whoever
-   holds the lock may hold it for seconds, and the run loop brings the index up after every sync
-   (keep_up), so a GET that skips it reads at most one pass behind. ISS-78820 *)
+(* A small write a read makes as it finds something (a note first found readable), under the write
+   lock. A GET makes it only when the lock is free and otherwise answers from the store as it stands:
+   whoever holds the lock may hold it for seconds, and a later read records it. ISS-78820 *)
 let upkeep c f =
   if c.upkeep_waits then Log.transaction (log c) f
   else ignore (Log.try_transaction (log c) f : unit option)
+
+(* Catch-up work: the Inbox index, the approvals' index with their filing, settling and effects, and
+   the suggestions' picks and closes, brought up to the log. It grows with what arrived and what is
+   still open, so it runs where envelopes arrive or are written, never on a read: the run loop's pass
+   after every sync (keep_up) and a write's request. A GET answers from what is indexed, at most one
+   pass behind. DIG-375 *)
+let catch_up c f = if c.upkeep_waits then Log.transaction (log c) f
 
 type response = { status : int; body : Yojson.Safe.t option }
 
@@ -3244,9 +3250,8 @@ module Inbox = struct
      read; one this node cannot read, or retracted, is kept as unreadable. index_now runs inside a
      transaction the caller holds (the daily digest's); index holds its own. *)
   (* The approvals' own index and the items it files and settles (Approvals.sync_now, ISS-87806),
-     brought up with the Inbox's so an approval item reads as it stands; a GET opens what is new and
-     leaves the filing, settling and effects to the run loop and the writes (DIG-374). Set once
-     Approvals is defined below. *)
+     brought up with the Inbox's so an approval item reads as it stands. Set once Approvals is
+     defined below. *)
   let sync_approvals : (ctx -> unit) ref = ref (fun _ -> ())
 
   (* One pass: every envelope not indexed yet opened, every follow-up not decided yet decided, and,
@@ -3335,19 +3340,9 @@ module Inbox = struct
     | Some enc ->
         let l = log c in
         let change, fold_state = Fold_keys.change l ~config:k_fold c.fold in
-        (* DIG-236: re-opening and re-deciding what a join or a revoke changed is the run loop's
-           (keep_up) and a write's, never a GET's: a page still indexes what is new, read with the
-           fold as it stands, and leaves the change unrecorded for the next of those passes, so it
-           reads what it opened before at most one pass behind, as when the lock is busy
-           (ISS-78820). *)
-        let change =
-          match change with
-          | Keys _ when not c.upkeep_waits -> Fold_keys.Unchanged
-          | change -> change
-        in
         index_pass c ~priv:enc.secret ~change ~fold_state
 
-  let index c = upkeep c (fun () -> index_now c)
+  let index c = catch_up c (fun () -> index_now c)
 
   let find c id =
     index c;
@@ -4310,9 +4305,8 @@ module Inbox = struct
         | "note" -> note (Log.text row.(1))
         | _ -> item (Log.text row.(1)))
 
-  (* node_status.inbox: the member's Draft and New items, counted from the index as it stands. The
-     status route brings the index up once, through Prompts.sync, before it reads this: a second pass
-     here would run the whole index again, keystore read included, on every status call. ISS-83181 *)
+  (* node_status.inbox: the member's Draft and New items, counted from the index as it stands:
+     the run loop and the writes bring it up (catch_up), never a status call. ISS-83181 DIG-375 *)
   let status_fields c : (string * Yojson.Safe.t) list =
     [
       ("inbox", `Int (I.inbox_count (log c) ~now:c.now ?me:(self_identity c) ()));
@@ -4331,36 +4325,33 @@ module Prompts = struct
   module S = Suggestions
   module I = Store.Items
 
-  (* Every suggestion this node can read, folded, after the Inbox index is brought up to the log;
-     each suggestion item's close is settled from its fold as it goes: closed once its rounds
-     decide it, open while its judges judge it (ISS-52613). *)
-  let all c =
-    Inbox.index c;
-    let l = log c in
-    if Store.Suggestion_picks.behind l then
-      upkeep c (fun () -> Store.Suggestion_picks.index l);
-    let judged = S.read l ~identity_of:(identity_of c) in
-    let settle =
-      List.filter_map
-        (fun (j : S.judged) ->
-          match I.by_hash l ~now:c.now j.s.hash with
-          | Some r ->
-              let closed = j.status <> S.Judging in
-              if r.closed_flag <> closed || r.closes_unix <> None then
-                Some (r.id, closed)
-              else None
-          | None -> None)
-        judged
-    in
-    if settle <> [] then
-      upkeep c (fun () ->
-          List.iter
-            (fun (id, closed) -> I.set_closed l id ~closed ~closes_unix:None)
-            settle);
-    judged
+  let read c = S.read (log c) ~identity_of:(identity_of c)
 
-  (* Settle every suggestion item before the Inbox is read. *)
-  let sync c = ignore (all c)
+  (* The Inbox index brought up to the log, then each suggestion item's close settled from its
+     fold: closed once its rounds decide it, open while its judges judge it (ISS-52613). Catch-up
+     work, so a GET does none of it (catch_up, DIG-375). *)
+  let sync c =
+    if c.upkeep_waits then begin
+      Inbox.index c;
+      let l = log c in
+      catch_up c (fun () ->
+          if Store.Suggestion_picks.behind l then Store.Suggestion_picks.index l;
+          List.iter
+            (fun (j : S.judged) ->
+              match I.by_hash l ~now:c.now j.s.hash with
+              | Some r ->
+                  let closed = j.status <> S.Judging in
+                  if r.closed_flag <> closed || r.closes_unix <> None then
+                    I.set_closed l r.id ~closed ~closes_unix:None
+              | None -> ())
+            (read c))
+    end
+
+  (* Every suggestion this node can read, folded, after [sync]. *)
+  let all c =
+    sync c;
+    read c
+
   let me c = Option.value (self_identity c) ~default:""
   let k_pull_request hash = "prompt_pull_request:" ^ hash
   let pull_request c hash = Store.config (log c) (k_pull_request hash)
@@ -6771,9 +6762,9 @@ module Approvals = struct
 
   (* Every open approval's end recorded, its Inbox item filed or settled, and its effect taken: work
      that grows with the approvals still open and whose effects read the keystore and write the log,
-     so it is the run loop's (keep_up, after every sync) and a write's, never a GET's. A page opens
-     what is new and reads each approval's progress as it folds now, and its item settles on the
-     next of those passes (DIG-374, as DIG-236 leaves a fold change to them). *)
+     so it is the run loop's (keep_up, after every sync) and a write's, never a GET's (catch_up). A
+     page reads each approval's progress as it folds now, and its item settles on the next of those
+     passes (DIG-374, DIG-375). *)
   let settle_open c =
     let j = judge c in
     List.iter
@@ -6789,9 +6780,9 @@ module Approvals = struct
 
   let sync_now c =
     index_now c;
-    if c.upkeep_waits then settle_open c
+    settle_open c
 
-  let sync c = upkeep c (fun () -> sync_now c)
+  let sync c = catch_up c (fun () -> sync_now c)
   let found c id = Option.map (fun a -> (a, progress c a)) (A.find (log c) id)
 
   let answer_with ?(status = 200) c id =
@@ -7500,18 +7491,31 @@ let route c ~meth ~path ~query ~body =
   | "POST", [ "inbox_agent"; "runs" ] -> Inbox_agent.run c body
   | _ -> not_found ()
 
-(* One request: the fold is computed once, from the log as it stands. *)
+(* One request: the fold is computed once, from the log as it stands. A GET answers from what is
+   indexed and does no catch-up work (catch_up). A write that put an envelope of ours in the log
+   brings the indexes up to it before it answers, so the page it returns to reads it; a failure
+   there is left to the run loop's next pass, as the write itself stands. DIG-375 *)
 let handle ?(on_write = fun () -> ()) node ~meth ~path ~query ~body =
+  let wrote = ref false in
   let c =
     {
       node;
       fold = Node.fold node;
       now = Unix.gettimeofday ();
-      on_write;
+      on_write =
+        (fun () ->
+          wrote := true;
+          on_write ());
       upkeep_waits = meth <> "GET";
     }
   in
-  route c ~meth ~path ~query ~body
+  let r = route c ~meth ~path ~query ~body in
+  (if !wrote && c.upkeep_waits then
+     try Prompts.sync c
+     with Failure e ->
+       Printf.eprintf "%s inbox: the index after a write: %s\n"
+         (Time_fmt.now ()) e);
+  r
 
 (* The address this node is served at, from the Host the page was fetched with. *)
 let note_host h =

@@ -4,7 +4,7 @@
 import { jcs, type Json } from "./encoding.ts";
 import { verifySignature } from "./keys.ts";
 import { isCircleState, type Envelope } from "./envelope.ts";
-import { SignerSet } from "./admission.ts";
+import { SignerSet, signerIdentitiesOf } from "./admission.ts";
 
 export type FoldError = "malformed" | "bad_signature" | "not_admitted" | "wrong_circle" | "retract_not_author";
 export type Role = "identity" | "device" | "mail";
@@ -102,6 +102,8 @@ export type FoldBreak =
   | "device-signature"
   | "host-device-dinner"
   | "host-device-window"
+  | "admin-revoke"
+  | "admin-revoke-admin"
   | "release-revocation-shape"
   | "release-recall-shape"
   | "relay-release-shape"
@@ -179,6 +181,7 @@ export class Fold {
       ...(signers === undefined ? {} : { admission: { cutover: this.admissionCutover ?? 0, signers: signers.keys } }),
     });
     for (const key of signers?.revoked ?? []) copy.signerSet?.revoked.add(key);
+    if (signers !== undefined && copy.signerSet !== undefined) copy.signerSet.identities = new Map(signers.identities);
     copy.rootFolded = this.rootFolded;
     copy.epoch = this.epoch;
     for (const [key, state] of this.keys) {
@@ -383,7 +386,7 @@ export class Fold {
     if (guestError !== null) return guestError;
     this.rootFolded = true;
     // A circle is judged by its own admins, never by the release signers.
-    if (admins !== null && this.signerSet !== undefined) this.signerSet = new SignerSet(admins);
+    if (admins !== null && this.signerSet !== undefined) this.signerSet = new SignerSet(admins, rootAdminIdentities(body, host) ?? new Map());
     this.dinners.set(input.hash, host);
     this.dinnerAuthors.set(input.hash, envelope.author);
     this.keys.set(host, { key: host, role: "identity", identity: host, admitted_at: input.position, join_epoch: 0 });
@@ -478,20 +481,25 @@ export class Fold {
     const mailRead = parseMailRead(body["mail_read"]);
     if (!target || !by || !signature) return "malformed";
     if ((afterSeq === undefined || mailRead === undefined) && !this.breaks.has("cutoff-shape")) return "malformed";
-    const byState = this.keys.get(by);
-    if (byState === undefined) return "not_admitted";
-    if (byState.role === "identity") {
-      if (author.identity !== by || byState.revoked_at !== undefined) return "not_admitted";
-    } else if (byState.role !== "device" || author.key !== by) {
-      // A device key revokes as itself, never on another key's behalf; a mail key revokes nothing.
-      return "not_admitted";
-    }
     const signed = {
       target,
       by,
       ...(body["after_seq"] === undefined ? {} : { after_seq: body["after_seq"] }),
       ...(body["mail_read"] === undefined ? {} : { mail_read: body["mail_read"] }),
     };
+    const byState = this.keys.get(by);
+    if (byState === undefined) {
+      const targetState = this.keys.get(target);
+      if (targetState === undefined) return "not_admitted";
+      const error = this.adminMayRevoke(input, author, by, targetState, signed, signature);
+      return error ?? this.stopKeys(input, targetState, afterSeq, mailRead);
+    }
+    if (byState.role === "identity") {
+      if (author.identity !== by || byState.revoked_at !== undefined) return "not_admitted";
+    } else if (byState.role !== "device" || author.key !== by) {
+      // A device key revokes as itself, never on another key's behalf; a mail key revokes nothing.
+      return "not_admitted";
+    }
     if (!input.stored && !verifySignature(by, jcs(signed), signature)) return "bad_signature";
     const targetState = this.keys.get(target);
     if (targetState === undefined) return "not_admitted";
@@ -504,6 +512,31 @@ export class Fold {
     } else if (byState.role !== "identity" || targetState.identity !== by) {
       return "not_admitted";
     }
+    return this.stopKeys(input, targetState, afterSeq, mailRead);
+  }
+
+  /**
+   * docs/protocol.md, revoke: an admin key of the signer set the fold holds revokes an admitted
+   * identity no key of that set is bound to, posted by a device of the identity its own key is
+   * bound to. A set with an unbound or revoked key revokes nobody this way. A stored revoke is not
+   * judged again by the set, as a stored dinner's admissions are not: the set a relay starts from
+   * changes with the relay release it runs, and a full refold holds none.
+   */
+  private adminMayRevoke(input: FoldInput, author: KeyState, by: string, target: KeyState, signed: Json, signature: string): FoldError | null {
+    if (this.breaks.has("admin-revoke") || target.role !== "identity") return "not_admitted";
+    if (input.stored) return null;
+    const set = this.signerSet;
+    if (set === undefined) return "not_admitted";
+    const admin = set.adminIdentity(by);
+    if (admin === undefined || author.identity !== admin) return "not_admitted";
+    if (set.seats(target.key) && !this.breaks.has("admin-revoke-admin")) return "not_admitted";
+    if (!verifySignature(by, jcs(signed), signature)) return "bad_signature";
+    return null;
+  }
+
+  /** Marks the target, and for an identity every key under it, revoked, recording each stopped key's cutoff. */
+  private stopKeys(input: FoldInput, targetState: KeyState, afterSeq: Map<string, number> | undefined, mailRead: Map<string, Set<string>> | undefined): FoldError | null {
+    const target = targetState.key;
     const stopped = [...this.keys.values()].filter((s) => (targetState.role === "identity" ? s.identity === target : s.key === target));
     const cutoffs = afterSeq ?? new Map<string, number>();
     const reads = mailRead ?? new Map<string, Set<string>>();
@@ -560,6 +593,20 @@ export class Fold {
  */
 export function isRootKind(kind: string): boolean {
   return kind === "circle" || kind === "dinner";
+}
+
+/**
+ * The identity each admin of a `circle` body's `admins` is bound to (docs/protocol.md, circle): the
+ * entry's own `identity`, or, for a root naming one admin and no identity, its `host`, since only
+ * the founder writes the root. Undefined when an `identity` is not an ed25519 key.
+ */
+export function rootAdminIdentities(body: { [key: string]: Json }, host: string): Map<string, string> | undefined {
+  const admins = body["admins"];
+  const bound = signerIdentitiesOf(admins);
+  if (bound === undefined || !Array.isArray(admins)) return bound;
+  const only = admins.length === 1 ? admins[0] : undefined;
+  if (bound.size === 0 && isObject(only) && typeof only["key"] === "string") bound.set(only["key"], host);
+  return bound;
 }
 
 /** The non-blank name a `circle` body carries in `circle.name`. */

@@ -48,7 +48,7 @@ async function rows(db: D1Database, table: string, order: string): Promise<unkno
   return (await db.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).all()).results;
 }
 
-/** A summary by the member, appended at the home circle's unprefixed address. */
+/** A summary by the member, appended at the home circle's address. */
 async function summary(text: string): Promise<{ status: number; body: unknown; text: string }> {
   return world.client(HOME, member.device).append(await world.summary(member.device, text));
 }

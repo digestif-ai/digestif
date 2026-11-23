@@ -3,7 +3,7 @@
 // a relay that already holds earlier runs is as good a target as a fresh one.
 import "./node-crypto.ts"; // installs the node:crypto SuiteCrypto: this module only runs on Node
 import { randomBytes } from "node:crypto";
-import { admissionFor, testReleaseSigners } from "./admission.ts";
+import { admissionFor, signedBody, signersDocument, SIGNERS_DOMAIN, testReleaseSigners } from "./admission.ts";
 import { deviceBody, dinnerBody, joinBody, INVITE_TTL_MS, revokeBody, summaryBody, type Guest } from "./bodies.ts";
 import { isoTime, jcs, type Json } from "./encoding.ts";
 import { Author, envelopeHash, signEnvelope, type Kind, type SignedEnvelope, type StoredEnvelope } from "./envelope.ts";
@@ -190,6 +190,25 @@ export class World {
   ): Promise<SignedEnvelope> {
     const afterSeq = Object.fromEntries(stops.map((s) => [s.key, s.seq]));
     return author.next("revoke", revokeBody(by, target, afterSeq, mailRead), await this.epoch(url), createdAt);
+  }
+
+  /**
+   * Binds the circle's signer set to the given members (docs/protocol.md, circle): a signer_set the
+   * host posts naming the same release keys, each entry's `identity` the member at its index, signed
+   * by every key, so the set is unchanged but every key is bound and an admin key can revoke a
+   * member (docs/protocol.md, revoke). The keys stay the same, so admissions later cases sign still
+   * count, and a later run binds them afresh. Returns each member's admin key, by index.
+   */
+  async bindAdmins(admins: Member[], urls: string[] = this.urls): Promise<Signer[]> {
+    const keys = this.releaseSigners;
+    if (admins.length !== keys.length) throw new Error(`bindAdmins binds ${keys.length} admins, one per release signer`);
+    const document = JSON.stringify({
+      format: "digestif-signers-v0",
+      created_at: isoTime(new Date()),
+      signers: keys.map((k, i) => ({ name: admins[i]!.name, key: k.key, identity: admins[i]!.identity.key })),
+    });
+    await this.post(this.host.device, "", urls, "signer_set", signedBody(SIGNERS_DOMAIN, document, keys));
+    return keys;
   }
 
   /** Signs the author's next summary. Not yet sent. */

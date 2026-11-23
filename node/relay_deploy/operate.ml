@@ -285,8 +285,8 @@ let check_token cloudflare (s : setup) =
   cf (Cloudflare.serving_version cloudflare ~token ~account_id ~worker:s.worker)
 
 (* The home circle's address on the relay at [url], <url>/c/<root hex>: every read the operator's
-   node makes of its relay goes there, never to the unprefixed routes, whose use holds back the
-   relay release that drops them (docs/protocol.md, Hosted circles). *)
+   node makes of its home circle goes there, because the relay answers an unprefixed circle route
+   410 circle_moved (docs/protocol.md, Hosted circles). *)
 let home_address (n : Node.t) ~url =
   match Node.root n with
   | Some root -> Ok (Relay_client.circle_address url ~root)

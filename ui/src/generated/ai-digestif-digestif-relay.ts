@@ -81,6 +81,7 @@ export enum Kind {
   ApprovalAnswer = 'approval_answer',
   Digest = 'digest',
   DenyList = 'deny_list',
+  Keep = 'keep',
   Retract = 'retract'
 }
 
