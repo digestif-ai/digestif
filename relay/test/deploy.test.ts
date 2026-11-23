@@ -11,6 +11,7 @@ interface Environment {
   routes?: { pattern: string; custom_domain?: boolean }[];
   secrets: { required: string[] };
   assets: { directory: string; binding: string };
+  durable_objects: { bindings: { name: string; class_name: string }[] };
   d1_databases: { binding: string; database_name: string; database_id: string; migrations_dir: string }[];
 }
 const config = parseJsonc(raw) as { env: Record<string, Environment> };
@@ -32,6 +33,15 @@ describe("wrangler environments", () => {
       expect(e.d1_databases[0]?.database_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
       expect(e.assets).toMatchObject({ directory: "./app", binding: "ASSETS" });
     }
+  });
+
+  it("binds each to the circles' store class the top level binds, with no migrations of its own", () => {
+    const top = parseJsonc(raw) as { durable_objects: unknown; migrations: unknown };
+    for (const e of Object.values(config.env)) {
+      expect(e.durable_objects).toEqual(top.durable_objects);
+      expect(e).not.toHaveProperty("migrations");
+    }
+    expect(top.migrations).toEqual([{ tag: "v1", new_sqlite_classes: ["CircleStore"] }]);
   });
 
   it("roots both in one circle and carries the protocol's default limits", () => {

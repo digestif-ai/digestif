@@ -266,20 +266,22 @@ let request (t : transport) ~token ~meth ~path ?body () =
 (* A multipart/form-data part: the file at [file] sent as field [name] with [content_type]. *)
 type part = { name : string; file : string; content_type : string }
 
-(* A multipart POST, the token and every part in curl's config on stdin, as for [transport]. *)
+(* A multipart request ([meth] POST or PUT), the token and every part in curl's config on stdin, as
+   for [transport]. *)
 type form_transport =
+  meth:string ->
   path:string ->
   token:string ->
   parts:part list ->
   (Relay_client.response, string) result
 
-let form_config ~path ~token ~parts =
+let form_config ~meth ~path ~token ~parts =
   String.concat ""
     (List.map
        (fun (k, v) -> k ^ " = " ^ config_quote v ^ "\n")
        ([
           ("url", api_base ^ path);
-          ("request", "POST");
+          ("request", meth);
           ("header", "Authorization: Bearer " ^ token);
         ]
        @ List.map
@@ -288,7 +290,7 @@ let form_config ~path ~token ~parts =
            parts))
 
 let form_curl : form_transport =
- fun ~path ~token ~parts ->
+ fun ~meth ~path ~token ~parts ->
   (* An upload carries the whole Worker or a bucket of assets: five minutes, not one. *)
   let argv =
     Array.mapi
@@ -296,7 +298,7 @@ let form_curl : form_transport =
         if i > 0 && curl_argv.(i - 1) = "--max-time" then "300" else a)
       curl_argv
   in
-  match Proc.run ~stdin:(form_config ~path ~token ~parts) argv with
+  match Proc.run ~stdin:(form_config ~meth ~path ~token ~parts) argv with
   | Error e -> Error e
   | Ok { code = 0; stdout; _ } -> (
       match String.rindex_opt stdout '\n' with
@@ -312,8 +314,8 @@ let form_curl : form_transport =
   | Ok { code; stderr; _ } ->
       Error (Printf.sprintf "curl exited %d: %s" code (String.trim stderr))
 
-let form (t : form_transport) ~token ~path parts =
-  match t ~path ~token ~parts with
+let form ?(meth = "POST") (t : form_transport) ~token ~path parts =
+  match t ~meth ~path ~token ~parts with
   | Error e -> Error (Failed ("Cloudflare did not answer: " ^ e))
   | Ok r -> envelope r
 
@@ -434,7 +436,7 @@ let assets_session t ~token ~account_id ~worker
    202 whose envelope says it did not succeed is still a refusal. *)
 let assets_upload ft ~jwt ~account_id parts =
   let path = "/accounts/" ^ account_id ^ "/workers/assets/upload?base64=true" in
-  match ft ~path ~token:jwt ~parts with
+  match ft ~meth:"POST" ~path ~token:jwt ~parts with
   | Error e -> Error (Failed ("Cloudflare did not answer: " ^ e))
   | Ok { Relay_client.status = 202; body } -> (
       match Yojson.Safe.from_string body with
@@ -454,6 +456,31 @@ let upload_version ft ~token ~account_id ~worker parts =
   match str "id" r with
   | Some id -> Ok id
   | None -> Error (Failed "Cloudflare's version upload named no id")
+
+(* GET /accounts/:id/workers/scripts: the tag of the newest Durable Object migration [worker] has
+   applied, None when it has applied none (the list is where Cloudflare reports it, as wrangler reads
+   it). *)
+let migration_tag t ~token ~account_id ~worker =
+  let* r =
+    request t ~token ~meth:"GET"
+      ~path:("/accounts/" ^ account_id ^ "/workers/scripts")
+      ()
+  in
+  match r with
+  | `List l -> (
+      match List.find_opt (fun s -> str "id" s = Some worker) l with
+      | Some s -> Ok (str "migration_tag" s)
+      | None -> Error (Failed ("Cloudflare lists no Worker " ^ worker)))
+  | _ -> Error (Failed "Cloudflare's Worker list is not a list")
+
+(* PUT .../workers/scripts/:name: upload [parts] as the Worker script itself, which applies the
+   Durable Object migrations its metadata names and serves the new version at once. A version upload
+   cannot apply a migration (docs/releases.md, The deploy step). *)
+let upload_script ft ~token ~account_id ~worker parts =
+  let* _ =
+    form ~meth:"PUT" ft ~token ~path:(script_path ~account_id ~worker "") parts
+  in
+  Ok ()
 
 (* POST .../workers/scripts/:name/deployments: [version_id] serves all of the Worker's traffic. *)
 let deploy t ~token ~account_id ~worker ~version_id =

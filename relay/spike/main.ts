@@ -1,20 +1,18 @@
-// DIG-319 storage spike: the relay Worker with its store swapped for the circle's Durable Object.
+// DIG-319: the relay Worker with its store swapped for the circle's Durable Object (src/store.ts).
 // src/index.ts runs unchanged; only the DB binding it is handed differs. The adapter is kept per
 // isolate and root, as the D1 binding is, so the per-database checks src/db.ts keys on it hold.
 import relay from "../src/index.ts";
-import { CircleStore, circleDatabase } from "./store.ts";
+import { circleDatabase } from "../src/store.ts";
 
-export { CircleStore };
+export { CircleStore } from "../src/store.ts";
 
 const handles = new Map<string, D1Database>();
 
 /** The circle's store: the object named by CIRCLE_ROOT, one handle per isolate. */
 export function storeOf(env: Env): D1Database {
-  const namespace = env.CIRCLE_STORE;
-  if (namespace === undefined) throw new Error("CIRCLE_STORE is not bound");
   let db = handles.get(env.CIRCLE_ROOT);
   if (db === undefined) {
-    db = circleDatabase(namespace, env.CIRCLE_ROOT);
+    db = circleDatabase(env.CIRCLE_STORE, env.CIRCLE_ROOT);
     handles.set(env.CIRCLE_ROOT, db);
   }
   return db;

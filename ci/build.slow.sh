@@ -279,7 +279,7 @@ build_relay() {
   step "relay: npm ci, check, test, conformance"
   (cd "$root/relay" && npm ci && npm run check && npm test && npm run conformance)
   # The same suite with the store swapped for a circle's SQLite Durable Object behind the D1-shaped
-  # adapter (relay/spike, DIG-319), so the adapter stays able to stand in for D1.
+  # adapter (src/store.ts; relay/spike, DIG-319), so the adapter stays able to stand in for D1.
   step "relay: the suite against the Durable Object store"
   (cd "$root/relay" && npx tsc -p spike/tsconfig.json && npx vitest run --config vitest.do.config.ts)
   # The relay release build's own path (.github/workflows/relay-release.yml), rehearsed on every
