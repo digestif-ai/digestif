@@ -141,6 +141,7 @@ describe("founding a circle", () => {
     const attempt = (hosting: Partial<HostingLimits>) =>
       found(env, {
         root: circle.rootHash,
+        home: TEST_ROOT,
         request: new Request(`${addressOf(RELAY, circle.rootHash)}/v0/envelopes`, { method: "POST", headers: { [HEADER_VOUCHER]: voucher } }),
         url: new URL(`${addressOf(RELAY, circle.rootHash)}/v0/envelopes`),
         hosting: { ...DEFAULT_HOSTING, ...hosting },

@@ -129,6 +129,8 @@ const MEMBER_WINDOW_MS = 30 * DAY_MS;
 /** What a founding carries besides the root: the request (its voucher header) and its url (the host it names). */
 export interface Founding {
   root: string;
+  /** The relay's home circle, whose members vouch like any hosted circle's. */
+  home: string | null;
   request: Request;
   url: URL;
   hosting: HostingLimits;
@@ -191,12 +193,18 @@ async function vouched(env: Env, founding: Founding): Promise<{ circle: string; 
   const voucher = readVoucher(header);
   if (typeof voucher === "string") throw new Refusal(403, "not_vouched", voucher);
   if (voucher.root !== founding.root) throw new Refusal(403, "not_vouched", "the voucher names another root");
-  if (voucher.relay !== founding.url.host) throw new Refusal(403, "not_vouched", `the voucher names relay ${voucher.relay}, not ${founding.url.host}`);
+  const hosts = new Set([founding.url.host, new URL(baseOf(env, founding.url)).host]);
+  if (!hosts.has(voucher.relay)) throw new Refusal(403, "not_vouched", `the voucher names relay ${voucher.relay}, not ${[...hosts].join(" or ")}`);
   const expires = Date.parse(voucher.expires_at);
   const now = founding.now.getTime();
   if (Number.isNaN(expires) || expires <= now) throw new Refusal(403, "not_vouched", "the voucher has expired");
   if (expires > now + VOUCHER_TTL_MS + founding.skewSeconds * 1000) throw new Refusal(403, "not_vouched", "the voucher is good for longer than ten minutes");
-  const circle = voucher.circle === founding.root ? undefined : await hostedRow(env.DB, voucher.circle);
+  const circle =
+    voucher.circle === founding.root
+      ? undefined
+      : voucher.circle === founding.home
+        ? await homeRow(env, voucher.circle, founding.hosting, founding.now)
+        : await hostedRow(env.DB, voucher.circle);
   if (circle === undefined || circle.state !== "open") throw new Refusal(403, "not_vouched", "the voucher names no open circle this relay hosts");
   const key = await loadKey(databaseFor(env, circle), voucher.key);
   if (key === undefined || key.role !== "device" || key.revoked_at !== undefined) throw new Refusal(403, "not_vouched", "the voucher's key is not an admitted device of the circle it names");
@@ -208,12 +216,20 @@ const statsWritten = new Map<string, { at: number; size: number }>();
 const STATS_EVERY_MS = 60 * 60 * 1000;
 const STATS_SIZE_STEP = 1024 * 1024;
 
-/** Records a circle's size and last append in its registry row, sparingly. */
+/**
+ * Records a circle's size and last append in its registry row, sparingly. The append it follows has
+ * committed, so a failed write is logged, never the append's answer.
+ */
 export async function recordStats(registry: D1Database, root: string, size: number, now: Date): Promise<void> {
   const last = statsWritten.get(root);
   if (last !== undefined && now.getTime() - last.at < STATS_EVERY_MS && Math.abs(size - last.size) < STATS_SIZE_STEP) return;
   statsWritten.set(root, { at: now.getTime(), size });
-  await registry.prepare("UPDATE hosted_circles SET size = ?, last_append_at = ? WHERE root = ?").bind(size, isoTime(now), root).run();
+  try {
+    await registry.prepare("UPDATE hosted_circles SET size = ?, last_append_at = ? WHERE root = ?").bind(size, isoTime(now), root).run();
+  } catch (error) {
+    statsWritten.delete(root);
+    console.error(`hosted circle ${root}: the size and last append were not recorded`, error);
+  }
 }
 
 /** Indexes the open invites a dinner or root lists, for the relay's own bootstrap read. */

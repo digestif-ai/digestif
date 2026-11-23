@@ -111,7 +111,7 @@ async function foundCircle(context: Context, root: string): Promise<Response> {
   const limits = limitsOf(env);
   const raw = await readBody({ limits }, request);
   if (envelopeHash(parseSigned(raw).envelope) !== root) throw new Refusal(404, "circle_unknown", `this relay hosts no circle ${root}; only its root may open it`);
-  const row = await found(env, { root, request, url, hosting, now, skewSeconds: limits.skew_seconds });
+  const row = await found(env, { root, home: context.home, request, url, hosting, now, skewSeconds: limits.skew_seconds });
   try {
     return await appendRaw(await relayFor(context, row), request, url, raw);
   } catch (error) {
