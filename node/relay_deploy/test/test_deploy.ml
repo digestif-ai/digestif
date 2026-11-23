@@ -460,6 +460,20 @@ let deploys_and_says_so_once () =
         List.mem (`String "secret_text") l && List.mem (`String "d1") l
     | _ -> false);
   Alcotest.(check bool)
+    "carries HOME_ROOT forward: keeps every var and names none of its own" true
+    ((match field "keep_bindings" with
+       | Some (`List l) -> List.mem (`String "plain_text") l
+       | _ -> false)
+    &&
+    match field "bindings" with
+    | Some (`List bs) ->
+        List.for_all
+          (function
+            | `Assoc b -> List.assoc_opt "type" b <> Some (`String "plain_text")
+            | _ -> true)
+          bs
+    | _ -> false);
+  Alcotest.(check bool)
     "carries the assets' completion token" true
     (match field "assets" with
     | Some (`Assoc a) -> List.assoc_opt "jwt" a = Some (`String "done-jwt")

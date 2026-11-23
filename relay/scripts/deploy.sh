@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Deploys the relay to one of its two environments.
-#   scripts/deploy.sh <dinners|dinners-roman> [--dry-run] [--release <version>]
+# Deploys the relay to one of the environments wrangler.jsonc defines, one per relay.
+#   scripts/deploy.sh <environment> [--dry-run] [--release <version>]
+# An environment wrangler.jsonc does not define is refused, naming the ones it does.
 # Without --release it deploys a build of this checkout. With --release it deploys the signed relay
 # release <version> instead (README "Operations", Break glass): it downloads the manifest and its
 # signatures from the channel, checks them with `digestif-update verify` against the release signer
@@ -10,27 +11,35 @@
 # an account until all of that passed. DIGESTIF_UPDATE names the digestif-update to check with
 # (default: the node's own, then one on PATH, then the newest published node release's);
 # DIGESTIF_CHANNEL names another channel (a url or a directory).
-# The founding dinner's hash comes from the ROOT_HASH environment variable, else from
-# vars.CIRCLE_ROOT of that environment in wrangler.jsonc; with neither set the script refuses.
+# The relay's home circle is HOME_ROOT (README "Configuration"): a fresh relay has none, and
+# `digestif circle found --relay` sets it; every deploy keeps the one the deployment holds
+# (keep_vars). The ROOT_HASH environment variable sets it at deploy time instead; an environment
+# whose wrangler.jsonc vars name CIRCLE_ROOT keeps that circle as its home.
 # --dry-run prints the plan and runs nothing that touches a Cloudflare account.
-# A database whose circle row names another root is cleared only when its log is empty, after
-# asking, and refused otherwise (README "Re-root").
+# A database whose circle row names another root than the home circle given is cleared only when
+# its log is empty, after asking, and refused otherwise (README "Re-root").
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-usage() { echo "usage: scripts/deploy.sh <dinners|dinners-roman> [--dry-run] [--release <version>]" >&2; exit 2; }
+usage() { echo "usage: scripts/deploy.sh <environment> [--dry-run] [--release <version>]" >&2; exit 2; }
 
 env_name="" dry=0 release=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry=1 ;;
     --release) [ $# -ge 2 ] || usage; release="${2#relay-v}"; shift ;;
-    dinners|dinners-roman) env_name="$1" ;;
-    *) usage ;;
+    -*) usage ;;
+    *) [ -z "$env_name" ] || usage; env_name="$1" ;;
   esac
   shift
 done
 [ -n "$env_name" ] || usage
+# The environments wrangler.jsonc defines, one per relay.
+defined="$(node scripts/jsonc.ts wrangler.jsonc env --keys)"
+case " $defined " in
+  *" $env_name "*) ;;
+  *) echo "refusing: wrangler.jsonc defines no environment $env_name; it defines: $defined" >&2; exit 2 ;;
+esac
 if [ -n "$release" ] && ! [[ "$release" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
   echo "refusing: --release takes a relay version, <MAJOR.MINOR.PATCH> (the tag relay-v<version>), not $release" >&2
   exit 2
@@ -106,11 +115,17 @@ if [ -n "$release" ]; then
   bundle_sha="${checked%% *}"
 fi
 
-root="${ROOT_HASH:-$(cfg vars.CIRCLE_ROOT)}"
-if ! [[ "$root" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-  echo "refusing: no ROOT_HASH for $env_name. Set ROOT_HASH=sha256:<64 hex> (the founding dinner's hash) or vars.CIRCLE_ROOT in wrangler.jsonc env.$env_name." >&2
+# The home circle: ROOT_HASH, else what the environment's vars name; none on a fresh relay, which
+# `digestif circle found --relay` gives one.
+root="${ROOT_HASH:-$(cfg vars.HOME_ROOT)}"
+root="${root:-$(cfg vars.CIRCLE_ROOT)}"
+if [ -n "$root" ] && ! [[ "$root" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "refusing: the home circle $root of $env_name is not sha256:<64 hex>. Set ROOT_HASH to the home circle root's hash, or leave it unset for a relay with no home yet." >&2
   exit 1
 fi
+# Only a home given at deploy time is passed as a variable; any other the deployment holds is kept.
+home_var=()
+[ -z "${ROOT_HASH:-}" ] || home_var=(--var "HOME_ROOT:$ROOT_HASH")
 
 db_name="$(cfg 'd1_databases.0.database_name')"
 db_id="$(cfg 'd1_databases.0.database_id')"
@@ -126,7 +141,7 @@ else
 fi
 echo "environment: $env_name (mailer: $mailer${route:+, route: $route})"
 echo "account:     $account"
-echo "root:        $root"
+echo "home:        ${root:-none: the relay hosts nothing until \`digestif circle found --relay\` gives it a home}"
 echo "database:    $db_name ($([ "$db_id" = "$placeholder" ] && echo 'id is a placeholder: created first' || echo "$db_id"))"
 echo "secrets:     $secrets (set beforehand with: npx wrangler secret put <NAME> --env $env_name)"
 echo "plan:"
@@ -138,11 +153,11 @@ else
   echo "  2. scripts/app.sh --require-ui: the phone app from ui/build into app/ ($([ -f ../ui/build/index.html ] && echo 'built' || echo 'NOT BUILT: the deploy refuses until it is'))"
   echo "     npx wrangler d1 migrations apply DB --remote --env $env_name"
 fi
-echo "  3. read the database's circle row; another root over an empty log is cleared in step 5 (after asking), over a non-empty log refused"
+[ -z "$root" ] || echo "  3. read the database's circle row; another root over an empty log is cleared in step 5 (after asking), over a non-empty log refused"
 if [ -n "$release" ]; then
-  echo "  4. npx wrangler deploy --env $env_name --var CIRCLE_ROOT:$root, the bundle's module as signed, tagged relay-v$release"
+  echo "  4. npx wrangler deploy --env $env_name ${home_var[*]:-}, the bundle's module as signed, tagged relay-v$release"
 else
-  echo "  4. npx wrangler deploy --env $env_name --var CIRCLE_ROOT:$root"
+  echo "  4. npx wrangler deploy --env $env_name ${home_var[*]:-}"
 fi
 echo "  5. when step 3 cleared: DELETE FROM circle, while it still names the old root and the log is empty"
 if [ "$dry" = 1 ]; then
@@ -178,7 +193,8 @@ wrangler d1 migrations apply DB --remote --env "$env_name"
 # The Worker writes the circle row on its first request of any kind, so a database that served the
 # conformance circle (or any other) answers 500 misconfigured under a new root until the row goes.
 d1() { wrangler d1 execute DB --remote --env "$env_name" --json --command "$1"; }
-read -r kind old count <<<"$(d1 "$(node scripts/reroot.ts query)" | node scripts/reroot.ts verdict "$root")"
+kind=fresh
+[ -z "$root" ] || read -r kind old count <<<"$(d1 "$(node scripts/reroot.ts query)" | node scripts/reroot.ts verdict "$root")"
 case "$kind" in
   fresh|same) ;;
   refuse)
@@ -196,9 +212,9 @@ case "$kind" in
 esac
 
 if [ -n "$release" ]; then
-  wrangler deploy --env "$env_name" --var "CIRCLE_ROOT:$root" --tag "relay-v$release" --message "$bundle_sha"
+  wrangler deploy --env "$env_name" ${home_var[@]+"${home_var[@]}"} --tag "relay-v$release" --message "$bundle_sha"
 else
-  wrangler deploy --env "$env_name" --var "CIRCLE_ROOT:$root"
+  wrangler deploy --env "$env_name" ${home_var[@]+"${home_var[@]}"}
 fi
 
 # Cleared after the deploy, not before: until the new Worker is live, any request to the old one
