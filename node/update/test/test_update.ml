@@ -6532,6 +6532,214 @@ let test_approve_needs_a_node () =
         "says no node" true
         (contains ~sub:"no node runs here" e)
 
+(* digestif-update remove (docs/protocol.md, revoke; DES-376): a fake node holding the folded set,
+   with each key bound to an identity, one member Dee and the revoke's draft, recording every POST
+   and checking the signature the way the node does. *)
+
+let rm_dee = Keys.public (Crypto.generate_signing_key ())
+let rm_dee_device = Keys.public (Crypto.generate_signing_key ())
+
+let rm_signers
+    ?(bound = [ ("Mike", ap_identity "Mike"); ("Roman", ap_identity "Roman") ])
+    () =
+  `Assoc
+    [
+      ( "signers",
+        `List
+          (List.map
+             (fun (n, s) ->
+               `Assoc
+                 ([
+                    ("key", `String (Keys.public s));
+                    ("name", `String n);
+                    ("revoked", `Bool false);
+                  ]
+                 @
+                 match List.assoc_opt n bound with
+                 | Some i ->
+                     [
+                       ( "member",
+                         `Assoc [ ("identity", `String i); ("name", `String n) ]
+                       );
+                     ]
+                 | None -> []))
+             ap_set) );
+      ("halted", `Bool false);
+    ]
+
+let rm_node ?(signers = rm_signers ()) ?(by = Keys.public roman)
+    ?(revoke_status = 201) () =
+  let posts = ref [] in
+  let members =
+    [
+      (rm_dee, "Dee Rao");
+      (ap_identity "Mike", "Mike");
+      (ap_identity "Roman", "Roman");
+    ]
+  in
+  let api : Approve.api =
+   fun ~meth ~path ~body ->
+    let member_json id =
+      `Assoc
+        [ ("identity", `String id); ("name", `String (List.assoc id members)) ]
+    in
+    match (meth, String.split_on_char '/' path) with
+    | "GET", [ ""; "api"; "v0"; "signers" ] -> Ok (200, signers)
+    | "GET", [ ""; "api"; "v0"; "members"; id ] when List.mem_assoc id members
+      ->
+        Ok (200, member_json id)
+    | "POST", [ ""; "api"; "v0"; "members"; id; "revocation_drafts" ] ->
+        posts := (path, Option.get body) :: !posts;
+        Ok
+          ( 201,
+            `Assoc
+              [
+                ("target", `String id);
+                ("by", `String by);
+                ("member", member_json id);
+                ("after_seq", `Assoc [ (rm_dee_device, `Int 7) ]);
+                ("mail_read", `Assoc []);
+              ] )
+    | "POST", [ ""; "api"; "v0"; "members"; id; "revocations" ] ->
+        let b = Option.get body in
+        posts := (path, b) :: !posts;
+        let parsed =
+          Bodies.parse_revoke
+            (`Assoc
+               (("target", `String id)
+               :: (match b with `Assoc l -> l | _ -> [])))
+        in
+        if
+          revoke_status = 201
+          && Result.fold ~ok:Bodies.revoke_signature_valid
+               ~error:(fun _ -> false)
+               parsed
+        then Ok (201, member_json id)
+        else
+          Ok
+            ( 422,
+              `List
+                [
+                  `Assoc
+                    [
+                      ("code", `String "not_verified");
+                      ("message", `String "The signature does not verify.");
+                    ];
+                ] )
+    | _ -> Ok (404, `Null)
+  in
+  (api, posts)
+
+let test_remove_signs_a_revoke () =
+  let api, posts = rm_node () in
+  let say, lines = said () in
+  (match Remove.remove ~api ~secret:roman ~ask:(fun _ -> "y") ~say rm_dee with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  let out = String.concat "\n" (lines ()) in
+  Alcotest.(check bool)
+    "names the member" true
+    (contains ~sub:"Remove Dee Rao" out);
+  Alcotest.(check bool)
+    "says a revoke never returns" true
+    (contains ~sub:"never returns" out);
+  Alcotest.(check bool) "removed" true (contains ~sub:"removed: Dee Rao" out);
+  match List.rev !posts with
+  | [ (draft, d); (revoke, r) ] -> (
+      Alcotest.(check string)
+        "asks for the draft"
+        ("/api/v0/members/" ^ rm_dee ^ "/revocation_drafts")
+        draft;
+      Alcotest.(check (option string))
+        "by the admin key"
+        (Some (Keys.public roman))
+        (body_string "by" d);
+      Alcotest.(check string)
+        "then posts the revoke"
+        ("/api/v0/members/" ^ rm_dee ^ "/revocations")
+        revoke;
+      let parsed =
+        Bodies.parse_revoke
+          (`Assoc
+             (("target", `String rm_dee)
+             :: (match r with `Assoc l -> l | _ -> [])))
+      in
+      match parsed with
+      | Ok p ->
+          Alcotest.(check bool)
+            "signed by the admin key over the draft's claim" true
+            (Bodies.revoke_signature_valid p);
+          Alcotest.(check (list (pair string int)))
+            "with the draft's cutoffs"
+            [ (rm_dee_device, 7) ]
+            p.after_seq
+      | Error e -> Alcotest.fail e)
+  | l -> Alcotest.failf "two POSTs, got %d" (List.length l)
+
+let test_remove_declined () =
+  let api, posts = rm_node () in
+  let say, lines = said () in
+  let read = ref false in
+  (match
+     Remove.remove_as ~api ~me:(Keys.public roman)
+       ~read_secret:(fun () ->
+         read := true;
+         Ok roman)
+       ~ask:(fun _ -> "")
+       ~say rm_dee
+   with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool) "the key is never read" false !read;
+  Alcotest.(check bool)
+    "nothing was signed" true
+    (contains ~sub:"nothing was signed" (String.concat "\n" (lines ())));
+  Alcotest.(check int) "only the draft was asked for" 1 (List.length !posts)
+
+let test_remove_refuses_a_sitting_admin () =
+  let api, posts = rm_node () in
+  let say, _ = said () in
+  (match
+     Remove.remove ~api ~secret:roman
+       ~ask:(fun _ -> "y")
+       ~say (ap_identity "Mike")
+   with
+  | Ok () -> Alcotest.fail "a sitting admin is refused"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names the removal approval: " ^ e)
+        true
+        (contains ~sub:"Remove as Admin" e
+        && contains ~sub:"nothing was signed" e));
+  Alcotest.(check int) "nothing reached the node" 0 (List.length !posts)
+
+let test_remove_refuses () =
+  let say, _ = said () in
+  let refused ?(node = rm_node ()) ?(secret = roman) ?(id = rm_dee) what sub =
+    let api, posts = node in
+    match Remove.remove ~api ~secret ~ask:(fun _ -> "y") ~say id with
+    | Ok () -> Alcotest.failf "%s: expected a refusal" what
+    | Error e ->
+        Alcotest.(check bool) (what ^ ": " ^ e) true (contains ~sub e);
+        List.length !posts
+  in
+  Alcotest.(check int)
+    "an unknown member asks nothing" 0
+    (refused ~id:"ed25519:nobody" "unknown member" "reads no member");
+  Alcotest.(check int)
+    "a key outside the set asks nothing" 0
+    (refused ~secret:carol "not an admin" "not in this circle's signer set");
+  Alcotest.(check int)
+    "a draft by another key signs nothing" 1
+    (refused
+       ~node:(rm_node ~by:(Keys.public mike) ())
+       "another key's draft" "nothing was signed");
+  ignore
+    (refused
+       ~node:(rm_node ~revoke_status:422 ())
+       "the node refuses" "does not verify"
+      : int)
+
 (* The machine's one service runs every circle folder's node (DIG-347). *)
 
 type circles_sim = {
@@ -7069,5 +7277,12 @@ let () =
             test_approve_lists_what_waits_on_this_key;
           t "signers propose" test_signers_propose;
           t "needs a node" test_approve_needs_a_node;
+        ] );
+      ( "remove",
+        [
+          t "signs a revoke" test_remove_signs_a_revoke;
+          t "no at the question" test_remove_declined;
+          t "refuses a sitting admin" test_remove_refuses_a_sitting_admin;
+          t "refuses" test_remove_refuses;
         ] );
     ]

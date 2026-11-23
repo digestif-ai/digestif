@@ -116,6 +116,21 @@ Two documents are signed this way, each over its own domain line:
 
 A recall and a key revocation stay one signer's act (A recall, Revoking a release key).
 
+## Removing a member
+
+One admin removes a member, with no approval ([protocol.md](protocol.md), revoke): the review
+item and the member page show the command, run on the admin's own machine:
+
+    digestif-update remove <identity>
+
+It reads the key as `approve` does (the circle's own admin key when its folder holds one, else the
+release key, read only on `y`), asks the node for the revoke's claim (the target, the key and the
+cutoffs its log holds once every relay is fetched), prints who is removed, signs the claim in
+memory and hands the signature to the node, which posts the revoke with its own device key. A
+member whose identity a key of the signer set is bound to is a sitting admin and is refused before
+anything is signed, by the command and by the node: Remove as Admin on their member page takes the
+key out first, by a removal approval.
+
 ## Revoking a release key
 
 A revocation names one key and is signed by any key in the current set. From then on:

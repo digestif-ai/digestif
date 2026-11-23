@@ -7635,6 +7635,138 @@ module Review = struct
             | _ -> invalid "not_in_review" "Only a member in review is kept."))
 end
 
+(* Remove (docs/protocol.md, revoke; docs/design.md, Member review; DES-376): an admin removes a
+   member with a revoke signed by their admin key, which this node never holds. digestif-update
+   remove asks for the revoke's claim (a draft: target, by and the cutoffs this log holds, after
+   reading every relay), signs it with the admin key, and hands back the signature; this node checks
+   it and posts the revoke with its own device key, a device of the identity the admin key is bound
+   to. Both refuse what the fold would not count, so no revoke is sent that the relay refuses. *)
+module Removal = struct
+  let ( let+ ) r f = match r with Error resp -> resp | Ok v -> f v
+
+  let need name b =
+    match string_field name b with
+    | Some v when String.trim v <> "" -> Ok (String.trim v)
+    | _ -> Error (invalid ~field:name "missing" ("Give " ^ name ^ "."))
+
+  (* What the fold at [f] says of a revoke of [target] by the admin key [by], posted from this node:
+     the rule of docs/protocol.md (revoke), checked before anything is signed or posted. *)
+  let refusal c f ~by (target : Fold.key_state) =
+    let name () = fst (names c target.key) in
+    match self_identity c with
+    | None ->
+        Some (invalid "not_joined" "This node has not joined a circle yet.")
+    | Some me when me = target.key ->
+        Some
+          (invalid "self"
+             "An admin does not remove themselves; another admin removes you.")
+    | Some me -> (
+        if target.revoked_by <> None then
+          Some (invalid "revoked" (name () ^ " was removed already."))
+        else
+          match Fold.admin_identity f by with
+          | Error why ->
+              Some
+                (invalid ~field:"by" "not_admin"
+                   ("This circle does not count a revoke by " ^ by ^ ": " ^ why
+                  ^ "."))
+          | Ok bound when bound <> me ->
+              Some
+                (invalid ~field:"by" "not_yours"
+                   ("The admin key " ^ by
+                  ^ " is bound to another member; run this on their node."))
+          | Ok _ when Fold.seats f target.key ->
+              Some
+                (invalid "sitting_admin"
+                   (name ()
+                  ^ " still holds an admin key in the signer set. Take it out \
+                     first: Remove as Admin on their member page, then every \
+                     admin runs digestif-update approve <id>. Once that \
+                     removal is signed, remove them."))
+          | Ok _ -> None)
+
+  let cutoffs_json after_seq mail_read =
+    [
+      ("after_seq", Bodies.after_seq_json after_seq);
+      ("mail_read", Bodies.mail_read_json mail_read);
+    ]
+
+  (* POST /members/:identity/revocation_drafts: the claim an admin key signs to remove the member,
+     its cutoffs read from this log once every relay is fetched. *)
+  let draft c id body =
+    with_found (find_identity c id) (fun target ->
+        let+ by = need "by" body in
+        !Phones.sync_first c.node;
+        let f = Node.fold c.node in
+        let target = Option.value (Fold.find f target.key) ~default:target in
+        match refusal c f ~by target with
+        | Some r -> r
+        | None -> (
+            match Node.revoke_cutoffs c.node ~target:target.key with
+            | Error m -> invalid "not_admitted" m
+            | Ok (after_seq, mail_read) ->
+                ok ~status:201
+                  (`Assoc
+                     ([
+                        ("target", str target.key);
+                        ("by", str by);
+                        ("member", member_json { c with fold = f } target);
+                      ]
+                     @ cutoffs_json after_seq mail_read))))
+
+  (* POST /members/:identity/revocations: the signed revoke, posted with this node's device key. *)
+  let revoke c id body =
+    with_found (find_identity c id) (fun target ->
+        let+ by = need "by" body in
+        let+ signature = need "signature" body in
+        let parsed =
+          Bodies.parse_revoke
+            (`Assoc
+               ([
+                  ("target", str target.key);
+                  ("by", str by);
+                  ("signature", str signature);
+                ]
+               @ List.filter_map
+                   (fun k -> Option.map (fun v -> (k, v)) (field k body))
+                   [ "after_seq"; "mail_read" ]))
+        in
+        match parsed with
+        | Error m -> invalid "malformed" m
+        | Ok r -> (
+            let f = Node.fold c.node in
+            let target =
+              Option.value (Fold.find f target.key) ~default:target
+            in
+            match refusal c f ~by target with
+            | Some resp -> resp
+            | None -> (
+                if not (Bodies.revoke_signature_valid r) then
+                  invalid ~field:"signature" "not_verified"
+                    "The signature does not verify over this revoke."
+                else
+                  match Fold.check_cutoff_keys (Fold.stopped_by f target) r with
+                  | Error m -> invalid "malformed" m
+                  | Ok () -> (
+                      let revoke =
+                        `Assoc
+                          ([ ("target", str r.target); ("by", str r.by) ]
+                          @ cutoffs_json r.after_seq r.mail_read
+                          @ [ ("signature", str r.r_signature) ])
+                      in
+                      match Node.write c.node ~kind:"revoke" revoke with
+                      | Error m -> invalid "not_signed" m
+                      | Ok _ ->
+                          c.on_write ();
+                          let f = Node.fold c.node in
+                          let target =
+                            Option.value (Fold.find f target.key)
+                              ~default:target
+                          in
+                          ok ~status:201
+                            (member_json { c with fold = f } target)))))
+end
+
 (* The signer set that judges this circle's admissions as this node folded it (docs/protocol.md,
    signer_set): the circle's own admins when its root names them (Circle_admins), else the channel's
    release signer set in the node's update state, which every signer-set change on the circle or the channel advances
@@ -7884,6 +8016,8 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "members"; id ] ->
       with_found (find_identity c id) (fun k -> ok (member_json c k))
   | "POST", [ "members"; id; "keep" ] -> Review.keep c id
+  | "POST", [ "members"; id; "revocation_drafts" ] -> Removal.draft c id body
+  | "POST", [ "members"; id; "revocations" ] -> Removal.revoke c id body
   | "PUT", [ "members"; id; "mute" ] ->
       with_found (find_identity c id) (fun k ->
           if self_identity c = Some k.key then

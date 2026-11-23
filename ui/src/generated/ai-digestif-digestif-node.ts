@@ -1472,6 +1472,41 @@ export interface RepositoryStatusCount {
   count: number;
 }
 
+/**
+ * The claim an admin key signs to remove a member, its cutoffs read from this node's log once every relay was fetched: the signature covers JCS({target, by, after_seq, mail_read}).
+ */
+export interface RevocationDraft {
+  /** The member's identity key. */
+  target: string;
+  /** The admin key that signs. */
+  by: string;
+  member: Member;
+  /** Each device key the revoke stops, at the last seq of its honest chain. */
+  after_seq: Record<string, number>;
+  /** Each mail key the revoke stops, with the hashes of its envelopes this node holds. */
+  mail_read: Record<string, string[]>;
+}
+
+/**
+ * Asks for the claim an admin key signs to remove a member (docs/protocol.md, revoke): digestif-update remove sends it, with the admin key that is to sign.
+ */
+export interface RevocationDraftForm {
+  /** The admin key of the circle's signer set that signs the revoke. */
+  by: string;
+}
+
+/**
+ * A revoke of a member signed by an admin key, as digestif-update remove signs a revocation_draft; the node posts it with its own device key.
+ */
+export interface RevocationForm {
+  /** The admin key that signed. */
+  by: string;
+  after_seq: Record<string, number>;
+  mail_read: Record<string, string[]>;
+  /** by over JCS({target, by, after_seq, mail_read}). */
+  signature: string;
+}
+
 export interface Rules {
   text: string;
   updated_at?: ISODateTimeString;
@@ -2017,6 +2052,20 @@ export interface GetMemberByIdentityOptions {
 }
 
 export interface CreateMemberKeepByIdentityOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateMemberRevocationDraftsByIdentityOptions {
+  identity: string;
+  body: RevocationDraftForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateMemberRevocationsByIdentityOptions {
+  identity: string;
+  body: RevocationForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -3919,6 +3968,73 @@ export class ApiClient {
         'application/json',
         { ...note.headers(url), ...options?.headers },
         options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Member>(response, 'Member');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createMemberRevocationDraftsByIdentity(
+    context: CallContext,
+    params: CreateMemberRevocationDraftsByIdentityOptions
+  ): Promise<RevocationDraft> {
+    return context.recorder.call(context, 'POST /api/v0/members/:identity/revocation_drafts', async (note) => {
+      const url = `${this.baseUrl}/api/v0/members/${encodeURIComponent(params.identity)}/revocation_drafts`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<RevocationDraft>(response, 'RevocationDraft');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createMemberRevocationsByIdentity(context: CallContext, params: CreateMemberRevocationsByIdentityOptions): Promise<Member> {
+    return context.recorder.call(context, 'POST /api/v0/members/:identity/revocations', async (note) => {
+      const url = `${this.baseUrl}/api/v0/members/${encodeURIComponent(params.identity)}/revocations`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
       );
       note.response(response);
 
