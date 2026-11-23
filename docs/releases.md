@@ -708,7 +708,8 @@ file:
 ```
 
 Answer the Keychain's prompt with Allow, never Always Allow, which would trust `security` with the key
-from then on. The line to sign is then `digestif-update sign --next` alone.
+from then on. The line to sign is then `digestif-update sign --next` alone. The signing job (The signing job)
+replaces this item with one its pinned copy created, which that copy alone reads without a prompt.
 
 A key kept as a document that the password manager's app downloads (1Password's Download, with no
 `op` installed) can also be read from where it lands, and the signing line deletes it as soon as
@@ -854,6 +855,57 @@ The other versions offered are still signed by one answer; with none left the ru
 the versions it could not sign. Running the workflow again on the tag rebuilds and re-attests the
 draft's files. GitHub runs the workflow a tag's commit holds, so a version whose commit predates
 the attesting workflows can never be attested: it is dropped, and the next version is cut.
+
+### The signing job
+
+A signer's Mac signs a version unattended only through the signing job: a launchd agent running a
+pinned copy of `digestif-update signer run` (`node/update/lib/signing_job.ml`), which signs exactly
+the node or relay manifest a decision approved (design DIG-181). idempotent's signing check records
+one decision per waiting version; the job holds `GET
+https://api.idempotent.io/digestif/signer/decisions` open with the signer's token, a long-poll that
+answers at once with every open decision on connecting and again the moment one is recorded or
+answered. The job asks again as soon as an answer arrives, with that answer's `seen`; nothing
+re-reads on a timer. A request that fails is retried after a backoff (one second, doubling to five
+minutes), reading every open decision again as a connect does. A 401 ends the job, since the token
+is unknown or revoked, and launchd starts it again no sooner than five minutes later.
+
+A decision's `act` is all the job reads: `wait` and `drop` sign nothing, and `sign` signs only the
+draft whose `manifest.json` has the decision's `manifest_sha256`, after the job repeats the
+integrity check itself: exactly the conditions under which `sign --next` does not offer a version
+(What ties a version to its build), which no answer overrides. It never runs the history check,
+which is the signing check's. A sign whose draft fails either check is not signed, the log says
+why, and the next answer that carries the decision checks it again. A relay signature that
+completes the signer set publishes the version, as `sign --next` does. Each answer's signatures
+are made with the signer's own `gh` login, and every line the job says goes, stamped, to
+`~/.digestif/signer/signer.log`.
+
+The job reads its key and its token from the login Keychain, from two items its pinned copy
+created itself (`digestif-release-key` and `digestif-signer-token`): an item's access list trusts
+the application that added it, so that copy reads both without a prompt, and every other reader,
+`security` included, is asked. What the copy signs is bounded by its own code: only a manifest a
+decision fetched with the signer token approved, whose files the release workflow attested at the
+tag, and whose sha256 matches.
+
+`signer install` sets it up, once, from the `digestif-update` the node holds:
+
+    ~/.local/bin/digestif-update signer install
+
+It copies the running binary, a published release's, to `~/.digestif/signer/digestif-update-<version>`
+and refuses any other binary. When the Keychain holds no `digestif-release-key` item it asks for the
+key at a hidden prompt; when it holds one, the pinned copy reads it, and the Keychain asks once:
+answer Allow, never Always Allow. It asks for the signer token Mike issued on the signer's page
+(Enter keeps the one in the Keychain), then runs the pinned copy's `signer adopt`, which writes both
+items back as its own and reads them back silently. It writes
+`~/Library/LaunchAgents/io.digestif.signer.plist`, which runs the pinned copy's `signer run` at login
+and keeps it alive with the PATH `signer install` ran under, and loads it with `launchctl bootstrap`.
+It names every other agent of the signer's whose plist runs `sign --next`, the sign-on-assignment
+job the signing job replaces, with the `launchctl bootout` line that stops it.
+
+No automatic update replaces the pinned copy: a new binary is a new code identity, which the
+Keychain does not trust. Upgrading the job is running `signer install` again from the newer
+`digestif-update`, which pins the new copy, moves both items to it with one Keychain prompt, and
+deletes the older copies. `digestif-update signer run --once` reads the open decisions once, acts
+on them and stops, which shows what the job would do.
 
 ### Reading the signatures back
 

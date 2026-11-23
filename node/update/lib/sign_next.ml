@@ -1343,6 +1343,19 @@ let manifests_to_read ~relay_releases ~drafts ~relays =
     []
     (drafts @ List.filter_map (last_published relay_releases) relays)
 
+(* The trusted root every attestation is verified against ({!Attestation}), fetched with [gh] into
+   [tmp]; None when it could not be, and each attestation then verifies against gh's own. *)
+let trusted_root_file ~gh ~tmp =
+  match gh Attestation.trusted_root_args with
+  | Error _ -> None
+  | Ok bytes -> (
+      let path = Filename.concat tmp "trusted_root.jsonl" in
+      try
+        Out_channel.with_open_bin path (fun oc ->
+            Out_channel.output_string oc bytes);
+        Some path
+      with Sys_error _ -> None)
+
 (* THE VERSIONS OFFERED, of either line, signed or dropped by ONE answer: of each line's waiting
    drafts ({!waiting_all}), the newest and those one more signature completes ({!offered}), read
    from one listing of the releases ([listed], the bytes GitHub's list answered), every manifest
@@ -1389,17 +1402,7 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
             (fun (r : draft) -> cache.knows ~tag:r.tag)
             (node_drafts @ relay_offered)
         then None
-        else
-          time "trusted-root" (fun () ->
-              match gh Attestation.trusted_root_args with
-              | Error _ -> None
-              | Ok bytes -> (
-                  let path = Filename.concat tmp "trusted_root.jsonl" in
-                  try
-                    Out_channel.with_open_bin path (fun oc ->
-                        Out_channel.output_string oc bytes);
-                    Some path
-                  with Sys_error _ -> None))
+        else time "trusted-root" (fun () -> trusted_root_file ~gh ~tmp)
       in
       let synced, (fetched, trusted_root) =
         Parallel.both
