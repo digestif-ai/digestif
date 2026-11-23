@@ -32,7 +32,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runChecks, modelPiiCheck, modelRulesCheck, type ModelCheck } from "./checks.ts";
 import type { DenyEntry } from "./deny.ts";
-import { agentProblem, askHarness, buildSystemPrompt, PROMPTS_DIR, type AgentProblem, type HarnessOptions } from "./writer.ts";
+import { agentProblem, askHarness, buildSystemPrompt, PROMPTS_DIR, type AgentProblem, type HarnessOptions, type UsageReset } from "./writer.ts";
 
 /** The code's frame around the member's prompt: the always-on rule, the guards and the answer's shape. */
 export const INBOX_RUN_PROMPT_FILE = join(PROMPTS_DIR, "inbox-run.md");
@@ -355,7 +355,10 @@ export interface InboxRunArgs {
 }
 
 /** What a run came to: `done` when the node recorded it, else the problem that leaves the batch unreviewed. */
-export type InboxRunResult = { status: "done"; sent: number; kept: number; items: number; filed: number; adopted: number } | { status: "failed"; why: string; problem: AgentProblem | "failed" };
+export type InboxRunResult =
+  | { status: "done"; sent: number; kept: number; items: number; filed: number; adopted: number }
+  /** `limited`: the agent's usage limit, and when it lifts when the agent said (DIG-371). */
+  | { status: "failed"; why: string; problem: AgentProblem | "failed"; limited?: { reset?: UsageReset } };
 
 /** What a filing run may name as what it filed or found: a URL, an owner/repo#n, or a tracker key such as ISS-120. */
 export const FILED_LINK = /^(?:https?:\/\/\S+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+|[A-Z][A-Z0-9]*-\d+)$/;
@@ -504,6 +507,7 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
   const system = buildInboxPrompt(frame, a.inboxPrompt, a.brief, a.rules, a.learnings, a.practices ?? []);
   // No tools: nothing a message says can be run by the run that reads it.
   const ran = await askHarness(system, inboxInput(readMemory(a.stateDir), a.members, a.batch, a.ownNotes ?? []), { ...a.harness, tools: false });
+  if (ran.status === "usage_limited") return { status: "failed", why: ran.message, problem: agentProblem(ran), limited: ran.reset === undefined ? {} : { reset: ran.reset } };
   if (ran.status !== "note") return { status: "failed", why: `the agent gave no answer (${ran.status})`, problem: agentProblem(ran) };
   const byRef = new Map(a.batch.map((m) => [m.ref, m]));
   const d = parseRun(ran.note, new Set(byRef.keys()));

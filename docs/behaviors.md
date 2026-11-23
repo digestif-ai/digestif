@@ -17,7 +17,8 @@ its results back to the node. This page is the interface between the two, versio
 A pass is the sync `digestif run` makes every interval (300 seconds by default) and at once when the
 machine wakes. Each hook runs at most once at a time: a pass that finds one still running spawns
 nothing for it. A nightly run that exits 0 handles its local date (it handed over a note, had nothing to say, or
-spent its own tries and said why). Any other end (a non-zero exit, a signal, the deadline) leaves the
+spent its own tries and said why). One that exits 4 is held by its agent's usage limit: the date stays due and
+the run is not counted (Output, exit and the deadline). Any other end (a non-zero exit, a signal, the deadline) leaves the
 date due, so the next pass runs it again; after 3 such runs the node gives up on the date and
 reports a problem (docs/design.md, Stages and the status note) whose kind says how the last one
 ended (`digestif behavior list` shows the last handled date).
@@ -337,6 +338,11 @@ a success and spawns the next read run on its next pass, without waiting for ano
 arrive, until a run exits otherwise. The bundled read hook exits 3 only while its day's budget
 (`max_agent_runs`) has a run left and its agent's run finished; once the budget is spent it exits 0,
 and what is left is read on a day with budget. `digestif behavior run read` takes 3 as a success.
+
+A nightly run whose agent's account reached its usage limit exits 4: the node leaves the date due
+and does not count the run against its 3, so the next pass runs it again. The bundled nightly hook
+exits 4 at once on every pass until the limit's reset, which it keeps in its own state, and then
+writes the note (DIG-371).
 
 A nightly run may take 30 minutes and a read run 15, counted in time the machine is awake: the node
 adds up the time between its passes' checks, and a gap of more than a minute is the machine asleep,

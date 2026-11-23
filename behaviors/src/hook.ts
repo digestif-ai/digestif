@@ -2,7 +2,8 @@
 // DIGESTIF_HOOK set and one JSON object on stdin, owns Note time, the once-per-date logic and where
 // each source starts, and ends the run at the deadline (SIGTERM, then SIGKILL 30 seconds later). The exit status tells
 // the node whether the date is over: 0 it is (posted, quiet, refused, signed out, or the tries are
-// spent), 1 the run failed and the node's next pass tries again.
+// spent), 1 the run failed and the node's next pass tries again, NIGHTLY_WAITING the agent's usage
+// limit holds the date, which the node's next pass tries again without counting this run (DIG-371).
 
 import { renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -14,6 +15,12 @@ import { countFailureSync, gaveUpDetail, hookStateDir, logLineSync, MAX_ATTEMPTS
 import { recordFields, type Source, type SourceKind } from "./sources.ts";
 import { fetchNotePrompt, openPullRequest, owedPullRequests, recordPullRequest } from "./prompts.ts";
 import { AGENT_KINDS, fetchAutoApprove, fetchContext, killHarnesses, type AgentKind, type ApiAccess, type HarnessOptions, type WriterOptions } from "./writer.ts";
+
+/**
+ * The nightly's exit while its agent's usage limit holds the date (DIG-371): not over, and no try of
+ * it. The node runs it again on its next pass, and the run returns at once until the reset.
+ */
+export const NIGHTLY_WAITING = 4;
 
 /** The handoff's `interface` this code understands. */
 export const INTERFACE = 0;
@@ -329,8 +336,8 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
           }),
     };
     const r = await nightly(options);
-    console.error(`digestif-nightly: ${r.status} (${r.date})`);
-    return r.status === "failed" ? 1 : 0;
+    console.error(`digestif-nightly: ${r.status} (${r.date})${r.status === "waiting" ? ` until ${new Date(r.until).toISOString()}` : ""}`);
+    return r.status === "failed" ? 1 : r.status === "waiting" ? NIGHTLY_WAITING : 0;
   } catch (e) {
     console.error(`digestif-nightly: ${(e as Error).message}`);
     return 1;

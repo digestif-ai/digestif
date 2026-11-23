@@ -81,7 +81,7 @@ export async function updateLearnings(
   if (r.status === "signed_out") return { status: "failed", reason: "the agent is signed out", problem: agentProblem(r) };
   if (r.status === "out_of_budget") return { status: "failed", reason: "the agent is out of budget", problem: agentProblem(r) };
   if (r.status === "hung") return { status: "failed", reason: `the agent wrote nothing for ${Math.round(r.quietMs / 60_000)} minutes` };
-  if (r.status === "failed") return { status: "failed", reason: r.message };
+  if (r.status === "failed" || r.status === "usage_limited") return { status: "failed", reason: r.message };
   return { status: "failed", reason: "the agent gave no answer" };
 }
 
