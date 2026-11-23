@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Tests `relay/scripts/deploy.sh --release` (relay/README.md "Operations", Break glass) against a
-# channel in a scratch directory, with two throwaway release keys standing in for the signer set:
+# release store in a scratch directory, with two throwaway release keys standing in for the signer set:
 # a release both keys signed passes its dry run; one signature, a bundle that is not the signed
 # one, and a manifest of another version are each refused before anything else runs; and wrangler
 # accepts the configuration the script writes and deploys the bundle's module as it stands, not a
@@ -55,30 +55,31 @@ EOF
   (cd "$dir" && tar -czf "$tmp/digestif-relay-$1.tar.gz" worker app migrations bundle.json)
 }
 
-# Publishes $1 to the channel under relay/$2, signed by the keys named after it.
+# Publishes $1 as the release relay-v$2, signed by the keys named after it: the release's files,
+# its bundle under bundles/ and its manifest naming that path relative to the release.
 publish() {
-  local version="$1" under="$2" sigs=() k
+  local version="$1" rel="$tmp/releases/relay-v$2" sigs=() k
   shift 2
   bundle "$version"
-  mkdir -p "$tmp/channel/bundles" "$tmp/channel/relay/$under"
-  cp "$tmp/digestif-relay-$version.tar.gz" "$tmp/channel/bundles/"
+  mkdir -p "$rel/bundles"
+  cp "$tmp/digestif-relay-$version.tar.gz" "$rel/bundles/"
   "$update" relay-manifest "$version" --bundle "$tmp/digestif-relay-$version.tar.gz" \
-    --url-base bundles --compatible-with "$version" --notes "test" >"$tmp/channel/relay/$under/manifest.json"
+    --url-base bundles --compatible-with "$version" --notes "test" >"$rel/manifest.json"
   for k in "$@"; do
-    (cd "$tmp" && "$update" sign --key "$tmp/$k.key" "$tmp/channel/relay/$under/manifest.json" >/dev/null)
-    mv "$tmp/channel/relay/$under/manifest.sig.json" "$tmp/$k.sig.json"
+    (cd "$tmp" && "$update" sign --key "$tmp/$k.key" "$rel/manifest.json" >/dev/null)
+    mv "$rel/manifest.sig.json" "$tmp/$k.sig.json"
     sigs+=("$tmp/$k.sig.json")
   done
-  # The channel's combined signatures, as ci/release.sh writes them: verify --out, or for a test of
-  # a missing signer the one signature as it is.
-  if ! "$tmp/digestif-update" verify "$tmp/channel/relay/$under/manifest.json" "${sigs[@]}" \
-    --out "$tmp/channel/relay/$under/manifest.sig.json" >/dev/null 2>&1; then
-    cp "${sigs[0]}" "$tmp/channel/relay/$under/manifest.sig.json"
+  # The release's combined signatures, as relay-publish uploads them: verify --out, or for a test
+  # of a missing signer the one signature as it is.
+  if ! "$tmp/digestif-update" verify "$rel/manifest.json" "${sigs[@]}" \
+    --out "$rel/manifest.sig.json" >/dev/null 2>&1; then
+    cp "${sigs[0]}" "$rel/manifest.sig.json"
   fi
 }
 
 deploy() {
-  (cd "$relay" && DIGESTIF_UPDATE="$tmp/digestif-update" DIGESTIF_CHANNEL="$tmp/channel" \
+  (cd "$relay" && DIGESTIF_UPDATE="$tmp/digestif-update" DIGESTIF_RELEASES="$tmp/releases" \
     bash scripts/deploy.sh dinners --dry-run --release "$@") >"$tmp/out" 2>&1
 }
 
@@ -96,7 +97,7 @@ grep -qF 'do not verify' "$tmp/out" || fail "the refusal is not said: $(cat "$tm
 
 publish 0.1.2 0.1.2 a b
 echo '// another byte' >>"$tmp/pack-0.1.2/worker/index.js"
-(cd "$tmp/pack-0.1.2" && tar -czf "$tmp/channel/bundles/digestif-relay-0.1.2.tar.gz" worker app migrations bundle.json)
+(cd "$tmp/pack-0.1.2" && tar -czf "$tmp/releases/relay-v0.1.2/bundles/digestif-relay-0.1.2.tar.gz" worker app migrations bundle.json)
 if deploy 0.1.2; then fail "a bundle that is not the signed one was deployed"; fi
 grep -qF 'is not the bundle relay 0.1.2 signed' "$tmp/out" || fail "the bundle refusal is not said: $(cat "$tmp/out")"
 grep -qF "the bundle's sha256 is" "$tmp/out" || fail "the sha256 is not named: $(cat "$tmp/out")"
@@ -104,8 +105,8 @@ grep -qF "the bundle's sha256 is" "$tmp/out" || fail "the sha256 is not named: $
 publish 0.1.3 0.2.0 a b
 if deploy 0.2.0; then fail "a manifest of 0.1.3 was deployed as 0.2.0"; fi
 
-if deploy 0.3.0; then fail "a version the channel does not hold was deployed"; fi
-grep -qF 'is not published on the channel' "$tmp/out" || fail "the absent version is not said: $(cat "$tmp/out")"
+if deploy 0.3.0; then fail "a version with no release was deployed"; fi
+grep -qF 'relay 0.3.0 is not published' "$tmp/out" || fail "the absent version is not said: $(cat "$tmp/out")"
 
 if (cd "$relay" && bash scripts/deploy.sh dinners --release latest --dry-run) >"$tmp/out" 2>&1; then
   fail "--release latest was accepted"

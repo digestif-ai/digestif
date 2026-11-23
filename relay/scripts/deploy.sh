@@ -4,13 +4,15 @@
 # An environment wrangler.jsonc does not define is refused, naming the ones it does.
 # Without --release it deploys a build of this checkout. With --release it deploys the signed relay
 # release <version> instead (README "Operations", Break glass): it downloads the manifest and its
-# signatures from the channel, checks them with `digestif-update verify` against the release signer
+# combined signatures from the version's GitHub release (relay-v<version>), checks them with
+# `digestif-update verify` against the release signer
 # set, downloads the bundle the manifest names, checks its sha256, its size and every migration
 # against the manifest, and deploys those bytes: the bundle's module (not bundled again), its app/
 # and its migrations, under this environment's own settings from wrangler.jsonc. Nothing touches
 # an account until all of that passed. DIGESTIF_UPDATE names the digestif-update to check with
-# (default: the node's own, then one on PATH, then the newest published node release's);
-# DIGESTIF_CHANNEL names another channel (a url or a directory).
+# (default: the node's own, then one on PATH, then the digestif-update of the newest version the
+# release list on main names that no recall takes out); DIGESTIF_RELEASES names another place the
+# releases' files are read from (a url or a directory holding relay-v<version>/).
 # The relay's home circle is HOME_ROOT (README "Configuration"): a fresh relay has none, and
 # `digestif circle found --relay` sets it; every deploy keeps the one the deployment holds
 # (keep_vars). The ROOT_HASH environment variable sets it at deploy time instead; an environment
@@ -53,9 +55,13 @@ wrangler() { npx wrangler "$@" ${wcfg[@]+"${wcfg[@]}"}; }
 # ---- --release: the signed bytes, checked before anything else runs ----
 
 repo="digestif-ai/digestif"
-channel="${DIGESTIF_CHANNEL:-https://raw.githubusercontent.com/$repo/channel/}"
+releases="${DIGESTIF_RELEASES:-https://github.com/$repo/releases/download/}"
+# The channel (docs/releases.md, The channel): release/ on main, and the channel branch's root while
+# main's release list names no version.
+channel="https://raw.githubusercontent.com/$repo/main/release/"
+branch_channel="https://raw.githubusercontent.com/$repo/channel/"
 
-# Copies a channel url or path ($1) to the file $2.
+# Copies a url or path ($1) to the file $2.
 fetch() {
   case "$1" in
     http://*|https://*) curl -fsSL --retry 3 -o "$2" "$1" ;;
@@ -77,8 +83,13 @@ update_tool() {
   case "$(uname -s)" in Darwin) os=darwin ;; Linux) os=linux ;; *) echo "refusing: no digestif-update for $(uname -s); set DIGESTIF_UPDATE" >&2; return 1 ;; esac
   case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=x86_64 ;; *) echo "refusing: no digestif-update for $(uname -m); set DIGESTIF_UPDATE" >&2; return 1 ;; esac
   platform="$os-$arch"
-  echo "no node here and no digestif-update on PATH: using the newest published node release's digestif-update-$platform" >&2
-  fetch "https://github.com/$repo/releases/latest/download/digestif-update-$platform" "$stage/digestif-update" || {
+  fetch "${channel}index.json" "$stage/index.json" || { echo "refusing: could not read the release list ${channel}index.json; set DIGESTIF_UPDATE" >&2; return 1; }
+  if [ "$(node scripts/release.ts listed "$stage/index.json")" = 0 ]; then
+    fetch "${branch_channel}index.json" "$stage/index.json" || { echo "refusing: could not read ${branch_channel}index.json; set DIGESTIF_UPDATE" >&2; return 1; }
+  fi
+  published="$(node scripts/release.ts newest "$stage/index.json")" || { echo "refusing: the release list names no version no recall takes out; set DIGESTIF_UPDATE" >&2; return 1; }
+  echo "no node here and no digestif-update on PATH: using $published's digestif-update-$platform, the newest listed version no recall takes out" >&2
+  fetch "https://github.com/$repo/releases/download/v$published/digestif-update-$platform" "$stage/digestif-update" || {
     echo "refusing: could not download digestif-update-$platform; set DIGESTIF_UPDATE to one (docs/releases.md, Signing a release)" >&2
     return 1
   }
@@ -89,17 +100,17 @@ update_tool() {
 if [ -n "$release" ]; then
   stage="$(mktemp -d)"
   trap 'rm -rf "$stage"' EXIT
-  base="${channel%/}/relay/$release"
+  base="${releases%/}/relay-v$release"
   echo "release:     relay $release, from $base/"
-  fetch "$base/manifest.json" "$stage/manifest.json" || { echo "refusing: relay $release is not published on the channel ($base/manifest.json)" >&2; exit 1; }
-  fetch "$base/manifest.sig.json" "$stage/manifest.sig.json" || { echo "refusing: relay $release has no signatures on the channel ($base/manifest.sig.json)" >&2; exit 1; }
+  fetch "$base/manifest.json" "$stage/manifest.json" || { echo "refusing: relay $release is not published ($base/manifest.json)" >&2; exit 1; }
+  fetch "$base/manifest.sig.json" "$stage/manifest.sig.json" || { echo "refusing: relay $release has no combined signatures on its release ($base/manifest.sig.json)" >&2; exit 1; }
   tool="$(update_tool)"
   echo "signatures:  checked with $tool"
   if ! "$tool" verify "$stage/manifest.json" "$stage/manifest.sig.json" --expect-version "$release" | sed 's/^/             /'; then
     echo "refusing: the signatures of relay $release do not verify; nothing was deployed" >&2
     exit 1
   fi
-  url="$(node scripts/release.ts url "$stage/manifest.json" "$release" "$channel")"
+  url="$(node scripts/release.ts url "$stage/manifest.json" "$release" "$base")"
   fetch "$url" "$stage/bundle.tar.gz" || { echo "refusing: could not download the bundle $url" >&2; exit 1; }
   node scripts/release.ts check "$stage/manifest.json" "$release" "$stage/bundle.tar.gz" >/dev/null || {
     echo "refusing: the bundle $url is not the bundle relay $release signed; nothing was deployed" >&2

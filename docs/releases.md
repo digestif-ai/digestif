@@ -670,7 +670,8 @@ build-from-source path for contributors.
 
 **The relay renders it.** The `dinners` relay answers `https://digestif.io/install.sh` itself
 (`relay/src/install.ts`, on the host `SITE_HOST` names in `relay/wrangler.jsonc`), and the bare
-domain answers nothing else. It reads the channel's `index.json`, takes the newest version no
+domain answers nothing else. It reads the channel's `index.json` (`release/` on main, and the channel
+branch's root while main's release list names no version), takes the newest version no
 recall signed by a key of the set takes out, reads that version's manifest and signatures, and
 checks that every key of the signer set signed the manifest's exact bytes. The set is the one the
 channel's `signers/` chain leaves, folded from the set the relay's own build carries
