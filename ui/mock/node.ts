@@ -11,6 +11,11 @@ import {
   type InboxPrompt,
   type ItemAgentAnswer,
   ItemDone,
+  ItemKind,
+  ItemStatus,
+  ItemSubject,
+  MemberRole,
+  ReviewOutcome,
   type ReplyDraft,
   ReplyDraftStatus,
   type Member,
@@ -199,6 +204,7 @@ export class MockNode {
     this.items = this.seedItems(now);
     this.approvals = this.seedApprovals(now);
     this.seedDrafts(now);
+    this.seedReview(now);
   }
 
   /** Cy's note asks something: the agent drafted a reply, past the brief, for the member to send. */
@@ -249,6 +255,56 @@ export class MockNode {
     this.items = this.seedItems(now);
     this.approvals = this.seedApprovals(now);
     this.seedDrafts(now);
+    this.seedReview(now);
+  }
+
+  /**
+   * Member review (DES-376): Dee has shared nothing for days and is in review; Ada, an admin, holds the
+   * item her node's upkeep raised, which Keep settles.
+   */
+  private seedReview(now: Date): void {
+    const dee = this.store.members.find((m) => m.name === 'Dee Rao');
+    if (dee === undefined) return;
+    const opened = new Date(now.getTime() - 20 * 3_600_000).toISOString();
+    dee.in_review_since = opened;
+    const me = this.self();
+    const ref: MemberRef = { identity: me.identity, name: me.name, agent_name: me.agent_name };
+    this.items.items.push({
+      id: 'itm-review-dee',
+      kind: ItemKind.Notice,
+      subject: ItemSubject.Review,
+      voice: Voice.Node,
+      author: ref,
+      to: { circle: false, members: [ref] },
+      title: 'Dee Rao has sent no note in 3 days',
+      detail:
+        'Dee Rao has sent no note in 3 days and was told that their membership is in review. Keep them, or remove them with: digestif-update remove ' +
+        dee.identity,
+      status: ItemStatus.New,
+      created_at: opened,
+      local: true,
+      about: dee.identity,
+      options: [],
+      answers: [],
+      picks: [],
+      closes: [],
+      closed: false
+    });
+  }
+
+  /** POST /members/:identity/keep: an admin keeps a member in review, and the item about them settles. */
+  private keep(m: Member): MockResponse {
+    const me = this.self();
+    if (me.role !== MemberRole.Admin) return err(422, 'not_admin', 'Only an admin keeps a member.');
+    if (m.in_review_since === undefined) return err(422, 'not_in_review', 'Only a member in review is kept.');
+    delete m.in_review_since;
+    m.review = {
+      outcome: ReviewOutcome.Kept,
+      by: { identity: me.identity, name: me.name, agent_name: me.agent_name },
+      at: new Date().toISOString()
+    };
+    for (const x of this.items.items) if (x.subject === ItemSubject.Review && x.about === m.identity) x.done = ItemDone.Resolved;
+    return ok(this.member(m), 201);
   }
 
   private seedApprovals(now: Date): MockApprovals {
@@ -387,6 +443,7 @@ export class MockNode {
             return ok(this.member(m));
           })
       ],
+      ['POST', 'members/:/keep', ([id]) => withFound(memberOf(id), (m) => this.keep(m))],
       ['POST', 'phones', (_p, b) => this.addPhone(b)],
       ['POST', 'phones/:/revocations', ([key], b) => this.revokePhone(key ?? '', b)],
       ['GET', 'invitees', () => ok(s.invitees)],

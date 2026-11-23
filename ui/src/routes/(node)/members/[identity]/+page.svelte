@@ -3,13 +3,17 @@
   import { CircleApprovalKind, type CircleApproval } from '#generated/ai-digestif-digestif-node.ts';
   import { canRemoveAdmin, isAdmin } from '#lib/approvals.ts';
   import { createClient } from '#lib/api/client.ts';
+  import ActionMenu, { type Action } from '#lib/components/ActionMenu.svelte';
   import Button from '#lib/components/Button.svelte';
+  import CommandBlock from '#lib/components/CommandBlock.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import FeedRow from '#lib/components/FeedRow.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { clockTime, memberRowStage, relativeTime, shortKey } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
+  import { trash } from '#lib/icons.ts';
+  import { admins, IN_REVIEW, removeCommand, reviewLine } from '#lib/review.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -39,6 +43,17 @@
     viewerAdmin && signers !== undefined && !signers.halted && !isAdmin(member) && !member.is_self && member.status !== 'revoked'
   );
   const canRemove = $derived(viewerAdmin && signers !== undefined && isAdmin(member) && canRemoveAdmin(signers));
+
+  // Member review (DES-376): an admin removes any member who holds no admin key, at any time, by the
+  // command Remove shows; no page takes an admin key, and nothing is stored.
+  const adminIds = $derived(new Set(admins(signers).map((a) => a.identity)));
+  const canRemoveMember = $derived(
+    viewerAdmin && !member.is_self && member.status !== 'revoked' && !isAdmin(member) && !adminIds.has(member.identity)
+  );
+  let removing = $state(false);
+  const menu = $derived<Action[]>(
+    canRemoveMember && !removing ? [{ label: 'Remove', icon: trash, danger: true, onselect: () => (removing = true) }] : []
+  );
 
   async function start(kind: CircleApprovalKind.Promotion | CircleApprovalKind.Removal): Promise<void> {
     await submission.run(
@@ -71,16 +86,30 @@
         onclick={handleMute}>{member.muted ? 'Unmute' : 'Mute'}</Button
       >
     {/if}
+    {#if menu.length > 0}<ActionMenu actions={menu} disabled={submission.busy()} />{/if}
   {/snippet}
 </PageHeader>
 <ErrorBanner errors={submission.errors} />
+
+{#if removing}
+  <div class="mb-4" data-testid="member-remove">
+    <CommandBlock label="Remove" command={removeCommand(member.identity)} />
+    <div class="mt-2"><Button onclick={() => (removing = false)}>Done</Button></div>
+  </div>
+{/if}
 
 <section class="dg-card p-4">
   <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
     <dt class="dg-muted">Stage</dt>
     <dd>
-      <StatusBadge status={memberRowStage(member)} />
+      <span class="inline-flex flex-wrap gap-1">
+        <StatusBadge status={memberRowStage(member)} />{#if member.in_review_since}<StatusBadge status={IN_REVIEW} />{/if}
+      </span>
     </dd>
+    {#if member.review}
+      <dt class="dg-muted">Review</dt>
+      <dd data-testid="member-review">{reviewLine(member.review)}</dd>
+    {/if}
     <dt class="dg-muted">Role</dt>
     <dd data-testid="member-role">{isAdmin(member) ? 'Admin' : 'Member'}</dd>
     <dt class="dg-muted">Agent</dt>
