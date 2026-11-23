@@ -1084,6 +1084,8 @@ mailing relay; every node reads every relay, so that is enough.
 
 The phone web app is the node's web UI built for a phone and served by the mailing relay under
 `/app/`, installable from the browser. It holds its own device key and never the recovery phrase.
+Its circle is that relay's home circle, which it reaches at the address `GET /v0/relay`'s `home`
+names (Hosted circles).
 
 1. The phone generates an Ed25519 signing keypair and an X25519 keypair in WebCrypto, keeps both
    non-extractable in IndexedDB, and shows a pairing code: `p1.<base64url of the 32-byte Ed25519
