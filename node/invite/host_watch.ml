@@ -1,20 +1,13 @@
 (* The host's node watching the joins on its dinners.
 
-   Whoever reads an invite email first can post its join, so every join on one of the host's
-   invites reaches the host's person. A join the host expected (the person recorded hearing that
-   the guest installed) is shown in the feed and the digest; any other is an ask: confirm, or
-   revoke the identity. *)
-
-type expectation =
-  | Sent
-      (** The invite went out; the host has not heard that the guest installed.
-      *)
-  | Expected
-      (** The host's person recorded hearing from the guest that they installed.
-      *)
+   Every join on one of the host's invites reaches the host's person. The first join on an open
+   invite is the guest the host invited: the invite is the host's own, and the fold admits a join
+   only on an invite that is unexpired and unspent, so it is shown in the feed and the digest and
+   nothing is asked. The one join that asks (confirm, or revoke the identity) is a second identity
+   on an invite that already admitted one: two relays each accepted a different join. DIG-421 *)
 
 type state =
-  | Open of expectation
+  | Open  (** The invite went out and nobody has joined with it. *)
   | Joined of { identity_key : string; confirmed : bool }
   | Revoked of { identity_key : string }
 
@@ -56,17 +49,13 @@ let records_of_dinner ~dinner_hash ~message (d : Dinner.t) =
         invite_key = i.invite_key;
         expires_at = i.expires_at;
         message;
-        state = Open Sent;
+        state = Open;
         approved = None;
       })
     d.invites
 
 let update ledger key f =
   List.map (fun r -> if r.invite_key = key then f r else r) ledger
-
-let mark_expected ledger ~invite_key =
-  update ledger invite_key (fun r ->
-      match r.state with Open _ -> { r with state = Open Expected } | _ -> r)
 
 type option_ = Confirm | Revoke
 
@@ -84,7 +73,8 @@ type ask = {
 type outcome =
   | Not_ours  (** The join is on an invite this host did not write. *)
   | Shown of record
-      (** An expected join: shown in the feed and the digest, nothing asked. *)
+      (** The first join on an open invite: shown in the feed and the digest,
+          nothing asked. *)
   | Asked of record * ask
   | Already_handled of record  (** The same join seen again on another relay. *)
 
@@ -125,28 +115,16 @@ let observe ~now ledger (join : Join.t) =
   match List.find_opt (fun r -> r.invite_key = join.invite_key) ledger with
   | None -> (ledger, Not_ours)
   | Some r -> (
-      let joined confirmed =
-        {
-          r with
-          state = Joined { identity_key = join.identity_key; confirmed };
-        }
-      in
       match r.state with
-      | Open Expected ->
-          let r' = joined true in
-          (update ledger r.invite_key (fun _ -> r'), Shown r')
-      | Open Sent ->
-          let r' = joined false in
-          let why =
-            Printf.sprintf
-              "Someone joined with %s's invite before you heard they installed."
-              r.guest_name
+      | Open ->
+          let r' =
+            {
+              r with
+              state =
+                Joined { identity_key = join.identity_key; confirmed = true };
+            }
           in
-          ( update ledger r.invite_key (fun _ -> r'),
-            Asked
-              ( r',
-                ask_for ~now ~joined_at:join.created_at r'
-                  ~identity_key:join.identity_key ~why ) )
+          (update ledger r.invite_key (fun _ -> r'), Shown r')
       | (Joined { identity_key; _ } | Revoked { identity_key })
         when identity_key = join.identity_key ->
           (ledger, Already_handled r)
@@ -221,6 +199,21 @@ let invite_key_of_ask_key key =
       (String.sub key (String.length p) (String.length key - String.length p))
   else None
 
+(* A first-join ask an earlier release raised, which this one never would: open, about the identity
+   the record holds as joined and unconfirmed. Settling it confirms that identity. DIG-421 *)
+let first_join_ask ledger (a : Digestif_core.Asks.t) =
+  match (a.answer, a.about, invite_key_of_ask_key a.key) with
+  | None, Some about, Some invite_key ->
+      List.exists
+        (fun r ->
+          r.invite_key = invite_key
+          &&
+          match r.state with
+          | Joined { identity_key; confirmed = false } -> identity_key = about
+          | _ -> false)
+        ledger
+  | _ -> false
+
 type lapse =
   | Revoke_as_device
       (** Inside the window: the node signs the revoke with the device key that
@@ -244,8 +237,8 @@ let lapsed ledger ~invite_key ~identity_key ~now ~joined_at =
 (* ---- persistence: the node keeps the ledger beside its log ---- *)
 
 let state_to_json = function
-  | Open Sent -> `Assoc [ ("state", `String "sent") ]
-  | Open Expected -> `Assoc [ ("state", `String "expected") ]
+  (* "sent" is the name an earlier release writes and reads for an open invite. *)
+  | Open -> `Assoc [ ("state", `String "sent") ]
   | Joined { identity_key; confirmed } ->
       `Assoc
         [
@@ -365,8 +358,8 @@ let record_of_json j =
   let message = Option.value (str "message") ~default:"" in
   let* state =
     match (str "state", str "identity_key", field "confirmed") with
-    | Some "sent", _, _ -> Some (Open Sent)
-    | Some "expected", _, _ -> Some (Open Expected)
+    (* "expected" is an earlier release's open invite the host had heard from. *)
+    | Some ("sent" | "expected"), _, _ -> Some Open
     | Some "joined", Some identity_key, Some (`Bool confirmed) ->
         Some (Joined { identity_key; confirmed })
     | Some "revoked", Some identity_key, _ -> Some (Revoked { identity_key })

@@ -403,7 +403,7 @@ let report_joins seen =
     (fun (s : Digestif_invite.Invite_node.seen) ->
       match s.outcome with
       | Digestif_invite.Host_watch.Shown r ->
-          Printf.printf "joined\t%s\t%s, as you expected\n" s.join_hash
+          Printf.printf "joined\t%s\t%s, with their invite\n" s.join_hash
             r.guest_name
       | Asked (r, a) ->
           Printf.printf "ask\t%s\t%s: %s (digestif asks)\n" a.key r.guest_name
@@ -2696,20 +2696,6 @@ let circle =
     (Cmd.info "circle" ~doc:circle_doc)
     [ circle_found; circle_list; circle_link ]
 
-let invite_expected =
-  let guest =
-    Arg.(required & pos 0 (some string) None & info [] ~docv:"GUEST")
-  in
-  cmd "expected"
-    "Record that a guest told you they installed, so their join is shown \
-     rather than asked about. GUEST is their name or invite key."
-    Term.(
-      const (fun dir guest ->
-          with_node dir (fun n ->
-              let r = ok_or_die (Inv.Invite_node.expect n ~guest) in
-              Printf.printf "%s\t%s\texpected\n" r.invite_key r.guest_name))
-      $ data_dir $ guest)
-
 let invite_email =
   let guest =
     Arg.(required & pos 0 (some string) None & info [] ~docv:"GUEST")
@@ -2755,8 +2741,7 @@ let invite_list =
                     | Some a -> "signed as " ^ a.role ^ ", "
                     | None -> "")
                     (match r.state with
-                    | Open Sent -> "sent"
-                    | Open Expected -> "expected"
+                    | Open -> "sent"
                     | Joined { identity_key; confirmed = true } ->
                         "joined " ^ identity_key
                     | Joined { identity_key; confirmed = false } ->
@@ -2778,7 +2763,7 @@ let invite =
           (--message), which their agent asks them for, then the paragraph \
           every invite carries and the one install command. Once every admin \
           signed, digestif invite email prints the email to send.")
-    [ invite_expected; invite_list; invite_email ]
+    [ invite_list; invite_email ]
 
 (* asks *)
 
@@ -2807,6 +2792,7 @@ let asks_list =
                       match a.answered_via with
                       | Some (Decision d) -> " by decision " ^ d
                       | Some Lapse -> " when it lapsed"
+                      | Some Rule -> " by rule"
                       | Some Person | None -> "")
                   | None when Asks.lapsed ~now a ->
                       Printf.sprintf "lapsed at %s: %s stands; answer it now"

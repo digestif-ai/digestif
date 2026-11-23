@@ -197,7 +197,7 @@ let write_dinner ~now (node : Node.t) ledger (s : Approval.signed) a =
       invite_key = a.invite_key;
       expires_at;
       message = "";
-      state = Open Sent;
+      state = Open;
       approved =
         Some
           {

@@ -80,31 +80,6 @@ let found ?(now = ptime_now ()) ?ttl ?(add_relays = true) ~admins
   in
   Ok { dinner_hash = root_hash; dinner = root; message }
 
-(* The person heard from a guest that they installed: their join will be shown, not asked about.
-   [guest] is the guest's name (as the dinner wrote it, any case) or the invite key. *)
-let expect (node : Node.t) ~guest =
-  let* ledger = Host_watch.load node.dir in
-  let wanted = String.lowercase_ascii (String.trim guest) in
-  let open_ =
-    List.filter
-      (fun (r : Host_watch.record) ->
-        (match r.state with Open _ -> true | _ -> false)
-        && (r.invite_key = guest || String.lowercase_ascii r.guest_name = wanted))
-      ledger
-  in
-  match open_ with
-  | [] -> Error (Printf.sprintf "no open invite for %S" guest)
-  | [ r ] ->
-      let ledger = Host_watch.mark_expected ledger ~invite_key:r.invite_key in
-      let* () = Host_watch.save node.dir ledger in
-      Ok r
-  | rs ->
-      Error
-        (Printf.sprintf "%d open invites are for %S; name one by invite key: %s"
-           (List.length rs) guest
-           (String.concat ", "
-              (List.map (fun (r : Host_watch.record) -> r.invite_key) rs)))
-
 (* What the watcher made of a join a sync stored. *)
 type seen = { join_hash : string; outcome : Host_watch.outcome }
 
@@ -120,6 +95,8 @@ type watch_problem =
           that reads it again. *)
   | Not_saved of string  (** The ledger the joins changed was not written. *)
   | Ask_not_raised of string  (** A join ask the store refused. *)
+  | Not_settled of string
+      (** A first-join ask an earlier release raised that was not confirmed. *)
 
 let watch_problem_to_string = function
   | Unreadable_records n ->
@@ -134,6 +111,8 @@ let watch_problem_to_string = function
        watched once it reads again): " ^ e
   | Not_saved e -> "the invite ledger was not saved: " ^ e
   | Ask_not_raised e -> "a join ask was not raised: " ^ e
+  | Not_settled e ->
+      "an earlier release's first-join ask was not confirmed: " ^ e
 
 (* Whether a join on [invite_key] may be on one of [keep], the ledger items that did not parse: one
    naming that invite key, or one naming none that can be read. *)
@@ -165,7 +144,7 @@ let watch_joins ~now ~start (node : Node.t) (w : Host_watch.watch) ~watch =
   let is_open key =
     List.exists
       (fun (r : Host_watch.record) ->
-        r.invite_key = key && match r.state with Open _ -> true | _ -> false)
+        r.invite_key = key && r.state = Host_watch.Open)
       !ledger
   in
   let ours key =
@@ -196,6 +175,42 @@ let watch_joins ~now ~start (node : Node.t) (w : Host_watch.watch) ~watch =
       | _ -> ())
     rows;
   (!ledger, { Host_watch.watched_through = !through; pending = List.rev !held })
+
+(* Confirm every open ask an earlier release raised on the first join of an open invite
+   (Host_watch.first_join_ask), which this release shows instead of asking about: the ledger
+   records the identity confirmed and the ask is answered confirm, by rule. A ledger that does not
+   read whole is left alone, the watcher having reported it. DIG-421 *)
+let settle_first_join_asks (node : Node.t) ~problem =
+  match Host_watch.load node.dir with
+  | Error _ -> ()
+  | Ok ledger -> (
+      let asks =
+        List.filter (Host_watch.first_join_ask ledger) (Asks.list node.log)
+      in
+      if asks <> [] then
+        let ledger =
+          List.fold_left
+            (fun ledger (a : Asks.t) ->
+              match (Host_watch.invite_key_of_ask_key a.key, a.about) with
+              | Some invite_key, Some identity_key ->
+                  fst
+                    (Host_watch.answer ledger ~invite_key ~identity_key
+                       Host_watch.Confirm)
+              | _ -> ledger)
+            ledger asks
+        in
+        match Host_watch.save node.dir ledger with
+        | Error e -> problem (Not_settled e)
+        | Ok () ->
+            List.iter
+              (fun (a : Asks.t) ->
+                match
+                  Asks.record_answer node.log ~via:Asks.Rule ~key:a.key
+                    (Host_watch.option_id Host_watch.Confirm)
+                with
+                | Ok () -> ()
+                | Error e -> problem (Not_settled e))
+              asks)
 
 (* Sync, then run Host_watch.observe on every join the watcher has not observed (watch_joins): the
    fold admits one join per invite, and the host still hears of a second one another relay
@@ -253,6 +268,7 @@ let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
         | Ok () -> Host_watch.unset_config_cursor node.log
         | Error e -> problem (Not_saved e))
   | _ -> ());
+  settle_first_join_asks node ~problem;
   let* report = synced in
   Ok (report, List.rev !seen, List.rev !problems)
 

@@ -177,10 +177,11 @@ identity key from it just long enough to sign, and discards it. It creates a dev
 key for this machine and derives the member's encryption key from the phrase. Its first message is
 a join (protocol.md), signed and stored before it is posted, so running the command again resumes,
 posts the same join and never spends the invite twice. The invite key is spent once a join names
-it. Whoever reads the email first could still post the join,
-so the host's node shows every join to its person, and a join the host did not expect (from a
-guest the host has not heard has installed) is a choice from the node in the host's Inbox: confirm,
-or revoke the identity. Relays and
+it. The host's node shows every join to its person.
+A join on the host's own invite, unexpired and unspent, is the guest the host invited: it is shown
+in the feed and the digest, and the guest never has to tell the host they installed. The one join
+that is a choice from the node in the host's Inbox (confirm, or revoke the identity) is a second
+identity on an invite that already admitted one. Relays and
 nodes admit keys by the admission fold from the circle root, a `circle` message or, for a circle
 founded at a dinner, that dinner's message. Any admitted member may host a dinner and write its
 message. The newcomer reads every member's current card and everything written from
@@ -670,7 +671,7 @@ Everything in this document, built for the founding circle:
    Rules checks with the deny layer, the note at Note time with approval and auto approval, the
    status note, the read loop with budgets, the digest, the Inbox, quiet hours and muting (Roman).
 5. Invite flow: a circle founded on its own with its first guests, per-guest invite keys, code
-   handed to the app, host confirms unexpected joins (Mike).
+   handed to the app, host confirms a second identity on one invite (Mike).
 6. The phone web app (Mike, after the node's UI).
 7. The founding circle: everyone at dinner 2 (Mike, Roman, Andrey, Phong, Connor, Mike Zusman). They
    get it working, then dinner 1's guests are invited.

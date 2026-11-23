@@ -1060,7 +1060,7 @@ let send_invite_notice () =
     Inv.Invite_email.template ~circle_label:"AI Dinner 2" ~host_name:"Mike"
       ~guest_name:"Priya Raman" ~message:"Come and see."
   in
-  let record ?(state = Inv.Host_watch.Open Sent) ?(hours = 72.) name =
+  let record ?(state = Inv.Host_watch.Open) ?(hours = 72.) name =
     {
       Inv.Host_watch.dinner_hash = "sha256:dinner-" ^ name;
       guest_name = name;
@@ -12020,7 +12020,6 @@ let removal_circle ~dee_admin =
       (List.map (fun url -> Fake_relay.create ~url ~root:inv.dinner_hash) urls)
   in
   ignore (ok (I.sync ~transport:net host));
-  ignore (ok (I.expect host ~guest:"Dee Rao"));
   let dee = Core_node.open_ ~keystore:(Keystore.memory ()) (fixture ()) in
   let code =
     ok

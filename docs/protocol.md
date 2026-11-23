@@ -363,18 +363,20 @@ invite key reaches the guest's app.
 The app reads the dinner through the bootstrap read, checks that the dinner envelope verifies and
 lists its invite key unexpired, writes the join, and appends it to every relay the dinner lists.
 
-The host's node keeps a record per invite: sent, expected (the host's person recorded hearing from
-the guest that they installed), joined, or revoked. Every join on one of its invites reaches the
-host's person. An expected join is shown in the feed and the digest. Any other is the node's `join`
-choice (Items), keyed `join:<invite key>` on the node: confirm the identity, or revoke it. Its
+The host's node keeps a record per invite: sent, joined, or revoked. Every join on one of its
+invites reaches the host's person. The first join on a sent invite is the guest the host invited,
+since the fold admits a join only on an unexpired, unspent invite key: it is shown in the feed and
+the digest, and nothing is asked. A second identity on an invite that already admitted one (two
+relays each accepted a different join) is the node's `join` choice (Items), keyed `join:<invite key>` on the node: confirm the identity, or revoke it. Its
 deadline is 72 hours after the host's node raises it, and no later than 6 days after the join's
 `created_at`, and its default is revoke, because a guest revoked by mistake is invited again in a
 minute and a stranger left in the circle reads everything from the join forward. The node signs that
 revoke itself, with the device key that wrote the dinner (see the revoke body), so the deadline
 needs no phrase and no person. A node that first acts on a passed deadline more than 7 days after
 the join cannot sign it that way: it keeps the choice open, leads the digest with it, and revoking
-then takes the phrase. A second identity on one invite (two relays each accepted a different join)
-is the same choice.
+then takes the phrase. A ledger an earlier release wrote may record an invite as `expected`, which
+reads as sent, and a first-join choice an earlier release raised is answered `confirm` by the next
+sync.
 
 ## The admission fold
 

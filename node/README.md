@@ -106,7 +106,7 @@ so it never lands in an argv or a shell history.
     digestif invite --message <text|-> --guest "Name <email>"... [--role member|admin]
                                              print each guest's invite page for an admin to have every admin
                                              sign, or name the admins
-    digestif invite expected <guest> | list  record that a guest installed; the invites and their state
+    digestif invite list                     the invites and their state
     digestif invite email <guest>            the email of an invite every admin signed, filled in, to send
     digestif join <dg1. token, text or link> set this machine up and join, in the terminal (Setup, below)
     digestif setup                           continue setup where it stopped: post the stored join, the
@@ -303,8 +303,9 @@ Names on Settings publishes the first card of a member who has none). A member w
 reads as the name their invite gave them. A host with no card gets one from the `--from` name their
 invite emails are signed with. Every sync on the host runs the join
 watcher over the joins the log holds past the cursor saved on `invites.json`'s records, so a join
-stored while the ledger could not be read is watched by the first sync that reads it: a join the host recorded as expected (`digestif invite expected`)
-is printed, and any other is an ask, `join:<invite key>`, answered `confirm` or `revoke`. A revoke
+stored while the ledger could not be read is watched by the first sync that reads it: the first join on an open invite
+is printed and shown, and a second identity on an invite that already admitted one is an ask,
+`join:<invite key>`, answered `confirm` or `revoke`. A revoke
 is signed by the identity key, so it reads the phrase.
 
 In a circle that has a root, every admin signs an invite before it exists (docs/protocol.md,
