@@ -26,8 +26,9 @@ test('the Inbox opens on everything not archived, unread rows bold, and the filt
   await expect(rows.first()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Inbox' })).toHaveCount(0);
   const nav = page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: /Inbox/ });
-  // One for each bold row: Ben's question and the work his note gave the member are one thread (DIG-179).
-  await expect(nav).toContainText('4');
+  // One for each bold row: Ben's question and the work his note gave the member are one thread (DIG-179),
+  // and the review notice about Dee is one more (DES-376).
+  await expect(nav).toContainText('5');
   await expect(page.getByRole('columnheader', { name: 'Status' })).toHaveCount(0);
   await expect(row(page, 'Introduce Ben to Cy')).toHaveAttribute('data-unread', 'true');
   await expect(row(page, 'Introduce Ben to Cy').getByTestId('item-waiting')).toHaveText('You: send');
