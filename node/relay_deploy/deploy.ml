@@ -13,6 +13,11 @@
       sha256; a version already carrying both is reused.
    4. Deploy: record the version serving now as the rollback target, then deploy the new one at
       100%; a pass finding it already serving deploys nothing.
+
+   A bundle carrying a Durable Object migration tag the Worker has not applied takes 3 and 4 as
+   one step instead: the rollback target recorded, the module uploaded as the Worker script itself
+   with the migrations the Worker lacks, which serves it at once, since a version upload cannot
+   apply a migration.
    5. Health check: a signed GET /v0/circle answering 200 with this relay_version and the circle's
       root, and GET /app/ answering 200, within two minutes of awake time.
    6. Kept, or rolled back to the recorded version, the release refused on this relay for good.
@@ -135,7 +140,57 @@ type bundle = {
   assets_binding : string;
   html_handling : string;
   run_worker_first : bool;
+  durable_objects : (string * string) list;
+      (** each Durable Object binding's name and the class of the module it
+          names *)
+  migrations : (string * Yojson.Safe.t) list;
+      (** every Durable Object migration step, oldest first: its tag and the
+          step *)
 }
+
+(* bundle.json's Durable Object bindings and migration steps: absent is none, and anything else
+   that is not a list of what a deploy reads refuses the bundle. *)
+let durable_objects_of = function
+  | None -> Ok []
+  | Some (`List l) ->
+      List.fold_right
+        (fun b acc ->
+          let* acc = acc in
+          match b with
+          | `Assoc f -> (
+              match
+                (List.assoc_opt "name" f, List.assoc_opt "class_name" f)
+              with
+              | Some (`String n), Some (`String c) when n <> "" && c <> "" ->
+                  Ok ((n, c) :: acc)
+              | _ ->
+                  Error
+                    "bundle.json names a Durable Object binding without its \
+                     name and class")
+          | _ -> Error "bundle.json's durable_objects is not a list of objects")
+        l (Ok [])
+  | Some _ -> Error "bundle.json's durable_objects is not a list"
+
+let migrations_of = function
+  | None -> Ok []
+  | Some (`List l) ->
+      let* steps =
+        List.fold_right
+          (fun step acc ->
+            let* acc = acc in
+            match step with
+            | `Assoc f -> (
+                match List.assoc_opt "tag" f with
+                | Some (`String t) when t <> "" -> Ok ((t, step) :: acc)
+                | _ -> Error "bundle.json names a migration step without a tag")
+            | _ -> Error "bundle.json's migrations is not a list of objects")
+          l (Ok [])
+      in
+      let tags = List.map fst steps in
+      if List.length (List.sort_uniq String.compare tags) <> List.length tags
+      then Error "bundle.json names a migration tag twice"
+      else Ok steps
+  | Some _ -> Error "bundle.json's migrations is not a list"
 
 let bundle_of_json (j : Yojson.Safe.t) : (bundle, string) result =
   let field name =
@@ -145,6 +200,8 @@ let bundle_of_json (j : Yojson.Safe.t) : (bundle, string) result =
     match o with Some (`Assoc f) -> List.assoc_opt name f | _ -> None
   in
   let assets = field "assets" in
+  let* durable_objects = durable_objects_of (field "durable_objects") in
+  let* migrations = migrations_of (field "migrations") in
   match field "compatibility_date" with
   | Some (`String compatibility_date) ->
       let main_module =
@@ -176,6 +233,8 @@ let bundle_of_json (j : Yojson.Safe.t) : (bundle, string) result =
               (match sub assets "run_worker_first" with
               | Some (`Bool b) -> b
               | _ -> true);
+            durable_objects;
+            migrations;
           }
   | _ -> Error "bundle.json names no compatibility_date"
 
@@ -391,6 +450,122 @@ let keep_bindings =
     "secret_key";
   ]
 
+(* The upload's metadata: the module, its compatibility settings, the assets and Durable Object
+   bindings the bundle names beside every kind the deployment keeps, tagged with this release and
+   annotated with its bundle's sha256, and, for a script upload, the migrations the Worker lacks. *)
+let metadata (m : Release.relay_manifest) (b : bundle) ~jwt ?migrations () =
+  `Assoc
+    ([
+       ("main_module", `String b.main_module);
+       ("compatibility_date", `String b.compatibility_date);
+       ( "compatibility_flags",
+         `List (List.map (fun f -> `String f) b.compatibility_flags) );
+       ( "bindings",
+         `List
+           (`Assoc
+              [ ("type", `String "assets"); ("name", `String b.assets_binding) ]
+           :: List.map
+                (fun (name, class_name) ->
+                  `Assoc
+                    [
+                      ("type", `String "durable_object_namespace");
+                      ("name", `String name);
+                      ("class_name", `String class_name);
+                    ])
+                b.durable_objects) );
+       ("keep_bindings", `List (List.map (fun k -> `String k) keep_bindings));
+       ( "assets",
+         `Assoc
+           [
+             ("jwt", `String jwt);
+             ( "config",
+               `Assoc
+                 [
+                   ("html_handling", `String b.html_handling);
+                   ("run_worker_first", `Bool b.run_worker_first);
+                 ] );
+           ] );
+       ( "annotations",
+         `Assoc
+           [
+             ("workers/tag", `String (tag m.relay_version));
+             ("workers/message", `String m.bundle.bundle_sha256);
+           ] );
+     ]
+    @ match migrations with Some j -> [ ("migrations", j) ] | None -> [])
+
+(* The multipart parts of an upload: the metadata, the module and its source map when the bundle
+   has one. *)
+let module_parts ~root (b : bundle) ~scratch metadata =
+  let meta = Filename.concat scratch "metadata.json" in
+  write meta (Yojson.Safe.to_string metadata);
+  let module_ = Filename.concat (Filename.concat root "worker") b.main_module in
+  let map = module_ ^ ".map" in
+  [
+    { Cf.name = "metadata"; file = meta; content_type = "application/json" };
+    {
+      name = b.main_module;
+      file = module_;
+      content_type = "application/javascript+module";
+    };
+  ]
+  @
+  if Sys.file_exists map then
+    [
+      {
+        Cf.name = b.main_module ^ ".map";
+        file = map;
+        content_type = "application/source-map";
+      };
+    ]
+  else []
+
+(* The Durable Object migrations the Worker lacks, as the script upload's metadata names them: None
+   when the bundle carries no step or the Worker has applied its newest tag, else every step after
+   the tag the Worker has applied (all of them when it has applied none), each without its tag. A
+   Worker on a tag the bundle does not carry refuses the release: no later pass meets other bytes. *)
+let pending_migrations env (r : Operate.record) ~token (b : bundle) =
+  match List.rev b.migrations with
+  | [] -> Ok None
+  | (newest, _) :: _ -> (
+      let* applied =
+        cf "upload"
+          (Cf.migration_tag env.cloudflare ~token ~account_id:r.account_id
+             ~worker:r.worker)
+      in
+      let rec after t = function
+        | [] -> None
+        | (t', _) :: rest -> if t' = t then Some rest else after t rest
+      in
+      let untagged = function
+        | `Assoc f -> `Assoc (List.filter (fun (k, _) -> k <> "tag") f)
+        | j -> j
+      in
+      match applied with
+      | Some t when t = newest -> Ok None
+      | Some t when after t b.migrations = None ->
+          Error
+            (Refuse
+               ("the relay has applied the Durable Object migration " ^ t
+              ^ ", which the bundle does not carry"))
+      | _ ->
+          let steps =
+            match applied with
+            | None -> b.migrations
+            | Some t -> Option.get (after t b.migrations)
+          in
+          Ok
+            (Some
+               (`Assoc
+                  ((match applied with
+                     | Some t -> [ ("old_tag", `String t) ]
+                     | None -> [])
+                  @ [
+                      ("new_tag", `String newest);
+                      ( "steps",
+                        `List (List.map (fun (_, s) -> untagged s) steps) );
+                    ]))))
+
 (* 3. Upload: the version tagged with this release and annotated with its bundle's sha256, reused
    when Cloudflare already holds one. *)
 let upload env (r : Operate.record) ~token (m : Release.relay_manifest) ~root
@@ -410,75 +585,10 @@ let upload env (r : Operate.record) ~token (m : Release.relay_manifest) ~root
   | Some v -> Ok v.id
   | None ->
       let* jwt = upload_assets env r ~token ~root ~scratch in
-      let metadata =
-        `Assoc
-          [
-            ("main_module", `String b.main_module);
-            ("compatibility_date", `String b.compatibility_date);
-            ( "compatibility_flags",
-              `List (List.map (fun f -> `String f) b.compatibility_flags) );
-            ( "bindings",
-              `List
-                [
-                  `Assoc
-                    [
-                      ("type", `String "assets");
-                      ("name", `String b.assets_binding);
-                    ];
-                ] );
-            ( "keep_bindings",
-              `List (List.map (fun k -> `String k) keep_bindings) );
-            ( "assets",
-              `Assoc
-                [
-                  ("jwt", `String jwt);
-                  ( "config",
-                    `Assoc
-                      [
-                        ("html_handling", `String b.html_handling);
-                        ("run_worker_first", `Bool b.run_worker_first);
-                      ] );
-                ] );
-            ( "annotations",
-              `Assoc
-                [
-                  ("workers/tag", `String (tag m.relay_version));
-                  ("workers/message", `String m.bundle.bundle_sha256);
-                ] );
-          ]
-      in
-      let meta = Filename.concat scratch "metadata.json" in
-      write meta (Yojson.Safe.to_string metadata);
-      let worker = Filename.concat root "worker" in
-      let module_ = Filename.concat worker b.main_module in
-      let map = module_ ^ ".map" in
-      let parts =
-        [
-          {
-            Cf.name = "metadata";
-            file = meta;
-            content_type = "application/json";
-          };
-          {
-            name = b.main_module;
-            file = module_;
-            content_type = "application/javascript+module";
-          };
-        ]
-        @
-        if Sys.file_exists map then
-          [
-            {
-              Cf.name = b.main_module ^ ".map";
-              file = map;
-              content_type = "application/source-map";
-            };
-          ]
-        else []
-      in
       cf "upload"
         (Cf.upload_version env.form ~token ~account_id:r.account_id
-           ~worker:r.worker parts)
+           ~worker:r.worker
+           (module_parts ~root b ~scratch (metadata m b ~jwt ())))
 
 (* What the relay answers, read once: [Ok ()] when it is the version [want] (None: a Worker built
    before relay releases, reporting none) serving the circle, else what it answered. *)
@@ -535,27 +645,10 @@ let rollback_line url =
      \"Operations\", logged in to the account %s runs in"
     (host url)
 
-(* 4 to 6, from a verified bundle uploaded as [version_id]. Answers the record to save. *)
-let deploy_and_check env (n : Node.t) (r : Operate.record) ~token
-    (m : Release.relay_manifest) ~version_id =
+(* 5 and 6, once the release serves. Answers the record to save. *)
+let check env (n : Node.t) (r : Operate.record) ~token
+    (m : Release.relay_manifest) =
   let url = r.url and v = Version.to_string m.relay_version in
-  let* serving =
-    cf "deploy"
-      (Cf.serving_version env.cloudflare ~token ~account_id:r.account_id
-         ~worker:r.worker)
-  in
-  let* r =
-    if serving = version_id then Ok r
-    else
-      let r = { r with rollback_version_id = serving } in
-      Operate.save n.dir r;
-      let* () =
-        cf "deploy"
-          (Cf.deploy env.cloudflare ~token ~account_id:r.account_id
-             ~worker:r.worker ~version_id)
-      in
-      Ok r
-  in
   let refuse why = { Operate.version = v; why } :: r.refused in
   match healthy env n ~url ~want:(Some v) with
   | Ok () ->
@@ -626,6 +719,49 @@ let deploy_and_check env (n : Node.t) (r : Operate.record) ~token
                   why = answered ^ "; " ^ failed;
                 } ))
 
+(* 4, from a verified bundle uploaded as [version_id], then 5 and 6. *)
+let deploy_and_check env (n : Node.t) (r : Operate.record) ~token
+    (m : Release.relay_manifest) ~version_id =
+  let* serving =
+    cf "deploy"
+      (Cf.serving_version env.cloudflare ~token ~account_id:r.account_id
+         ~worker:r.worker)
+  in
+  let* r =
+    if serving = version_id then Ok r
+    else
+      let r = { r with rollback_version_id = serving } in
+      Operate.save n.dir r;
+      let* () =
+        cf "deploy"
+          (Cf.deploy env.cloudflare ~token ~account_id:r.account_id
+             ~worker:r.worker ~version_id)
+      in
+      Ok r
+  in
+  check env n r ~token m
+
+(* 3 and 4 as one step, for a bundle whose Durable Object [migrations] the Worker lacks: the version
+   serving now recorded as the rollback target, then the module uploaded as the Worker script with
+   them, which serves it at once; then 5 and 6. *)
+let script_and_check env (n : Node.t) (r : Operate.record) ~token
+    (m : Release.relay_manifest) ~root (b : bundle) ~scratch ~migrations =
+  let* serving =
+    cf "deploy"
+      (Cf.serving_version env.cloudflare ~token ~account_id:r.account_id
+         ~worker:r.worker)
+  in
+  let* jwt = upload_assets env r ~token ~root ~scratch in
+  let r = { r with rollback_version_id = serving } in
+  Operate.save n.dir r;
+  let* () =
+    cf "deploy"
+      (Cf.upload_script env.form ~token ~account_id:r.account_id
+         ~worker:r.worker
+         (module_parts ~root b ~scratch (metadata m b ~jwt ~migrations ())))
+  in
+  check env n r ~token m
+
 let with_scratch f =
   let dir = Filename.temp_dir "digestif-relay-deploy" "" in
   Fun.protect
@@ -643,8 +779,13 @@ let deploy env (n : Node.t) (r : Operate.record) ~token
         let* () = migrate env r ~token m ~root in
         let scratch = Filename.concat dir "upload" in
         Unix.mkdir scratch 0o700;
-        let* version_id = upload env r ~token m ~root bundle ~scratch in
-        deploy_and_check env n r ~token m ~version_id)
+        let* migrations = pending_migrations env r ~token bundle in
+        match migrations with
+        | Some migrations ->
+            script_and_check env n r ~token m ~root bundle ~scratch ~migrations
+        | None ->
+            let* version_id = upload env r ~token m ~root bundle ~scratch in
+            deploy_and_check env n r ~token m ~version_id)
   in
   match run () with
   | Ok (r, outcome) -> (r, outcome)

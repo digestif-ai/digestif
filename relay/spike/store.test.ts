@@ -1,4 +1,4 @@
-// DIG-319 storage spike: what the D1-shaped adapter over a circle's Durable Object must reproduce
+// DIG-319: what the D1-shaped adapter (src/store.ts) over a circle's Durable Object must reproduce
 // for src/ to run unchanged, checked side by side with the local D1 (env.D1), and the rows each
 // store writes per signed read and per append. Runs under vitest.do.config.ts only: there env.DB is
 // the adapter (spike/apply-migrations.ts) and the Worker under SELF is spike/main.ts.
@@ -16,7 +16,7 @@ import { circleEpoch, ensureCircle } from "../src/db.ts";
 import { DEFAULT_LIMITS, type Relay } from "../src/env.ts";
 import { circle, page } from "../src/read.ts";
 import { releaseSignersOf } from "../src/signers.ts";
-import { StoreDatabase } from "./store.ts";
+import { StoreDatabase } from "../src/store.ts";
 
 const RELAY = "http://relay.test";
 const realFetch = globalThis.fetch;
