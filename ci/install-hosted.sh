@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 #
-# Writes a release's hosted install script, served at https://digestif.io/install.sh, from its
+# Writes a release's hosted install script from its
 # manifest: ci/install-hosted.sh.in with the version, the link to the signed manifest, and each
 # platform's archive url and sha256 filled in (docs/releases.md, The hosted install script). The
-# Release workflow runs it on the manifest it writes, so the script carries exactly the sha256s
-# the signers sign.
+# Release workflow runs it on the manifest it writes, for the release's own install.sh asset, so
+# the script carries exactly the sha256s the signers sign. The relay renders the same bytes at
+# https://digestif.io/install.sh from its copy of the template (relay/src/install-template.ts) once
+# the manifest is published with both signatures; ci/install-hosted-test.sh holds the two equal.
 #
 #   ci/install-hosted.sh MANIFEST MANIFEST_URL > install.sh
 #
