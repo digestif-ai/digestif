@@ -172,3 +172,83 @@ describe("the newest version", () => {
     await expect(renderedScript(keys)).rejects.toThrow("not https");
   });
 });
+
+describe("the signer set the channel's signers/ chain leaves", () => {
+  const start = testReleaseSigners();
+  const startKeys = start.map((s) => s.key);
+  const [a, b] = start as [Signer, Signer];
+  const c = Signer.random();
+  const d = Signer.random();
+
+  /** A digestif-signers-v0 naming [next], at signers/<name>, signed by [by]. */
+  const change = (name: string, next: Signer[], by: Signer[], createdAt: string): Record<string, string> => {
+    const document = JSON.stringify({ format: "digestif-signers-v0", created_at: createdAt, signers: next.map((s, i) => ({ name: `s${i}`, key: s.key })) });
+    return { [`signers/${name}.json`]: document, [`signers/${name}.sig.json`]: signatures("DIGESTIF-SIGNERS-V0\n", document, by) };
+  };
+  const revocation = (name: string, key: Signer, by: Signer[]): Record<string, string> => {
+    const document = JSON.stringify({ format: "digestif-revocation-v0", key: key.key, reason: "leaked", revoked_at: "2026-11-23T00:00:00.000Z" });
+    return { [`revocations/${name}.json`]: document, [`revocations/${name}.sig.json`]: signatures("DIGESTIF-REVOCATION-V0\n", document, by) };
+  };
+  const entries = (dir: string, names: string[]) => names.map((n) => ({ document: `${dir}/${n}.json`, signatures: `${dir}/${n}.sig.json` }));
+  /** Version 1.0.0 signed by [by], under an index listing the signers/ and revocations/ documents named. */
+  const release = (by: Signer[], signerNames: string[], revocationNames: string[] = []): Record<string, string> => ({
+    "index.json": index(["1.0.0"], { signers: entries("signers", signerNames), revocations: entries("revocations", revocationNames) }),
+    "1.0.0/manifest.json": manifestOf("1.0.0"),
+    "1.0.0/manifest.sig.json": signatures("DIGESTIF-RELEASE-V0\n", manifestOf("1.0.0"), by),
+  });
+
+  it("verifies a release the new set signed once a change both sets signed is on the channel", async () => {
+    channel({ ...release([b, c], ["1"]), ...change("1", [b, c], [a, b, c], "2026-11-20T00:00:00.000Z") });
+    expect(await renderedScript(startKeys)).toContain("version='1.0.0'");
+  });
+
+  it("refuses a release only the keys the chain removed signed", async () => {
+    channel({ ...release([a, b], ["1"]), ...change("1", [b, c], [a, b, c], "2026-11-20T00:00:00.000Z") });
+    await expect(renderedScript(startKeys)).rejects.toThrow("is not signed by " + c.key);
+  });
+
+  it("folds the chain link by link in created_at order, whatever order the index lists it in", async () => {
+    channel({
+      ...release([c, d], ["2", "1"]),
+      ...change("1", [b, c], [a, b, c], "2026-11-20T00:00:00.000Z"),
+      ...change("2", [c, d], [b, c, d], "2026-11-21T00:00:00.000Z"),
+    });
+    expect(await renderedScript(startKeys)).toContain("version='1.0.0'");
+  });
+
+  it("adopts no change a key of the current set did not sign", async () => {
+    channel({ ...release([b, c], ["1"]), ...change("1", [b, c], [b, c], "2026-11-20T00:00:00.000Z") });
+    await expect(renderedScript(startKeys)).rejects.toThrow("is not signed by " + a.key);
+  });
+
+  it("adopts no change a key of the new set did not sign", async () => {
+    channel({ ...release([b, c], ["1"]), ...change("1", [b, c], [a, b], "2026-11-20T00:00:00.000Z") });
+    await expect(renderedScript(startKeys)).rejects.toThrow("is not signed by " + a.key);
+  });
+
+  it("adopts no change naming a revoked key", async () => {
+    channel({ ...release([b, c], ["1"], ["c"]), ...change("1", [b, c], [a, b, c], "2026-11-20T00:00:00.000Z"), ...revocation("c", c, [a]) });
+    await expect(renderedScript(startKeys)).rejects.toThrow("is not signed by " + a.key);
+  });
+
+  it("refuses while a key of the set is revoked, by a revocation a key of the set signed", async () => {
+    channel({ ...release([a, b], [], ["a"]), ...revocation("a", a, [b]) });
+    await expect(renderedScript(startKeys)).rejects.toThrow(`the signer set holds the revoked ${a.key}`);
+  });
+
+  it("ignores a revocation no key of the set signed", async () => {
+    channel({ ...release([a, b], [], ["a"]), ...revocation("a", a, [d]) });
+    expect(await renderedScript(startKeys)).toContain("version='1.0.0'");
+  });
+
+  it("serves once a change takes the revoked key out", async () => {
+    channel({ ...release([b, c], ["1"], ["a"]), ...revocation("a", a, [b]), ...change("1", [b, c], [a, b, c], "2026-11-20T00:00:00.000Z") });
+    expect(await renderedScript(startKeys)).toContain("version='1.0.0'");
+  });
+
+  it("refuses when a signers/ document it lists cannot be read", async () => {
+    const files = { ...release([a, b], ["1"]) };
+    channel(files);
+    await expect(renderedScript(startKeys)).rejects.toThrow("signers/1.json answered 404");
+  });
+});

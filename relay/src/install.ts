@@ -1,13 +1,16 @@
 // The hosted install script, https://digestif.io/install.sh (docs/releases.md, "The hosted install
 // script"). The relay renders it: it reads the newest published node version off the channel, checks
-// that every key of the signer set this build carries (node/update/release-signers.json, never the
-// RELEASE_SIGNERS override, which only the conformance suite's top level sets) signed its manifest,
-// and answers the install template (src/install-template.ts, ci/install-hosted.sh.in's copy) applied to that manifest. Anything it
+// that every key of the signer set the channel's signers/ chain leaves signed its manifest, and
+// answers the install template (src/install-template.ts, ci/install-hosted.sh.in's copy) applied to that manifest. Anything it
 // cannot read or verify is answered with a status `curl -f` stops on, never a script, so nothing
 // a channel or release writer replaces reaches a member who did not see both signatures on it.
+// The chain is folded from the set this build carries (node/update/release-signers.json, never the
+// RELEASE_SIGNERS override, which only the conformance suite's top level sets), each link checked
+// against the set before it with the channel's revocations applied, as a node's Policy.adopt_sets
+// folds it (docs/releases.md, "Changing the signer set"); a set left holding a revoked key halts it.
 // On SITE_HOST, the circle's bare domain, it answers this path and nothing else.
 import "../../conformance/src/node-crypto.ts";
-import { signerKeysOf, validSigners } from "../../conformance/src/admission.ts";
+import { SignerSet, signerKeysOf, validSigners, type SignedDocument } from "../../conformance/src/admission.ts";
 import { bytesOf, type Json } from "../../conformance/src/encoding.ts";
 import { parseUnique } from "../../conformance/src/strict-json.ts";
 import built from "../../node/update/release-signers.json";
@@ -32,7 +35,7 @@ const MAX_DOCUMENT_BYTES = 1024 * 1024;
 /** What stopped the script being rendered; logged, and answered as 502. */
 class Unverified extends Error {}
 
-/** The keys of the signer set this build carries: what every published manifest must be signed by. */
+/** The keys of the signer set this build carries: where the fold of the channel's signers/ chain starts. */
 export function builtSigners(): string[] {
   const keys = signerKeysOf(built);
   if (keys === undefined) throw new Unverified("node/update/release-signers.json is not a digestif-signers-v0 of at least two keys");
@@ -68,16 +71,83 @@ function parse(bytes: Uint8Array, what: string): Json {
   }
 }
 
-/** The keys among [keys] whose signature over the domain line and [bytes] verifies. */
-async function signedBy(domain: string, bytes: Uint8Array, signaturesUrl: string, what: string): Promise<Set<string>> {
+/** The signatures a channel signatures document lists; any entry not a key and a signature is left out. */
+async function signaturesAt(signaturesUrl: string, what: string): Promise<SignedDocument["signatures"]> {
   const body = parse(await read(signaturesUrl), `${what}'s signatures`);
-  const signatures: Array<{ key: string; signature: string }> = [];
+  const signatures: SignedDocument["signatures"] = [];
   if (isObject(body) && Array.isArray(body["signatures"])) {
     for (const s of body["signatures"]) {
       if (isObject(s) && typeof s["key"] === "string" && typeof s["signature"] === "string") signatures.push({ key: s["key"], signature: s["signature"] });
     }
   }
-  return validSigners(domain, { bytes, value: {}, signatures });
+  return signatures;
+}
+
+/** The keys whose signature over the domain line and [bytes] verifies. */
+async function signedBy(domain: string, bytes: Uint8Array, signaturesUrl: string, what: string): Promise<Set<string>> {
+  return validSigners(domain, { bytes, value: {}, signatures: await signaturesAt(signaturesUrl, what) });
+}
+
+/** Every document an index list (`signers`, `revocations`) names, with its signatures; an entry that cannot be read refuses the script. */
+async function signedDocuments(index: { [key: string]: Json }, list: string): Promise<SignedDocument[]> {
+  const out: SignedDocument[] = [];
+  const entries = index[list];
+  if (entries === undefined) return out;
+  if (!Array.isArray(entries)) throw new Unverified(`the index's ${list} is not a list`);
+  for (const entry of entries) {
+    if (!isObject(entry)) throw new Unverified(`the index's ${list} holds ${JSON.stringify(entry)}`);
+    const url = channelUrl(entry["document"]);
+    const bytes = await read(url);
+    const value = parse(bytes, url);
+    if (!isObject(value)) throw new Unverified(`${url} is not a JSON object`);
+    out.push({ bytes, value, signatures: await signaturesAt(channelUrl(entry["signatures"]), url) });
+  }
+  return out;
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+
+/**
+ * The signer set the channel's signers/ chain leaves, folded from [start] as node/update/lib/policy.ml's
+ * adopt_sets folds it: each distinct change in created_at order, adopted when every key of the set
+ * before it and of the new set signed it over DIGESTIF-SIGNERS-V0 and the new set has at least two
+ * keys, none twice and none revoked; in passes until one adopts nothing, so the order the index lists
+ * them in does not matter; the channel's revocations applied before the first link and after every
+ * one, a revocation counting when a key of the set signed it. A change a node would skip as unreadable
+ * (a created_at that is not a string) is skipped here too.
+ */
+export async function channelSigners(index: { [key: string]: Json }, start: string[]): Promise<SignerSet> {
+  const set = new SignerSet(start);
+  const revocations = await signedDocuments(index, "revocations");
+  const revoke = () => {
+    for (const r of revocations) set.revokeDocument(r);
+  };
+  revoke();
+  const createdAt = (d: SignedDocument) => d.value["created_at"] ?? "";
+  let pending: SignedDocument[] = [];
+  for (const change of await signedDocuments(index, "signers")) {
+    if (typeof createdAt(change) !== "string") continue;
+    if (!pending.some((d) => sameBytes(d.bytes, change.bytes))) pending.push(change);
+  }
+  pending.sort((a, b) => {
+    const x = createdAt(a) as string;
+    const y = createdAt(b) as string;
+    return x < y ? -1 : x > y ? 1 : 0;
+  });
+  for (let progress = true; progress; ) {
+    progress = false;
+    const rest: SignedDocument[] = [];
+    for (const change of pending) {
+      if (set.adoptDocument(change)) {
+        progress = true;
+        revoke();
+      } else rest.push(change);
+    }
+    pending = rest;
+  }
+  return set;
 }
 
 /** A version's numbers, or undefined for one that is not MAJOR.MINOR.PATCH. */
@@ -124,10 +194,17 @@ function newest(index: { [key: string]: Json }, taken: Set<string>): { [key: str
   return best.entry;
 }
 
-/** The newest published node version's install script, rendered only from a manifest every key of [keys] signed. */
-export async function renderedScript(keys: string[]): Promise<string> {
+/**
+ * The newest published node version's install script, rendered only from a manifest every key of the
+ * set the channel's signers/ chain leaves from [start] signed, and only while no key of that set is revoked.
+ */
+export async function renderedScript(start: string[]): Promise<string> {
   const index = parse(await read(new URL("index.json", CHANNEL).href), "the channel's index.json");
   if (!isObject(index) || index["format"] !== "digestif-feed-v0") throw new Unverified("the channel's index.json is not a digestif-feed-v0");
+  const set = await channelSigners(index, start);
+  const halted = set.keys.filter((k) => set.revoked.has(k));
+  if (halted.length > 0) throw new Unverified(`the signer set holds the revoked ${halted.join(", ")}`);
+  const keys = set.keys;
   const entry = newest(index, await recalled(index, keys));
   const version = entry["version"] as string;
   const bytes = await read(channelUrl(entry["manifest"]));
