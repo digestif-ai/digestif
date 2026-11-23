@@ -411,14 +411,17 @@ let envelope_time c hash =
     (fun (r : Log.row) -> r.signed.envelope.created_at)
     (Log.find (log c) hash)
 
-(* What every member's summaries say of them (docs/design.md, Stages and the status note): the
-   stage their newest summary carried, and their newest note, the summaries in the agent's voice,
-   a status note included. A member with no summary yet sends nothing: they are Onboarding. *)
+(* What every member's summaries say of them (docs/design.md, Stages and the status note; Member
+   review): the stage their newest summary carried, their newest note, a summary in the agent's
+   voice that is not a status note, and their newest status note when it is newer than that note. A
+   status note shares nothing, so it never counts as Last note, for any reader. A member with no
+   summary yet sends nothing: they are Onboarding. *)
 type heard = {
   stage_at : string;
   stage : string;
   note_at : string option;
   status_note : string option;
+  status_note_at : string option;
 }
 
 (* Every key that writes as [identity]: its own and its devices', and ours before the fold admits
@@ -436,7 +439,8 @@ let keys_of c identity =
   List.sort_uniq compare (admitted @ own)
 
 (* What one member's summaries said, read newest first by each of their keys' own index and only
-   as far back as that key's newest note in the agent's voice: a circle's age costs nothing here. *)
+   as far back as that key's newest note in the agent's voice that is not a status note: a circle's
+   age costs nothing here beyond the status notes a silent member's machine sent since. *)
 let heard_of c identity =
   let newest_of a b =
     match (a, b) with
@@ -444,30 +448,39 @@ let heard_of c identity =
         if View.newest x y <= 0 then a else b
     | None, r | r, None -> r
   in
-  let stage, note =
+  let stage, note, status =
     List.fold_left
-      (fun (stage, note) key ->
-        let first = ref None and agent = ref None in
+      (fun (stage, note, status) key ->
+        let first = ref None and agent = ref None and said = ref None in
         Log.newest_first (log c) ~author:key ~where:"kind = 'summary'" []
           (fun (r : Log.row) ->
             if !first = None then first := Some r;
             (match r.signed.body with
-            | Some b when Content.voice_of b = "agent" -> agent := Some r
+            | Some b when Content.voice_of b = "agent" ->
+                if Content.status_of r.signed.body = None then agent := Some r
+                else if !said = None then said := Some r
             | _ -> ());
             if !agent <> None then `Stop else `Continue);
-        (newest_of stage !first, newest_of note !agent))
-      (None, None) (keys_of c identity)
+        (newest_of stage !first, newest_of note !agent, newest_of status !said))
+      (None, None, None) (keys_of c identity)
+  in
+  let at (r : Log.row) = r.signed.envelope.created_at in
+  (* The newest status note, only when nothing newer than it is a note. *)
+  let status =
+    match (status, note) with
+    | Some s, Some n when View.newest s n > 0 -> None
+    | s, _ -> s
   in
   Option.map
     (fun (s : Log.row) ->
       {
-        stage_at = s.signed.envelope.created_at;
+        stage_at = at s;
         stage = Content.stage_of s.signed.body;
-        note_at =
-          Option.map (fun (r : Log.row) -> r.signed.envelope.created_at) note;
+        note_at = Option.map at note;
         status_note =
-          Option.bind note (fun (r : Log.row) ->
+          Option.bind status (fun (r : Log.row) ->
               Content.status_of r.signed.body);
+        status_note_at = Option.map at status;
       })
     stage
 
@@ -506,6 +519,16 @@ let member_role c identity =
       | _ -> "member")
   | _ -> "member"
 
+(* Member review's fields (Review, below): In review and the newest review outcome, shown to the
+   admins and to the member alone. *)
+let review_fields :
+    (ctx ->
+    (string, heard) Hashtbl.t ->
+    Fold.key_state ->
+    (string * Yojson.Safe.t) list)
+    ref =
+  ref (fun _ _ _ -> [])
+
 let summary_fields c heard (k : Fold.key_state) =
   let me = self_identity c = Some k.key in
   let h = Hashtbl.find_opt heard k.key in
@@ -520,9 +543,11 @@ let summary_fields c heard (k : Fold.key_state) =
   @ opt "last_status_note_words"
       (Option.bind h (fun h ->
            Option.bind h.status_note (status_note_words c k.key)))
+  @ opt "last_status_note_at" (Option.bind h (fun h -> h.status_note_at))
   @ opt "encryption_key"
       (Option.map (fun (b : Bodies.card) -> b.encryption_key) (card c k.key))
   @ [ ("muted", `Bool (Store.muted (log c) k.key)); ("is_self", `Bool me) ]
+  @ !review_fields c heard k
 
 let stage_rank = function "active" -> 0 | "paused" -> 1 | _ -> 2
 
@@ -4200,6 +4225,10 @@ module Inbox = struct
       let inbox = self_identity c in
       I.page (log c) ~now:c.now ?inbox ~status:[ "draft" ] ~limit:1000 ()
       @ I.page (log c) ~now:c.now ?inbox ~status:[ "new" ] ~limit:1000 ()
+      (* Member review: the member's own notice is carried to their mail, and an admin's item
+         asking about another member is not, so no digest but the member's mentions a review. *)
+      |> List.filter (fun (r : I.row) ->
+          not (r.item.subject = Some "review" && r.item.about <> Some me))
     in
     List.map
       (fun (r : I.row) ->
@@ -7149,6 +7178,437 @@ module Approvals = struct
     Inbox.sync_approvals := sync_now
 end
 
+(* Member review (docs/protocol.md, Member review; docs/design.md, Member review; DES-376): a member
+   with no note on three whole UTC days in a row is in review. It is worked out on read from the
+   notes, the join and the newest honoured Keep this node holds, with no stored flag and no message
+   that opens it, and shown to the admins and the member alone. The admin's Inbox item asking Keep
+   or Remove, and the member's own notice, are raised and closed by the node's upkeep after each
+   sync and on its own pass (upkeep), never on a read. *)
+module Review = struct
+  module I = Store.Items
+  module R = Member_review
+
+  (* The identities of the admins: the members holding a key of the set this node judges by
+     (Approvals.admins). A key no member is known to hold names nobody. *)
+  let admin_identities c =
+    List.sort_uniq compare (List.filter_map snd (Approvals.admins c))
+
+  type honoured = {
+    keep : R.keep;
+    kept_at : float;
+    by_identity : string;  (** the identity the keeping device belongs to *)
+    readers : string list;  (** every identity a copy of it was sealed to *)
+  }
+
+  (* Who a Keep's [by] belongs to, when it is an admitted device key of an identity that is an admin
+     and is not the member kept: only such a Keep is honoured. The signer set is the one this node
+     holds now (Approvals.admins), which binds a key to an identity by its holder. *)
+  let honoured_by c ~admins (k : R.keep) =
+    if not (R.verifies k) then None
+    else
+      match Fold.find c.fold k.by with
+      | Some { role = Bodies.Device; identity; _ }
+        when identity <> k.member && List.mem identity admins ->
+          Some identity
+      | _ ->
+          (* This node's own device, before the fold has admitted it. *)
+          if
+            List.mem k.by (Node.own_keys c.node)
+            && self_identity c <> Some k.member
+          then
+            Option.bind (self_identity c) (fun me ->
+                if List.mem me admins then Some me else None)
+          else None
+
+  (* Every honoured Keep this node can open, one per id however many copies arrived. *)
+  let keeps c ~admins =
+    match encryption c with
+    | None -> []
+    | Some enc ->
+        let by_id = Hashtbl.create 8 in
+        List.iter
+          (fun (r : Log.row) ->
+            match r.signed.body with
+            | Some b when r.retracted_by = None -> (
+                let to_ =
+                  match Item.to_of b with Some (Members l) -> l | _ -> []
+                in
+                match
+                  Option.bind (Item.open_sealed ~priv:enc.secret b) R.of_json
+                with
+                | None -> ()
+                | Some k -> (
+                    let id = R.id k in
+                    match Hashtbl.find_opt by_id id with
+                    | Some h ->
+                        Hashtbl.replace by_id id
+                          {
+                            h with
+                            readers = List.sort_uniq compare (to_ @ h.readers);
+                          }
+                    | None -> (
+                        match honoured_by c ~admins k with
+                        | Some by_identity ->
+                            Hashtbl.replace by_id id
+                              {
+                                keep = k;
+                                kept_at = unix k.created_at;
+                                by_identity;
+                                readers = List.sort_uniq compare to_;
+                              }
+                        | None -> ())))
+            | _ -> ())
+          (Log.of_kind (log c) "keep");
+        Hashtbl.fold (fun _ h acc -> h :: acc) by_id []
+
+  let newest_keep keeps member =
+    List.fold_left
+      (fun acc h ->
+        if h.keep.member <> member then acc
+        else
+          match acc with
+          | Some a when a.kept_at >= h.kept_at -> acc
+          | _ -> Some h)
+      None keeps
+
+  (* What one request needs to work out every member's review, read once. *)
+  type view = {
+    admins : string list;
+    keeps : honoured list;
+    me : string option;
+  }
+
+  let view_of c =
+    let admins = admin_identities c in
+    { admins; keeps = keeps c ~admins; me = self_identity c }
+
+  (* One view per request: a Members page works out every row's review from it. A write that adds
+     a Keep forgets it. *)
+  let cache : (Fold.t * float * view) option ref = ref None
+
+  let view c =
+    match !cache with
+    | Some (f, now, v) when f == c.fold && now = c.now -> v
+    | _ ->
+        let v = view_of c in
+        cache := Some (c.fold, c.now, v);
+        v
+
+  let forget () = cache := None
+
+  (* Whether this node's member sees [member]'s review: an admin sees every member's, and a member
+     their own. *)
+  let sees v member =
+    match v.me with
+    | Some me -> me = member || List.mem me v.admins
+    | None -> false
+
+  type state = {
+    opens : float;  (** when the review opens, or opened *)
+    anchor : float;
+        (** the latest of the newest note, the newest Keep and the join *)
+    in_review : bool;
+    keep : honoured option;  (** the newest honoured Keep *)
+  }
+
+  let note_of heard (k : Fold.key_state) =
+    Option.bind (Hashtbl.find_opt heard k.key) (fun (h : heard) ->
+        Option.bind h.note_at Time_fmt.to_unix)
+
+  let state c v ~note (k : Fold.key_state) =
+    let keep = newest_keep v.keeps k.key in
+    let join = Option.bind (envelope_time c k.admitted_by) Time_fmt.to_unix in
+    match R.anchor ~note ~keep:(Option.map (fun h -> h.kept_at) keep) ~join with
+    | None -> None
+    | Some anchor ->
+        Some
+          {
+            opens = R.opens_at ~anchor;
+            anchor;
+            in_review = k.revoked_by = None && R.in_review ~now:c.now ~anchor;
+            keep;
+          }
+
+  (* The newest review outcome: the newest honoured Keep, or the revoke that removed the member
+     when another identity signed it, whichever is newer. *)
+  let outcome c (st : state option) (k : Fold.key_state) =
+    let kept =
+      Option.bind st (fun st ->
+          Option.map
+            (fun h -> ("kept", h.by_identity, h.keep.created_at))
+            st.keep)
+    in
+    let revoked =
+      Option.bind k.revoked_by (fun h ->
+          match Log.find (log c) h with
+          | Some r -> (
+              match identity_of c r.signed.envelope.author with
+              | Some by when by <> k.key ->
+                  Some ("revoked", by, r.signed.envelope.created_at)
+              | _ -> None)
+          | None -> None)
+    in
+    match (kept, revoked) with
+    | Some (_, _, a), Some (_, _, b) ->
+        if unix b >= unix a then revoked else kept
+    | Some _, None -> kept
+    | None, r -> r
+
+  let fields c heard (k : Fold.key_state) =
+    let v = view c in
+    if not (sees v k.key) then []
+    else
+      let st = state c v ~note:(note_of heard k) k in
+      (match st with
+        | Some st when st.in_review ->
+            [ ("in_review_since", str (Time_fmt.of_unix st.opens)) ]
+        | _ -> [])
+      @
+      match outcome c st k with
+      | Some (o, by, at) ->
+          [
+            ( "review",
+              `Assoc
+                [ ("outcome", str o); ("by", member_ref c by); ("at", str at) ]
+            );
+          ]
+      | None -> []
+
+  let () = review_fields := fields
+
+  (* ---- upkeep: the admin's item and the member's notice ---- *)
+
+  let subject = "review"
+  let k_item member = "member_review_item:" ^ member
+
+  (* The Inbox item this node raised for [member]'s current review, and when that review opened. *)
+  let stored c member =
+    match Log.get_config (log c) (k_item member) with
+    | None -> None
+    | Some s -> (
+        match String.index_opt s ' ' with
+        | Some i -> (
+            let id = String.sub s 0 i in
+            match
+              float_of_string_opt
+                (String.sub s (i + 1) (String.length s - i - 1))
+            with
+            | Some opens -> Some (id, opens)
+            | None -> None)
+        | None -> None)
+
+  let store c member ~id ~opens =
+    Log.set_config (log c) (k_item member) (Printf.sprintf "%s %.0f" id opens)
+
+  let months =
+    [|
+      "Jan";
+      "Feb";
+      "Mar";
+      "Apr";
+      "May";
+      "Jun";
+      "Jul";
+      "Aug";
+      "Sep";
+      "Oct";
+      "Nov";
+      "Dec";
+    |]
+
+  let day t =
+    let g = Unix.localtime t in
+    Printf.sprintf "%s %d" months.(g.tm_mon) g.tm_mday
+
+  let plural n = if n = 1 then "1 day" else Printf.sprintf "%d days" n
+
+  (* What the item or the notice says while the review is open: the days with no note, counted from
+     Last note or the newest Keep, and when the member was told. *)
+  let words c ~me (k : Fold.key_state) (st : state) =
+    let days = plural (R.days_without ~now:c.now ~anchor:st.anchor) in
+    if k.key = me then
+      ( "Your membership is in review",
+        Printf.sprintf
+          "You have sent no note in %s, so every admin is asked to keep or \
+           remove you. A note from you ends the review."
+          days )
+    else
+      let name = fst (names c k.key) in
+      ( Printf.sprintf "Keep or remove %s?" name,
+        Printf.sprintf
+          "%s has sent no note in %s and was told on %s that their membership \
+           is in review. Keep them, or remove them with: digestif-update \
+           remove %s"
+          name days (day st.opens) k.key )
+
+  let raise_ c ~me k st =
+    let title, detail = words c ~me k st in
+    Inbox.raise_item c
+      {
+        kind = "notice";
+        subject = Some subject;
+        voice = "node";
+        title;
+        detail;
+        about = Some k.key;
+        quote = None;
+        options = [];
+        default = None;
+        deadline = None;
+        adopted = None;
+        link = None;
+      }
+
+  (* An item whose review ended: the member's own notice reads Kept when a Keep ended it, and both
+     settle, their cause gone. *)
+  let close c ~me (k : Fold.key_state) ~id ~opens (st : state option) =
+    let at = Time_fmt.of_unix c.now in
+    (if k.key = me then
+       match st with
+       | Some { keep = Some h; _ } when h.kept_at >= opens ->
+           I.revise (log c) id
+             ~title:
+               (Printf.sprintf "Kept by %s \xc2\xb7 %s"
+                  (fst (names c h.by_identity))
+                  (day h.kept_at))
+             ~detail:"" ~fresh:false
+       | _ -> ());
+    I.settle (log c) id ~why:"resolved" ~at;
+    Log.unset_config (log c) (k_item k.key)
+
+  (* One member's item or notice brought up to their review: raised while it is open, its day count
+     kept current, and settled once it is not, or once a new review opened in its place. *)
+  let keep_item c v ~me heard (k : Fold.key_state) =
+    let st = state c v ~note:(note_of heard k) k in
+    let wanted =
+      match st with
+      | Some st when st.in_review && (k.key = me || List.mem me v.admins) ->
+          Some st
+      | _ -> None
+    in
+    match (wanted, stored c k.key) with
+    | Some st, Some (id, opens) when opens = st.opens ->
+        let title, detail = words c ~me k st in
+        let now = I.find (log c) ~now:c.now id in
+        if
+          Option.fold ~none:false
+            ~some:(fun (r : I.row) ->
+              r.done_ = None
+              && (r.item.title <> title || r.item.detail <> detail))
+            now
+        then I.revise (log c) id ~title ~detail ~fresh:false
+    | Some st, old -> (
+        Option.iter (fun (id, opens) -> close c ~me k ~id ~opens None) old;
+        match raise_ c ~me k st with
+        | Ok id -> store c k.key ~id ~opens:st.opens
+        | Error e ->
+            Printf.eprintf "%s review: the item for %s: %s\n" (Time_fmt.now ())
+              k.key e)
+    | None, Some (id, opens) -> close c ~me k ~id ~opens st
+    | None, None -> ()
+
+  (* An admin promoted after a Keep holds no copy of it: every admin's node posts each Keep still in
+     force, its plaintext unchanged, sealed to each admin no copy it holds was sealed to and to its
+     own member, so this node reads its own copy and forwards it once. *)
+  let forward c v ~me heard =
+    if List.mem me v.admins then
+      List.iter
+        (fun (h : honoured) ->
+          let note =
+            Option.bind (Fold.find c.fold h.keep.member) (fun k ->
+                note_of heard k)
+          in
+          let newest =
+            match newest_keep v.keeps h.keep.member with
+            | Some (n : honoured) -> R.id n.keep = R.id h.keep
+            | None -> false
+          in
+          if newest && R.in_force ~now:c.now ~kept_at:h.kept_at ~note then
+            List.iter
+              (fun admin ->
+                if not (List.mem admin h.readers) then
+                  let to_ = List.sort_uniq compare [ admin; me ] in
+                  match Inbox.keys_for c to_ with
+                  | Error _ -> ()
+                  | Ok keys -> (
+                      match
+                        sign c ~kind:"keep"
+                          (`Assoc
+                             [
+                               Item.to_field (Members to_);
+                               ("sealed", Item.seal ~keys (R.to_json h.keep));
+                             ])
+                      with
+                      | Ok _ -> ()
+                      | Error e ->
+                          Printf.eprintf "%s review: forwarding a Keep: %s\n"
+                            (Time_fmt.now ()) e))
+              v.admins)
+        v.keeps
+
+  (* The node's upkeep, after each sync, after a write and on its own pass: every member's item or
+     notice raised or closed, and every Keep in force forwarded to an admin who holds no copy. *)
+  let upkeep_now c =
+    match self_identity c with
+    | None -> ()
+    | Some me ->
+        forget ();
+        let v = view_of c in
+        let ids = identities c in
+        let heard = heard c ids in
+        List.iter (keep_item c v ~me heard) ids;
+        forward c v ~me heard
+
+  let upkeep c = catch_up c (fun () -> upkeep_now c)
+
+  (* ---- Keep ---- *)
+
+  (* POST /members/:identity/keep: an admin keeps a member in review, with one signed Keep sealed to
+     every admin and the member. It ends the review on every node that honours it and restarts the
+     count from its day. *)
+  let keep c id =
+    with_found (find_identity c id) (fun k ->
+        let v = view_of c in
+        match v.me with
+        | None -> invalid "not_joined" "This node has not joined a circle yet."
+        | Some me when not (List.mem me v.admins) ->
+            invalid "not_admin" "Only an admin keeps a member."
+        | Some me when me = k.key ->
+            invalid "self" "Another admin keeps you; your own Keep is ignored."
+        | Some _ when k.revoked_by <> None ->
+            invalid "revoked" "This member was removed."
+        | Some me -> (
+            let heard = heard c [ k ] in
+            match state c v ~note:(note_of heard k) k with
+            | Some { in_review = true; _ } -> (
+                let readers =
+                  List.sort_uniq compare ((me :: v.admins) @ [ k.key ])
+                in
+                match (Inbox.keys_for c readers, Node.device_key c.node) with
+                | Error who, _ ->
+                    invalid "no_card"
+                      (fst (names c who) ^ " has not published a card yet.")
+                | _, Error e -> invalid "not_signed" e
+                | Ok keys, Ok device -> (
+                    let keep =
+                      R.make ~device ~member:k.key
+                        ~created_at:(Time_fmt.of_unix c.now)
+                    in
+                    match
+                      sign c ~created_at:keep.created_at ~kind:"keep"
+                        (`Assoc
+                           [
+                             Item.to_field (Members readers);
+                             ("sealed", Item.seal ~keys (R.to_json keep));
+                           ])
+                    with
+                    | Error e -> invalid "not_signed" e
+                    | Ok _ ->
+                        forget ();
+                        ok ~status:201 (member_json c k)))
+            | _ -> invalid "not_in_review" "Only a member in review is kept."))
+end
+
 (* The signer set that judges this circle's admissions as this node folded it (docs/protocol.md,
    signer_set): the circle's own admins when its root names them (Circle_admins), else the channel's
    release signer set in the node's update state, which every signer-set change on the circle or the channel advances
@@ -7397,6 +7857,7 @@ let route c ~meth ~path ~query ~body =
         (fun k -> ok (member_json c k))
   | "GET", [ "members"; id ] ->
       with_found (find_identity c id) (fun k -> ok (member_json c k))
+  | "POST", [ "members"; id; "keep" ] -> Review.keep c id
   | "PUT", [ "members"; id; "mute" ] ->
       with_found (find_identity c id) (fun k ->
           if self_identity c = Some k.key then
@@ -7528,7 +7989,9 @@ let handle ?(on_write = fun () -> ()) node ~meth ~path ~query ~body =
   in
   let r = route c ~meth ~path ~query ~body in
   (if !wrote && c.upkeep_waits then
-     try Prompts.sync c
+     try
+       Prompts.sync c;
+       Review.upkeep { c with fold = Node.fold node }
      with Failure e ->
        Printf.eprintf "%s inbox: the index after a write: %s\n"
          (Time_fmt.now ()) e);
@@ -7567,7 +8030,17 @@ let () =
    the log, so a page finds them current instead of doing that work while the member waits. A failure
    is the pass's to print; the next pass, or a page, tries again. ISS-78820 *)
 let keep_up node =
-  match Prompts.sync (ctx_of node) with
+  match
+    Prompts.sync (ctx_of node);
+    Review.upkeep (ctx_of node)
+  with
+  | () -> Ok ()
+  | exception Failure e -> Error e
+
+(* The node's own pass, which runs whether or not a relay answered: a review opens at the start of a
+   UTC day with no envelope arriving, so this is what raises its item and notice on time. *)
+let review_upkeep node =
+  match Review.upkeep (ctx_of node) with
   | () -> Ok ()
   | exception Failure e -> Error e
 

@@ -130,7 +130,8 @@ export enum ItemSubject {
   FolderAccess = 'folder_access',
   SkippedProjects = 'skipped_projects',
   InboxAgentFailed = 'inbox_agent_failed',
-  SendInvite = 'send_invite'
+  SendInvite = 'send_invite',
+  Review = 'review'
 }
 
 export enum ItemWaitingAct {
@@ -265,6 +266,11 @@ export enum RepositoryStatus {
   Approved = 'approved',
   Declined = 'declined',
   Undecided = 'undecided'
+}
+
+export enum ReviewOutcome {
+  Kept = 'kept',
+  Revoked = 'revoked'
 }
 
 export enum RoundResult {
@@ -1017,16 +1023,22 @@ export interface Member {
   status: MemberStatus;
   /** This member's own stage as they hold it; anyone else's from the newest summary they wrote, Onboarding until they have written one. */
   stage: Stage;
-  /** When their last note went out, a status note included. */
+  /** When their last note went out. A status note is not a note: it shares nothing, so it never counts here, for any reader. */
   last_note_at?: ISODateTimeString;
-  /** When their last note was a status note: its fixed words go beside the time. */
+  /** Their newest status note, when it went out after their last note: its fixed words go beside its own time, apart from Last note. */
   last_status_note?: StatusNote;
   /** Those fixed words, rendered by the node from the status and the member's card. Present with last_status_note. */
   last_status_note_words?: string;
+  /** When their newest status note went out. Present with last_status_note. */
+  last_status_note_at?: ISODateTimeString;
   /** Their card's X25519 public key (x25519:<base64url>), which an item addressed to them is sealed to; absent until they publish a card. */
   encryption_key?: string;
   muted: boolean;
   is_self: boolean;
+  /** Member review (docs/design.md, Member review): when this member's review opened, the start of the fourth whole UTC day with no note counted from the latest of their newest note, their newest honoured Keep and their join. Present while they are in review, and only to an admin or the member themselves. */
+  in_review_since?: ISODateTimeString;
+  /** The newest review outcome: the newest honoured Keep, or the revoke another identity signed. Only to an admin or the member themselves. */
+  review?: MemberReview;
   joined_at: ISODateTimeString;
   devices: Device[];
   recent: FeedItem[];
@@ -1037,6 +1049,16 @@ export interface MemberRef {
   identity: string;
   name: string;
   agent_name: string;
+}
+
+/**
+ * A member's newest review outcome (docs/design.md, Member review), shown in the member page's Review row.
+ */
+export interface MemberReview {
+  outcome: ReviewOutcome;
+  /** The admin who kept, or the identity whose key signed the revoke. */
+  by: MemberRef;
+  at: ISODateTimeString;
 }
 
 /**
@@ -1051,16 +1073,22 @@ export interface MemberSummary {
   status: MemberStatus;
   /** This member's own stage as they hold it; anyone else's from the newest summary they wrote, Onboarding until they have written one. */
   stage: Stage;
-  /** When their last note went out, a status note included. */
+  /** When their last note went out. A status note is not a note: it shares nothing, so it never counts here, for any reader. */
   last_note_at?: ISODateTimeString;
-  /** When their last note was a status note: its fixed words go beside the time. */
+  /** Their newest status note, when it went out after their last note: its fixed words go beside its own time, apart from Last note. */
   last_status_note?: StatusNote;
   /** Those fixed words, rendered by the node from the status and the member's card. Present with last_status_note. */
   last_status_note_words?: string;
+  /** When their newest status note went out. Present with last_status_note. */
+  last_status_note_at?: ISODateTimeString;
   /** Their card's X25519 public key (x25519:<base64url>), which an item addressed to them is sealed to; absent until they publish a card. */
   encryption_key?: string;
   muted: boolean;
   is_self: boolean;
+  /** Member review (docs/design.md, Member review): when this member's review opened, the start of the fourth whole UTC day with no note counted from the latest of their newest note, their newest honoured Keep and their join. Present while they are in review, and only to an admin or the member themselves. */
+  in_review_since?: ISODateTimeString;
+  /** The newest review outcome: the newest honoured Keep, or the revoke another identity signed. Only to an admin or the member themselves. */
+  review?: MemberReview;
 }
 
 export interface Message {
@@ -1984,6 +2012,11 @@ export interface GetMemberSelfOptions {
 }
 
 export interface GetMemberByIdentityOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateMemberKeepByIdentityOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -3867,6 +3900,37 @@ export class ApiClient {
       }
 
       if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createMemberKeepByIdentity(context: CallContext, identity: string, options?: CreateMemberKeepByIdentityOptions): Promise<Member> {
+    return context.recorder.call(context, 'POST /api/v0/members/:identity/keep', async (note) => {
+      const url = `${this.baseUrl}/api/v0/members/${encodeURIComponent(identity)}/keep`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Member>(response, 'Member');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
         throw new NodeErrorsResponse(response);
       }
 

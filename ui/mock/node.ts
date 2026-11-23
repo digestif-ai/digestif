@@ -825,8 +825,9 @@ export class MockNode {
     if (me.stage !== Stage.Active) return err(422, 'not_active', 'Only an Active member pauses: your first note has not gone out yet.');
     const since = new Date().toISOString();
     me.stage = Stage.Paused;
-    me.last_note_at = since;
+    // A status note is not a note: Last note stays, and the status note goes beside it.
     me.last_status_note = StatusNote.Paused;
+    me.last_status_note_at = since;
     this.store.pause = { since, reason };
     this.store.messages.push({
       hash: nextHash(this.store),
@@ -1233,6 +1234,7 @@ export class MockNode {
     if (me.stage === Stage.Onboarding) me.stage = Stage.Active;
     me.last_note_at = n.shared_at;
     delete me.last_status_note;
+    delete me.last_status_note_at;
     return this.note(n);
   }
 

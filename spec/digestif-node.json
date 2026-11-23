@@ -633,6 +633,10 @@
         {
           "name": "send_invite",
           "description": "An invite every admin signed waits to be sent: the node's notice to the admin who started it, one per invite, its invite_email the email the admins signed with its install command and expiry filled in. Local: never sent, mailed or shown off the machine, since the email carries the invite code; the digest carries it under a title that names nothing. Settled once the admin marks it sent, or once the guest joined, the invite was revoked or it expired."
+        },
+        {
+          "name": "review",
+          "description": "Member review (docs/design.md, Member review): the node's notice while a member is in review. To an admin, about the member, asking Keep or Remove; to the member, about themselves, saying their membership is in review and reading Kept once an admin keeps them. Raised and settled by the node's upkeep, never on a read. Local: never sent; the member's own digest carries theirs, and no admin's digest carries an admin's."
         }
       ]
     },
@@ -846,6 +850,19 @@
         },
         {
           "name": "approve"
+        }
+      ]
+    },
+    "review_outcome": {
+      "description": "How a member's review ended.",
+      "values": [
+        {
+          "name": "kept",
+          "description": "An admin kept them: the count restarts from the Keep's day."
+        },
+        {
+          "name": "revoked",
+          "description": "They were removed by a revoke another identity signed."
         }
       ]
     }
@@ -1156,19 +1173,25 @@
           "name": "last_note_at",
           "type": "date-time-iso8601",
           "required": false,
-          "description": "When their last note went out, a status note included."
+          "description": "When their last note went out. A status note is not a note: it shares nothing, so it never counts here, for any reader."
         },
         {
           "name": "last_status_note",
           "type": "status_note",
           "required": false,
-          "description": "When their last note was a status note: its fixed words go beside the time."
+          "description": "Their newest status note, when it went out after their last note: its fixed words go beside its own time, apart from Last note."
         },
         {
           "name": "last_status_note_words",
           "type": "string",
           "required": false,
           "description": "Those fixed words, rendered by the node from the status and the member's card. Present with last_status_note."
+        },
+        {
+          "name": "last_status_note_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When their newest status note went out. Present with last_status_note."
         },
         {
           "name": "encryption_key",
@@ -1183,6 +1206,18 @@
         {
           "name": "is_self",
           "type": "boolean"
+        },
+        {
+          "name": "in_review_since",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "Member review (docs/design.md, Member review): when this member's review opened, the start of the fourth whole UTC day with no note counted from the latest of their newest note, their newest honoured Keep and their join. Present while they are in review, and only to an admin or the member themselves."
+        },
+        {
+          "name": "review",
+          "type": "member_review",
+          "required": false,
+          "description": "The newest review outcome: the newest honoured Keep, or the revoke another identity signed. Only to an admin or the member themselves."
         }
       ],
       "description": "A row of Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note first within each. A revoked identity is not a row."
@@ -1271,19 +1306,25 @@
           "name": "last_note_at",
           "type": "date-time-iso8601",
           "required": false,
-          "description": "When their last note went out, a status note included."
+          "description": "When their last note went out. A status note is not a note: it shares nothing, so it never counts here, for any reader."
         },
         {
           "name": "last_status_note",
           "type": "status_note",
           "required": false,
-          "description": "When their last note was a status note: its fixed words go beside the time."
+          "description": "Their newest status note, when it went out after their last note: its fixed words go beside its own time, apart from Last note."
         },
         {
           "name": "last_status_note_words",
           "type": "string",
           "required": false,
           "description": "Those fixed words, rendered by the node from the status and the member's card. Present with last_status_note."
+        },
+        {
+          "name": "last_status_note_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When their newest status note went out. Present with last_status_note."
         },
         {
           "name": "encryption_key",
@@ -1298,6 +1339,18 @@
         {
           "name": "is_self",
           "type": "boolean"
+        },
+        {
+          "name": "in_review_since",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "Member review (docs/design.md, Member review): when this member's review opened, the start of the fourth whole UTC day with no note counted from the latest of their newest note, their newest honoured Keep and their join. Present while they are in review, and only to an admin or the member themselves."
+        },
+        {
+          "name": "review",
+          "type": "member_review",
+          "required": false,
+          "description": "The newest review outcome: the newest honoured Keep, or the revoke another identity signed. Only to an admin or the member themselves."
         },
         {
           "name": "joined_at",
@@ -3784,6 +3837,24 @@
           "description": "Waiting on others: each member it names who has not answered the question, or picked on the choice, yet. A reply ends no wait."
         }
       ]
+    },
+    "member_review": {
+      "description": "A member's newest review outcome (docs/design.md, Member review), shown in the member page's Review row.",
+      "fields": [
+        {
+          "name": "outcome",
+          "type": "review_outcome"
+        },
+        {
+          "name": "by",
+          "type": "member_ref",
+          "description": "The admin who kept, or the identity whose key signed the revoke."
+        },
+        {
+          "name": "at",
+          "type": "date-time-iso8601"
+        }
+      ]
     }
   },
   "resources": {
@@ -3948,6 +4019,24 @@
             "404": {
               "type": "[node_error]",
               "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:identity/keep",
+          "description": "Keep a member in review (docs/protocol.md, Member review): one Keep signed by this node's device key, sealed to every admin and the member. It ends the review on every node that honours it and restarts the count from its day.",
+          "responses": {
+            "201": {
+              "type": "member"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "not_admin: this member is not an admin. self: an admin's own Keep is ignored. revoked: the member was removed. not_in_review: the member is not in review. no_card: a reader has not published a card."
             }
           }
         },

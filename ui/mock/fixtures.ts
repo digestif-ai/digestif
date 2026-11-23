@@ -221,15 +221,16 @@ export function seed(now: Date = new Date()): Store {
         {
           status: MemberStatus.Active,
           stage: Stage.Active,
-          last_note_at: ago(now, 8),
+          last_note_at: ago(now, 9),
           last_status_note: StatusNote.CouldNotRun,
+          last_status_note_at: ago(now, 8),
           role: MemberRole.Admin
         },
         500
       ),
       member(
         dee,
-        { status: MemberStatus.Active, stage: Stage.Paused, last_note_at: ago(now, 90), last_status_note: StatusNote.Paused },
+        { status: MemberStatus.Active, stage: Stage.Paused, last_status_note: StatusNote.Paused, last_status_note_at: ago(now, 90) },
         400
       ),
       member(fay, { status: MemberStatus.Active, stage: Stage.Onboarding }, 40)
