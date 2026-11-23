@@ -10,7 +10,7 @@ declare global {
     CIRCLE_STORE: DurableObjectNamespace<CircleStore>;
     /**
      * sha256:<hex> of the home circle's root (src/env.ts, homeOf): the operator's own circle, which
-     * carries the relay's releases and answers the unprefixed routes. Unset on a freshly deployed
+     * carries the relay's releases and which an unprefixed circle route names (410 circle_moved). Unset on a freshly deployed
      * relay, which has no home; set by `digestif circle found --relay` and carried forward by every
      * deploy, never from a bundle.
      */

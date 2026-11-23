@@ -8,6 +8,7 @@ import { World } from "../../conformance/src/world.ts";
 import circleFile from "../../conformance/fixtures/test-circle.json";
 import { RELAY_VERSION, relayVersionField, relayVersionOf } from "../src/version.ts";
 import { RELAY } from "./helpers.ts";
+import { HOME } from "./root.ts";
 import { TEST_RELAY_VERSION } from "./stamp.ts";
 
 const realFetch = globalThis.fetch;
@@ -43,10 +44,10 @@ describe("relay_version", () => {
         root: circleFile.root as SignedEnvelope,
         rootHash: circleFile.root_hash,
       },
-      [RELAY],
+      [HOME],
     );
     await world.setup();
-    const result = await world.client(RELAY, world.host.device).circle();
+    const result = await world.client(HOME, world.host.device).circle();
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ root: circleFile.root_hash, relay_version: TEST_RELAY_VERSION });
   });
@@ -68,11 +69,11 @@ describe("relay_version", () => {
     expect(signed.status).toBe(200);
     expect(await signed.json()).toEqual({ relay_version: TEST_RELAY_VERSION });
     const posted = await SELF.fetch(`${RELAY}/v0/version`, { method: "POST", body: "{}" });
-    expect(posted.status).toBe(404);
+    expect(posted.status).toBe(410);
   });
 
   it("keeps GET /v0/circle signed: an unsigned read is refused", async () => {
-    const response = await SELF.fetch(`${RELAY}/v0/circle`);
+    const response = await SELF.fetch(`${HOME}/v0/circle`);
     expect(response.status).toBe(401);
   });
 });

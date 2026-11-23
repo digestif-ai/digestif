@@ -2,7 +2,7 @@
 // fold invariant checked after every accepted append: the admitted keys, the epoch and the invites
 // in D1 must equal a full refold of the log. This is the "admitted_keys equals a refold" test of
 // the D1.3 story, at the finest grain the suite allows.
-import { TEST_ROOT } from "./root.ts";
+import { HOME, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { relayCases } from "../../conformance/src/cases/relay.ts";
@@ -13,7 +13,8 @@ import { World } from "../../conformance/src/world.ts";
 import circleFile from "../../conformance/fixtures/test-circle.json";
 import { circleEpoch, foldLog, keyJson, loadKeys } from "../src/db.ts";
 
-const RELAY = "http://relay.test";
+// The home circle's address: every circle route answers only under it.
+const RELAY = HOME;
 
 /** Compares the derived state in D1 with a full refold of the log; throws naming the first difference. */
 async function checkRefold(): Promise<void> {
@@ -40,7 +41,7 @@ beforeAll(() => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     if (!url.startsWith(RELAY)) return realFetch(input, init);
     const response = await SELF.fetch(url, init);
-    if (init?.method === "POST" && new URL(url).pathname === "/v0/envelopes") {
+    if (init?.method === "POST" && new URL(url).pathname.endsWith("/v0/envelopes")) {
       appends += 1;
       if (response.status === 201) {
         accepted += 1;
