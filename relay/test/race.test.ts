@@ -5,7 +5,7 @@
 // point: the loser lands after the winner with the next relay_id, a signed loser is not refused as
 // its own replay, two joins take consecutive epochs, a fork is refused, and two copies of one
 // request pass once.
-import { relayExtras, TEST_ROOT } from "./root.ts";
+import { HOME, relayExtras, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { summaryBody } from "../../conformance/src/bodies.ts";
@@ -22,7 +22,8 @@ import { releaseSignersOf } from "../src/signers.ts";
 import { DEFAULT_LIMITS, type Relay } from "../src/env.ts";
 import { Refusal } from "../src/errors.ts";
 
-const RELAY = "http://relay.test";
+// The home circle's address: every circle route answers only under it.
+const RELAY = HOME;
 const realFetch = globalThis.fetch;
 
 /**

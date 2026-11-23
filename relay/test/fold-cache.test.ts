@@ -3,7 +3,7 @@
 // keep the fold these tests read), a log that no longer begins with what it folded is
 // refolded whole, and the fold it hands out always equals the full refold. A replay of a stored
 // envelope does not re-verify the key signatures inside it (conformance/src/fold.ts, stored).
-import { relayExtras, TEST_ROOT } from "./root.ts";
+import { HOME, relayExtras, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { deviceBody, retractBody } from "../../conformance/src/bodies.ts";
@@ -19,7 +19,8 @@ import { ENVELOPE_COLUMNS, foldLog, forgetKeptFold, keyJson, type EnvelopeRow } 
 import { releaseSignersOf } from "../src/signers.ts";
 import { DEFAULT_LIMITS } from "../src/env.ts";
 
-const RELAY = "http://relay.test";
+// The home circle's address: every circle route answers only under it.
+const RELAY = HOME;
 const realFetch = globalThis.fetch;
 
 /** A D1 that counts the envelope rows its reads return, batched or not: what a fold replays. */

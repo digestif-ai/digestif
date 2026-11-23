@@ -44,6 +44,7 @@ export enum ErrorCode {
   UnknownDigest = 'unknown_digest',
   CircleUnknown = 'circle_unknown',
   CircleSuspended = 'circle_suspended',
+  CircleMoved = 'circle_moved',
   Moving = 'moving',
   NotVouched = 'not_vouched',
   NotHosting = 'not_hosting',
@@ -247,7 +248,7 @@ export interface RelayInfo {
   hosting: boolean;
   /** The home circle's root, sha256:<hex>; absent or null on a relay with no home, which hosts nothing. */
   home?: string;
-  /** The last request on an unprefixed circle route, which only the home circle answers; null when none has arrived since the relay hosted many circles. */
+  /** The last request on a circle route without a circle's address, which answers 410 circle_moved; null when none has arrived since the relay hosted many circles. */
   last_unprefixed_at?: ISODateTimeString;
 }
 
