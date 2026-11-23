@@ -6698,11 +6698,16 @@ let test_circle_nodes_stand_in () =
 
 let test_supervisor_child_env () =
   let env ~runs_circles ~node base =
-    Array.to_list (Supervisor.child_env ~runs_circles ~node (Array.of_list base))
+    Array.to_list
+      (Supervisor.child_env ~runs_circles ~node (Array.of_list base))
   in
   Alcotest.(check (list string))
     "a folder run in the machine's place is named to the child"
-    [ "PATH=/bin"; "DIGESTIF_SUPERVISOR_RUNS_CIRCLES=1"; "DIGESTIF_NODE_DIR=/c/a" ]
+    [
+      "PATH=/bin";
+      "DIGESTIF_SUPERVISOR_RUNS_CIRCLES=1";
+      "DIGESTIF_NODE_DIR=/c/a";
+    ]
     (env ~runs_circles:true ~node:(Some "/c/a") [ "PATH=/bin" ]);
   Alcotest.(check (list string))
     "one this supervisor did not choose is never inherited" [ "PATH=/bin" ]
