@@ -171,9 +171,15 @@ let entries () =
                 Some { id; dir = path; linked = false }
             | _ -> None)
 
-(* What a data directory holds, read from its log alone (no keystore is opened): its root and the
-   circle's name as the root names it. None when no node was set up there. *)
-type summary = { root : string option; name : string }
+(* What a data directory holds, read from its log alone (no keystore is opened): its root, the
+   circle's name as the root names it, its web UI's address and its last sync. None when no node was
+   set up there. *)
+type summary = {
+  root : string option;
+  name : string;
+  ui_url : string option;  (** the address its web UI last bound *)
+  last_sync : string option;  (** its newest sync of any relay *)
+}
 
 let summary dir =
   let path = Node.log_path dir in
@@ -192,7 +198,17 @@ let summary dir =
               | Error _ -> "")
           | _ -> ""
         in
-        Some { root; name })
+        let ui_url = Log.get_config log "ui_url" in
+        let last_sync =
+          List.fold_left
+            (fun acc (r : Log.relay_row) ->
+              match (acc, r.last_sync_at) with
+              | Some a, Some b when a >= b -> acc
+              | _, Some b -> Some b
+              | _, None -> acc)
+            None (Log.relays log)
+        in
+        Some { root; name; ui_url; last_sync })
 
 (* Make ~/digestif/<id> a link to the node at [target], which stays where it is: its keys, its
    service and its join link all name that path. Linking the same target again is a no-op. *)

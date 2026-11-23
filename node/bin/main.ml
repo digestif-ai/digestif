@@ -156,6 +156,38 @@ let keys =
 
 (* relays *)
 
+(* A relay that hosts many circles is asked to host this circle (docs/protocol.md, Hosted circles):
+   the root's bootstrap append at the circle's address, carrying a fresh voucher from the member's
+   other circle on that relay, since the relay does not host it yet; one that already does answers
+   the append as a duplicate. Once it hosts the circle, the node reads the address and the circle's
+   relay message names it. A relay the root does not list is asked the same way. *)
+let relay_add_hosted n ~base ~root =
+  let others = Digestif_invite.Founding.others ~except:n.Node.dir () in
+  let signed =
+    match Log.find n.log root with
+    | Some r -> r.signed
+    | None -> die "this node does not hold its root %s" root
+  in
+  let voucher =
+    match Digestif_invite.Founding.voucher others ~base ~root with
+    | Ok v -> v
+    | Error e -> die "no voucher for %s: %s" base e
+  in
+  let answer = Digestif_invite.Founding.ask ?voucher ~base ~root signed in
+  print_endline (Digestif_invite.Founding.answer_line ~base ~root answer);
+  match answer with
+  | Digestif_invite.Founding.Hosted address -> (
+      Log.add_relay n.log address;
+      Log.remove_relay n.log base;
+      match
+        if Hashtbl.mem (Node.fold n).relays address then Ok None
+        else Digestif_invite.Founding.relay_message n ~address
+      with
+      | Ok (Some hash) -> Printf.printf "published\t%s\n" hash
+      | Ok None -> ()
+      | Error e -> die "the relay message was not written: %s" e)
+  | _ -> exit 1
+
 let relay_add =
   let url = Arg.(required & pos 0 (some string) None & info [] ~docv:"URL") in
   let mine =
@@ -166,15 +198,32 @@ let relay_add =
             "You run this relay: publish a relay message naming it, so every \
              node in the circle adds it at its next sync.")
   in
-  cmd "add" "Add a relay."
+  cmd "add"
+    "Add a relay. A relay that hosts many circles, named by its base url, is \
+     asked to host this circle (--circle ID picks it): the root with a fresh \
+     voucher from your other circle there, then the circle's relay message \
+     naming its address there."
     Term.(
       const (fun dir url mine ->
           with_node dir (fun n ->
-              if not mine then Log.add_relay n.log url
-              else
-                match ok_or_die (Node.add_own_relay n url) with
-                | Some hash -> Printf.printf "published\t%s\n" hash
-                | None -> Printf.printf "already in the circle\t%s\n" url))
+              let hosted_base =
+                match (Node.root n, Relay_url.split_address url) with
+                | Some root, None -> (
+                    match
+                      Relay_client.relay_info Relay_client.curl ~base:url
+                    with
+                    | Ok _ -> Some (Relay_url.base_of url, root)
+                    | Error _ -> None)
+                | _ -> None
+              in
+              match hosted_base with
+              | Some (base, root) -> relay_add_hosted n ~base ~root
+              | None -> (
+                  if not mine then Log.add_relay n.log url
+                  else
+                    match ok_or_die (Node.add_own_relay n url) with
+                    | Some hash -> Printf.printf "published\t%s\n" hash
+                    | None -> Printf.printf "already in the circle\t%s\n" url)))
       $ data_dir $ url $ mine)
 
 let relay_remove =
@@ -283,6 +332,47 @@ let relay_status =
                   List.iter print_endline
                     (Digestif_relay_deploy.Operate.status n ~releases)))
       $ data_dir)
+
+let relay_circles =
+  cmd "circles"
+    "List the circles the relay this node operates hosts, one per line: the \
+     root's short form, when it opened, its size, its last append, which \
+     circle vouched for it, and its state. Read from the relay's D1 with the \
+     deploy token; nothing a circle holds is read."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n ->
+              let module O = Digestif_relay_deploy.Operate in
+              List.iter
+                (fun h -> print_endline (O.circle_line h))
+                (ok_or_die (O.hosted_circles n))))
+      $ data_dir)
+
+let relay_state name ~to_ doc =
+  let root =
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOT")
+  in
+  cmd name doc
+    Term.(
+      const (fun dir root ->
+          with_node dir (fun n ->
+              print_endline
+                (ok_or_die
+                   (Digestif_relay_deploy.Operate.set_circle_state n
+                      ~prefix:root ~to_))))
+      $ data_dir $ root)
+
+let relay_suspend =
+  relay_state "suspend" ~to_:"suspended"
+    "Suspend a circle the relay this node operates hosts: every route under \
+     its address answers 410 circle_suspended, and its nodes show that as a \
+     fault naming the relay. ROOT is the root's full 64 hex digits or any \
+     prefix of at least 8 that names one circle (the short form relay \
+     circles prints). Its log is untouched; relay resume restores it."
+
+let relay_resume =
+  relay_state "resume" ~to_:"open"
+    "Resume a circle relay suspend stopped. ROOT as for relay suspend."
 
 (* the log *)
 
@@ -1918,11 +2008,18 @@ let release_admins n =
     | Ok trust -> trust.signers
     | Error e -> die "the update state could not be read: %s" e
   in
+  (* The circle's own admin key, which circle found made for it and keeps in the keystore beside its
+     device key, or this machine's signer.json key. *)
+  let own =
+    (match Keystore.get_signing_key n.Node.keystore "admin" with
+    | Ok (Some k) -> [ Keys.public k ]
+    | _ -> [])
+    @ Option.to_list (Digestif_update.Signer_halt.own_key ())
+  in
   let mine =
-    match Digestif_update.Signer_halt.own_key () with
-    | Some k ->
-        List.exists (fun (s : Digestif_update.Release.signer) -> s.key = k) set
-    | None -> false
+    List.exists
+      (fun (s : Digestif_update.Release.signer) -> List.mem s.key own)
+      set
   in
   (mine, List.map (fun (s : Digestif_update.Release.signer) -> s.name) set)
 
@@ -1953,8 +2050,9 @@ let invite_by_approval n ~guests ~message ~role =
   if not admin then
     die
       "only an admin can invite someone to this circle, since every admin \
-       signs each invite; ask %s to invite %s. (An admin's signer.json names \
-       their release key as public_key.)"
+       signs each invite; ask %s to invite %s. (An admin holds the circle's \
+       admin key in its folder's keystore, or names it in signer.json as \
+       public_key.)"
       (names_list admins)
       (names_list (List.map (fun (g : Inv.Dinner.guest) -> g.name) guests))
   else
@@ -2499,19 +2597,30 @@ let circle_found =
 let circle_list =
   cmd "list"
     "List every circle's node on this machine, one per line: its id (the name \
-     --circle takes), the circle's name, its root, and its data directory. The \
-     default node (\\$DIGESTIF_HOME, else the platform's application data \
-     directory) is listed as default until an id links it. Anything under \
-     ~/digestif that is not a node or a link is left out, and named on stderr."
+     --circle takes), the circle's name, its root's short form (its first 12 \
+     hex digits; digestif circle --circle ID prints it whole), its web UI's \
+     address, its last sync, and its data directory. The default node \
+     (\\$DIGESTIF_HOME, else the platform's application data directory) is \
+     listed as default until an id links it. Anything under ~/digestif that is \
+     not a node or a link is left out, and named on stderr."
     Term.(
       const (fun () ->
           let line id dir =
             match Circles.summary dir with
-            | None -> Printf.printf "%s\t\t\t%s (no node set up)\n" id dir
+            | None -> Printf.printf "%s\t\t\t\t\t%s (no node set up)\n" id dir
             | Some s ->
-                Printf.printf "%s\t%s\t%s\t%s\n" id
+                let ui =
+                  match s.ui_url with
+                  | Some u -> u
+                  | None ->
+                      Printf.sprintf "http://127.0.0.1:%d"
+                        (ui_port_of (Some dir) None)
+                in
+                Printf.printf "%s\t%s\t%s\t%s\t%s\t%s\n" id
                   (if s.name = "" then "-" else s.name)
-                  (Option.value s.root ~default:"-")
+                  (Option.fold ~none:"-" ~some:Relay_url.short_root s.root)
+                  ui
+                  (Option.value s.last_sync ~default:"never")
                   dir
           in
           (match Circles.check_parent () with
@@ -4154,7 +4263,16 @@ let main =
       keys;
       Cmd.group
         (Cmd.info "relay" ~doc:"The relays this node reads and writes.")
-        [ relay_add; relay_remove; relay_list; relay_operate; relay_status ];
+        [
+          relay_add;
+          relay_remove;
+          relay_list;
+          relay_operate;
+          relay_status;
+          relay_circles;
+          relay_suspend;
+          relay_resume;
+        ];
       sync_cmd;
       invite;
       join;
