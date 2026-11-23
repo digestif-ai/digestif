@@ -80,6 +80,9 @@ and t = {
       (** the admins a circle root names ([root_admins]) *)
   mutable signer_set : signer_set option;
       (** the signer set at this point of the fold ([admin_bindings]) *)
+  mutable binding_history : (string * (string * string option) list) list;
+      (** every signer set the fold held, newest applied first, beside the
+          created_at of the envelope that set it ([admin_bindings_at]) *)
   mutable applied : string list;  (** in application order *)
   mutable rejected : (string * string) list;  (** hash, reason *)
   mutable waiting : (string * string) list;  (** hash, what it waits for *)
@@ -104,6 +107,7 @@ let empty root =
     signer_sets = [];
     root_admins = None;
     signer_set = None;
+    binding_history = [];
     applied = [];
     rejected = [];
     waiting = [];
@@ -326,6 +330,24 @@ let admin_bindings t =
   | None -> []
   | Some s -> List.map (fun k -> (k, List.assoc_opt k s.s_bound)) s.s_keys
 
+(* The signer set the fold holds once [entry] changed it, recorded at the entry's created_at. *)
+let record_bindings t entry =
+  t.binding_history <-
+    (entry.envelope.created_at, admin_bindings t) :: t.binding_history
+
+(* The signer set the fold held at [at], each key with the identity it is bound to, if any: the set
+   after every circle-state envelope ordered at or before [at] (protocol.md, Member review). Before
+   the root, no set. *)
+let admin_bindings_at t ~at =
+  match List.find_opt (fun (c, _) -> c <= at) t.binding_history with
+  | Some (_, b) -> b
+  | None -> []
+
+(* Whether a key of the signer set the fold held at [at] is bound to [identity]: they sat as an
+   admin then, which is what a Keep dated [at] is judged by. *)
+let seated_at t ~at identity =
+  List.exists (fun (_, i) -> i = Some identity) (admin_bindings_at t ~at)
+
 (* The root is a circle envelope, or the dinner that founded a circle at a dinner (protocol.md, The
    admission fold, step 1): either admits its host and authoring device and records its guests. *)
 let apply_root ~release_signers t entry =
@@ -345,6 +367,7 @@ let apply_root ~release_signers t entry =
           (match admins with
           | Some a -> root_signer_set ~host:d.host a
           | None -> signer_set_of release_signers);
+      record_bindings t entry;
       admit t ~key:d.host ~role:Identity ~identity:d.host
         ~admitted_by:entry.hash ~join_epoch:0;
       admit t ~key:entry.envelope.author ~role:Device ~identity:d.host
@@ -665,6 +688,7 @@ let apply_signer_set t entry =
   | Applied ->
       on_signer_set t entry;
       Option.iter (fun set -> adopt_signer_set set entry.body) t.signer_set;
+      record_bindings t entry;
       Applied
   | o -> o
 

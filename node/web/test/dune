@@ -10,6 +10,8 @@
  (package digestif-node)
  (libraries
   digestif-node.core
+  digestif-node.invite
+  digestif_test_relay
   digestif-node.mail
   digestif-node.daily
   digestif_web

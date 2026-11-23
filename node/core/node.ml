@@ -166,11 +166,11 @@ let honest_seq t key =
     (fun seq _ m -> if seq < first_fork then max m seq else m)
     by_seq 0
 
-(* A revoke of [target] signed by [by], with its cutoffs filled from this log: [after_seq] holds each
-   device key it stops at its honest seq, [mail_read] each mail key it stops with the hashes of every
-   envelope of that key the log holds plus [presigned] (mail key, hash) pairs this node wrote and has
-   not seen posted. Fetch every relay first: what the log lacks is lost with the thief's. *)
-let revoke_body ?(presigned = []) t ~by ~target =
+(* The cutoffs of a revoke of [target], filled from this log: [after_seq] holds each device key it
+   stops at its honest seq, [mail_read] each mail key it stops with the hashes of every envelope of
+   that key the log holds plus [presigned] (mail key, hash) pairs this node wrote and has not seen
+   posted. Fetch every relay first: what the log lacks is lost with the thief's. *)
+let revoke_cutoffs ?(presigned = []) t ~target =
   let f = fold t in
   match Fold.find f target with
   | None -> Error ("not an admitted key: " ^ target)
@@ -204,7 +204,14 @@ let revoke_body ?(presigned = []) t ~by ~target =
             else None)
           stopped
       in
-      Ok (Bodies.make_revoke ~by ~target ~after_seq ~mail_read)
+      Ok (after_seq, mail_read)
+
+(* A revoke of [target] signed by [by], with its cutoffs filled from this log (revoke_cutoffs). *)
+let revoke_body ?presigned t ~by ~target =
+  Result.map
+    (fun (after_seq, mail_read) ->
+      Bodies.make_revoke ~by ~target ~after_seq ~mail_read)
+    (revoke_cutoffs ?presigned t ~target)
 
 (* Where the next envelope of [key]'s chain goes: its seq, and the hash of the one before it. Read
    inside the transaction that stores the envelope (write), so no other process reads the same
