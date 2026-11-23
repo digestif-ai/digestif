@@ -116,9 +116,14 @@ export class SignerSet {
    */
   adopt(body: Json | undefined): boolean {
     const doc = signedDocumentOf(body);
+    return doc !== undefined && this.adoptDocument(doc);
+  }
+
+  /** adopt, for a signer-set document already read: the relay's channel fold reads its bytes off the channel. */
+  adoptDocument(doc: SignedDocument): boolean {
     // A fold that starts from no set (a node folding a dinner root it holds no release signers for)
     // adopts nothing: every key of an empty set "signed" any document.
-    if (doc === undefined || this.keys.length === 0) return false;
+    if (this.keys.length === 0) return false;
     const next = signerKeysOf(doc.value);
     const identities = signerIdentitiesOf(doc.value["signers"]);
     if (next === undefined || identities === undefined || next.some((k) => this.revoked.has(k))) return false;
@@ -151,7 +156,12 @@ export class SignerSet {
    */
   revoke(body: Json | undefined): boolean {
     const doc = signedDocumentOf(body);
-    if (doc === undefined || doc.value["format"] !== "digestif-revocation-v0" || typeof doc.value["key"] !== "string") return false;
+    return doc !== undefined && this.revokeDocument(doc);
+  }
+
+  /** revoke, for a revocation document already read. */
+  revokeDocument(doc: SignedDocument): boolean {
+    if (doc.value["format"] !== "digestif-revocation-v0" || typeof doc.value["key"] !== "string") return false;
     const valid = validSigners(REVOCATION_DOMAIN, doc);
     if (!this.keys.some((k) => valid.has(k))) return false;
     this.revoked.add(doc.value["key"]);
