@@ -1,7 +1,9 @@
 // An in-memory mailing relay for the phone web app under `vite dev` and its tests: the relay's
-// GET /v0/envelopes, GET /v0/circle and POST /v0/envelopes, with request signatures checked and
-// reads refused (401) until a key is admitted. It holds one member whose laptop wrote the founding
-// dinner, their card, their node's join choice and a Note ready notice, and a second member, Ada,
+// unsigned GET /v0/relay naming its home circle, and that circle's GET /v0/envelopes, GET /v0/circle
+// and POST /v0/envelopes at its address, /c/<root hex> (docs/protocol.md, Hosted circles), with
+// request signatures checked and reads refused (401) until a key is admitted; a circle route without
+// the address answers 410 circle_moved, as the relay does. It holds one member whose laptop wrote the
+// founding dinner, their card, their node's join choice and a Note ready notice, and a second member, Ada,
 // whose behavior choice and question are addressed to the first, and whose other question is
 // addressed to the circle (docs/protocol.md, Items). POST /v0/_pair plays
 // that laptop for a pairing code (what the local UI's Add a phone does through the node); POST
@@ -316,10 +318,14 @@ export class MockRelay {
         body: { decisions: this.sealedToAda('decision'), answers: this.sealedToAda('item_answer'), plain_answers: this.plainAnswers() }
       };
     if (method === 'POST' && path === '/v0/_pair') return this.pair(String((JSON.parse(body) as { code?: unknown }).code ?? ''));
+    const home = this.items[0]?.hash;
+    if (method === 'GET' && path === '/v0/relay') return { status: 200, body: { mailer: true, hosting: true, home: home ?? null } };
+    const prefix = home === undefined ? undefined : '/c/' + home.slice('sha256:'.length);
+    if (prefix === undefined || !path.startsWith(prefix + '/')) return err(410, 'circle_moved');
     const key = await this.signer(method, path, body, headers);
     if (key === undefined) return err(401, 'bad_signature');
     if (!this.admitted.has(key)) return err(401, 'not_admitted');
-    const [route, query = ''] = path.split('?');
+    const [route, query = ''] = path.slice(prefix.length).split('?');
     if (method === 'GET' && route === '/v0/envelopes') {
       const after = Number(new URLSearchParams(query).get('after') ?? '0');
       return { status: 200, body: { envelopes: this.items.filter((s) => s.relay_id > after) } };

@@ -4,7 +4,7 @@
 // suite's public test signers here; src/signers.ts) and changes by signer_set, and no admission
 // counts while a release_revocation's key is in the set. The tests share one D1 and run in order:
 // the halt at the end holds for the rest of the file.
-import { TEST_ROOT } from "./root.ts";
+import { HOME, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { admissionFor, REVOCATION_DOMAIN, SIGNERS_DOMAIN, signedBody, signersDocument, testReleaseSigners } from "../../conformance/src/admission.ts";
@@ -18,7 +18,8 @@ import circleFile from "../../conformance/fixtures/test-circle.json";
 import { admissionCutover, circleEpoch, foldLog, keyJson, loadKeys } from "../src/db.ts";
 import { releaseSignersOf } from "../src/signers.ts";
 
-const RELAY = "http://relay.test";
+// The home circle's address: every circle route answers only under it.
+const RELAY = HOME;
 const realFetch = globalThis.fetch;
 const [s1, s2] = testReleaseSigners() as [Signer, Signer];
 const s3 = Signer.random();

@@ -2,9 +2,9 @@
 // (migrations/0006_hosted_circles.sql), each circle's address, which store answers for it, and the
 // founding of a new one, which a voucher from a member of a circle the relay already hosts opens.
 //
-// A circle's address is `<base>/c/<root hex>`. The home circle (HOME_ROOT, else CIRCLE_ROOT) also
-// answers the unprefixed routes, the address every node used before relays hosted many circles.
-// Its state stays in the relay's D1 until its log has moved into its own store (src/move.ts); every
+// A circle's address is `<base>/c/<root hex>`, and every circle route answers only there: an
+// unprefixed one answers 410 circle_moved naming the home circle's (HOME_ROOT, else CIRCLE_ROOT).
+// The home circle's state stays in the relay's D1 until its log has moved into its own store (src/move.ts); every
 // other circle's state lives in its store from the moment it opens.
 import { isoTime } from "../../conformance/src/encoding.ts";
 import { HEADER_VOUCHER, readVoucher, VOUCHER_TTL_MS } from "../../conformance/src/voucher.ts";
@@ -254,9 +254,9 @@ let unprefixedWritten = 0;
 const UNPREFIXED_EVERY_MS = 10 * 60 * 1000;
 
 /**
- * Records that a node still reached the home circle at its unprefixed address, at most every ten
- * minutes per isolate: the release that drops those routes waits on this time (docs/protocol.md,
- * Hosted circles).
+ * Records that something still reached a circle route unprefixed, at most every ten minutes per
+ * isolate: GET /v0/relay reports the time, so an operator sees a node that never moved to its
+ * circle's address (docs/protocol.md, Hosted circles).
  */
 export async function recordUnprefixed(registry: D1Database, now: Date): Promise<void> {
   if (now.getTime() - unprefixedWritten < UNPREFIXED_EVERY_MS) return;

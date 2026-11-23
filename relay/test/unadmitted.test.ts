@@ -13,8 +13,12 @@ import { World, type Member } from "../../conformance/src/world.ts";
 import circleFile from "../../conformance/fixtures/test-circle.json";
 import { throttle } from "../src/append.ts";
 import { MAX_HEADER_LENGTH } from "../src/auth.ts";
+import { HOME } from "./root.ts";
 
-const RELAY = "http://relay.test";
+// The home circle's address: every circle route answers only under it.
+const RELAY = HOME;
+/** The path a signature covers: the circle's address and the route under it. */
+const at = (path: string): string => `${new URL(RELAY).pathname}${path}`;
 const realFetch = globalThis.fetch;
 
 let world: World;
@@ -53,7 +57,7 @@ async function envelopeCount(): Promise<number> {
 }
 
 function get(signer: Signer, path: string, headers: Record<string, string> = {}): Promise<Response> {
-  return SELF.fetch(`${RELAY}${path}`, { headers: { ...signedHeaders(signer, "GET", path, ""), ...headers } });
+  return SELF.fetch(`${RELAY}${path}`, { headers: { ...signedHeaders(signer, "GET", at(path), ""), ...headers } });
 }
 
 function post(body: string, headers: Record<string, string> = {}): Promise<Response> {
@@ -75,7 +79,7 @@ describe("a key the circle never admitted", () => {
     const stranger = Signer.random();
     const signed = new Author(stranger).next("summary", { text: "hello" }, 0);
     const raw = jcs(signed);
-    const response = await post(raw, signedHeaders(stranger, "POST", "/v0/envelopes", raw));
+    const response = await post(raw, signedHeaders(stranger, "POST", at("/v0/envelopes"), raw));
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ code: "not_admitted" });
     expect(await nonceRows(stranger.key)).toBe(0);
@@ -89,7 +93,7 @@ describe("a key the circle never admitted", () => {
   });
 
   it("still spends the nonce of an admitted member, so a replay is refused", async () => {
-    const headers = signedHeaders(member.device.signer, "GET", "/v0/circle", "");
+    const headers = signedHeaders(member.device.signer, "GET", at("/v0/circle"), "");
     expect((await SELF.fetch(`${RELAY}/v0/circle`, { headers })).status).toBe(200);
     const replay = await SELF.fetch(`${RELAY}/v0/circle`, { headers });
     expect(replay.status).toBe(401);
@@ -134,7 +138,7 @@ describe("an unsigned bootstrap append whose key the circle does not know", () =
 
 describe("sizes", () => {
   it("refuses a Digestif header over the cap before verifying it", async () => {
-    const headers = signedHeaders(member.device.signer, "GET", "/v0/circle", "", { nonce: "n".repeat(MAX_HEADER_LENGTH + 1) });
+    const headers = signedHeaders(member.device.signer, "GET", at("/v0/circle"), "", { nonce: "n".repeat(MAX_HEADER_LENGTH + 1) });
     const response = await SELF.fetch(`${RELAY}/v0/circle`, { headers });
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ code: "bad_signature" });

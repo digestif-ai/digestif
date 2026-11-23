@@ -63,7 +63,7 @@ let curl : transport =
 
 (* A circle's address on a relay (docs/protocol.md, Hosted circles): the relay's base url, then
    /c/ and the 64 hex digits of the circle's root hash. Every circle route lives under it, and an
-   unprefixed route is the home circle's legacy address, which the relay counts as still in use.
+   unprefixed one answers 410 circle_moved naming the home circle's, which the relay records.
    Relay_url holds the arithmetic; these are the names the deploy pass reads them by. *)
 
 (* The relay's base url: [url] without a trailing slash or a circle's address at its end. *)

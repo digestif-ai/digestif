@@ -8,6 +8,7 @@ import type { Signer } from "../../conformance/src/keys.ts";
 import type { Member, World } from "../../conformance/src/world.ts";
 import { seal, unb64url } from "../../node/mail/webcrypto/mail.mjs";
 import { RESEND_URL } from "../src/env.ts";
+import { HOME } from "./root.ts";
 
 export const RELAY = "http://relay.test";
 
@@ -145,17 +146,17 @@ export class Node {
       deadline: spec.deadline,
     };
     const body = { to: [this.member.identity.key], sealed: (await seal([this.memberKey], item)) as unknown as Json };
-    const signed = await this.world.post(this.device, "", [RELAY], "item", body);
+    const signed = await this.world.post(this.device, "", [HOME], "item", body);
     return envelopeHash(signed.envelope);
   }
 
   /** Appends this member's device decision on [itemHash], as the machine or a phone writes one. */
   async decide(itemHash: string, option: string): Promise<void> {
-    await this.world.post(this.device, "", [RELAY], "decision", await pickBody(this.memberKey, itemHash, option));
+    await this.world.post(this.device, "", [HOME], "decision", await pickBody(this.memberKey, itemHash, option));
   }
 
   async digest(choices: Array<{ hash: string; spec: ChoiceSpec }>, options: DigestOptions): Promise<Digest> {
-    const epoch = await this.world.epoch(RELAY);
+    const epoch = await this.world.epoch(HOME);
     const signer = "signer" in options.mailKey ? options.mailKey.signer : options.mailKey;
     const links: Link[] = [];
     const records: Json[] = [];
@@ -194,7 +195,7 @@ export class Node {
     const sealed = (await seal(options.recipients ?? [this.memberKey, this.relayKey], plaintext)) as unknown as Json;
     const body: Json = { date: "2026-10-29", sealed, links: records };
     const signed = this.device.next("digest", body, epoch);
-    await this.world.publish([RELAY], this.device, signed);
+    await this.world.publish([HOME], this.device, signed);
     return { signed, hash: envelopeHash(signed.envelope), links, plaintext };
   }
 

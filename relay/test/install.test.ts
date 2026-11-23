@@ -114,10 +114,10 @@ describe("the hosted install script", () => {
     expect(builtSigners()).not.toContain(test[0]?.key);
   });
 
-  it("is not answered on any host but SITE_HOST", async () => {
+  it("is not answered on any host but SITE_HOST: elsewhere it is one more circle route without an address", async () => {
     channel(real);
-    expect((await worker.fetch(new Request("http://relay.test/install.sh"), site)).status).toBe(404);
-    expect((await worker.fetch(new Request("https://digestif.test/install.sh"), { ...env, SITE_HOST: undefined })).status).toBe(404);
+    expect((await worker.fetch(new Request("http://relay.test/install.sh"), site)).status).toBe(410);
+    expect((await worker.fetch(new Request("https://digestif.test/install.sh"), { ...env, SITE_HOST: undefined })).status).toBe(410);
     expect(asked).toEqual([]);
   });
 
