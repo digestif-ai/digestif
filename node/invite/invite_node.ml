@@ -406,7 +406,7 @@ let prepare ?(transport = Relay_client.curl) ?(now = ptime_now ())
       [ Log.s Node.k_identity ];
   let* derived = Node.init node ~phrase in
   let* device = Node.device_key node in
-  let* sg =
+  let* sg, circle =
     Result.map_error Join.error_message (Join.read_dinner ~transport code)
   in
   let* dinner_hash, dinner, _ =
@@ -420,7 +420,7 @@ let prepare ?(transport = Relay_client.curl) ?(now = ptime_now ())
     {
       Join_store.invite_key = Invite_code.invite_public_key code;
       dinner_hash;
-      relays = dinner.parsed_relays;
+      relays = Join.relays_at ~circle dinner.parsed_relays;
       guest_name = own_guest_name dinner code;
       join;
       posted = false;
