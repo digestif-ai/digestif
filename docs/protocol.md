@@ -1061,7 +1061,10 @@ envelope hash>", "sealed": <sealed to the mailing relay's key> }`, whose plainte
 opens the digest and the request, writes each link's URL into the email, sends it to `to` from the
 circle's domain, and keeps the digest hash so a repeat answers `already_sent` and mails nothing. It
 never stores the request or a secret. A digest the relay does not hold is `unknown_digest`; a
-request to a relay that does not mail is `not_mailer`.
+request to a relay that does not mail is `not_mailer`. A mailing relay mails every circle it hosts
+with its one sealing key: each link's URL is under the circle's address, a circle whose root names
+it carries the circle's name in the email's From name and subject, and each circle mails a member
+at most two digests a UTC day (`429 rate_limited` past it), which no node reaches.
 
 **`GET /v0/links/<id>?s=<secret>`** opens the sealed answer and renders a page naming the item and the
 option, with one Confirm button that posts the secret back. It changes nothing, so a mail scanner
@@ -1130,6 +1133,73 @@ and the page then says so. With no open `paused` choice, after a Pause the membe
 choice is picked Stay paused, the phone shows no Unpause. A lost phone is a revoke of its key like
 any device.
 
+## Hosted circles
+
+A relay hosts many circles, each at its own **address**, `<base>/c/<root hex>`: the relay's base url
+(`https://dinners.digestif.io`) and the 64 hex digits of the circle's root hash. Every circle route
+(`/v0/envelopes`, `/v0/circle`, `/v0/invites/<invite key>`, `/v0/mail`, `/v0/links/<id>`) lives under
+it unchanged, and a node keeps the address as its relay url: the signed string covers the whole
+path, so a request signed for one circle never verifies at another's. A root's `relays` names each
+relay's base url, since the root cannot hold its own hash; a circle's `relay` message and a node's
+cursors name the full address. Each circle's state lives in a store of its own, so nothing one
+circle holds is ever read, appended to or admitted into another.
+
+Three routes are the relay's own, outside every circle (and also answered under a circle's address):
+
+- `GET /v0/version`, unsigned (Relay version).
+- `GET /v0/relay`, unsigned: `{ "relay_version", "mailer": true|false, "encryption_key":
+  "x25519:...", "hosting": true|false, "home": "sha256:..."|null, "last_unprefixed_at":
+  "<time>"|null }`. `encryption_key` is the mailing relay's sealing key, present when `mailer` is
+  true: a founding node writes the circle's `relay` message from it. `hosting` says whether the relay
+  opens a new circle now. `home` is the home circle's root. `last_unprefixed_at` is the last request
+  on an unprefixed circle route (below).
+- `GET /v0/invites/<invite key>`, the bootstrap read across every hosted circle: an invite key is
+  random, so it names one open invite on the relay. The answer is the circle's own bootstrap read
+  (Invites) with `circle`, the circle's address, beside the stored envelope; the guest's app reads
+  and appends at that address from then on. An invite stays `<relay host>/<code>`.
+
+**The home circle** is the one the relay's `HOME_ROOT` names, the operator's own, which carries the
+relay's releases; a relay whose `HOME_ROOT` is unset reads its `CIRCLE_ROOT`. Its routes also answer
+unprefixed, the address every node used before relays hosted many circles, and the relay records the
+time of the last such request. A freshly deployed relay has no home: `home` is `null` and it hosts
+nothing.
+
+**Founding a circle on a relay.** A circle opens with its root's bootstrap append to `POST
+<base>/c/<root hex>/v0/envelopes`, and nothing else reaches an address no circle holds (`404
+circle_unknown`). The home circle's root needs nothing more. Any other root carries a voucher in the
+`Digestif-Voucher` header: `<document>.<signature>`, the document's exact bytes in base64url and an
+Ed25519 signature over `DIGESTIF-VOUCHER-V0\n` plus those bytes, by the key the document names. The
+document is
+
+    { "format": "digestif-voucher-v0", "root": "sha256:<the new root>", "relay": "<the relay's host>",
+      "circle": "sha256:<the vouching circle's root>", "key": "ed25519:<the member's device key>",
+      "expires_at": "<at most ten minutes out>" }
+
+The relay hosts the circle when the voucher verifies, names this root and this relay's host, has not
+expired and runs no longer than ten minutes, and its key is an admitted, unrevoked device key of an
+open circle the relay hosts. It records which circle and which member (that key's identity there)
+vouched. A founding is refused, each with its own code, as:
+
+| Code | Status | When |
+|---|---|---|
+| `not_hosting` | 403 | The operator turned hosting off. |
+| `not_vouched` | 403 | No voucher, or one that fails any check above. |
+| `too_many_circles` | 429 | The vouching member opened the relay's per-member number of circles (5) in the last 30 days; the message names the day the next opens. |
+| `relay_full` | 507 | Every hosted circle's reserved share (256 MiB each), the new one's included, would not fit in the relay's total (4 GiB). |
+
+A circle's store holds at most its share: an append past it is `507 circle_full`. Every per-device cap
+and per-address limit applies inside each circle as before.
+
+**A suspended circle** answers `410 circle_suspended` at every route until its operator resumes it;
+its nodes show that as a fault naming the relay. Suspending reads nothing a circle holds.
+
+**The home circle's move.** A relay that served its home circle before it hosted many circles moves
+that circle's log into its store on first use, keeping every `relay_id`, `received_at` and
+`judged_at`, so every node's cursor and the admission cutover keep their positions. While it copies,
+the relay serves the circle as before. For the seconds the copy takes to drain, an append, a mail
+request and an answer-link confirm answer `503 moving` with `Retry-After: 5`, which a node retries as
+any transient failure, while reads keep answering.
+
 ## Relay limits
 
 | Limit | Default |
@@ -1153,9 +1223,9 @@ an empty one. Two reads report it, always the same value:
 - `GET /v0/circle`, beside the limits, signed like every member read.
 - `GET /v0/version`, unsigned: `{"relay_version":"0.1.1"}`, or `{}` from an unstamped Worker. The
   version is public by construction (the signed bundle, the channel index, the release tag), so a
-  person checking a deploy or an uptime probe reads it with no member's key. It is the only
-  unsigned read a relay answers outside the bootstrap, and it carries nothing else; the admitted
-  keys stay behind the signed `GET /v0/circle`.
+  person checking a deploy or an uptime probe reads it with no member's key. It carries nothing
+  else; the admitted keys stay behind the signed `GET /v0/circle`. `GET /v0/relay` (Hosted circles)
+  reports it too, beside what a founding node reads unsigned.
 
 ## Conformance cases
 

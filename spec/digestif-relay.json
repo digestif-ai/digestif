@@ -1,6 +1,6 @@
 {
   "name": "digestif-relay",
-  "description": "The Digestif relay: a mailbox that mirrors one circle. It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request but GET /v0/version is signed by a device key and carries the Digestif-Key, Digestif-Timestamp, Digestif-Nonce and Digestif-Signature headers (on the bootstrap read, GET /v0/invites/:invite_key, Digestif-Key is the invite key); see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
+  "description": "The Digestif relay: a mailbox that mirrors every circle it hosts, each at its own address, <base>/c/<the 64 hex digits of its root>, under which every circle route below lives; the home circle also answers them unprefixed (docs/protocol.md, Hosted circles). It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request but GET /v0/version, GET /v0/relay and a root's bootstrap append is signed by a device key and carries the Digestif-Key, Digestif-Timestamp, Digestif-Nonce and Digestif-Signature headers (on the bootstrap read, GET /v0/invites/:invite_key, Digestif-Key is the invite key); see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
   "info": {
     "license": {
       "name": "MIT",
@@ -180,6 +180,38 @@
         {
           "name": "unknown_digest",
           "description": "POST /v0/mail named a digest this relay does not hold, or one the requester's identity did not write."
+        },
+        {
+          "name": "circle_unknown",
+          "description": "The relay hosts no circle at this address; only the circle's root may open it."
+        },
+        {
+          "name": "circle_suspended",
+          "description": "The relay's operator suspended this circle: every route of it answers 410 until it is resumed."
+        },
+        {
+          "name": "moving",
+          "description": "The home circle's log is moving into its own store: a write is refused for a few seconds; retry after Retry-After."
+        },
+        {
+          "name": "not_vouched",
+          "description": "A founding append without a voucher, or with one that does not verify, names another root or relay, has expired, or is not signed by an admitted device of an open circle this relay hosts."
+        },
+        {
+          "name": "not_hosting",
+          "description": "The relay's operator stopped it opening new circles."
+        },
+        {
+          "name": "relay_full",
+          "description": "Every hosted circle's reserved storage share, a new one's included, would not fit in the relay's total."
+        },
+        {
+          "name": "circle_full",
+          "description": "The circle holds its whole storage share on this relay."
+        },
+        {
+          "name": "too_many_circles",
+          "description": "The vouching member opened the relay's per-member number of circles in the last 30 days."
         }
       ]
     },
@@ -354,6 +386,12 @@
         {
           "name": "received_at",
           "type": "date-time-iso8601"
+        },
+        {
+          "name": "circle",
+          "type": "string",
+          "required": false,
+          "description": "On a bootstrap read alone: the address of the circle the invite opens on this relay, <base>/c/<root hex>, where the guest's app reads and appends from then on."
         }
       ]
     },
@@ -627,6 +665,45 @@
           "description": "On the new key's first signature of a promotion or a replacement: the document it completes, base64url of its exact bytes."
         }
       ]
+    },
+    "relay_info": {
+      "description": "What anyone may read of a relay, unsigned (docs/protocol.md, Hosted circles).",
+      "fields": [
+        {
+          "name": "relay_version",
+          "type": "string",
+          "required": false,
+          "description": "The relay release, as relay_build reports it; absent on an unstamped Worker."
+        },
+        {
+          "name": "mailer",
+          "type": "boolean",
+          "description": "Whether the relay mails the digests of the circles it hosts."
+        },
+        {
+          "name": "encryption_key",
+          "type": "string",
+          "required": false,
+          "description": "The mailing relay's sealing key, x25519:<base64url>, present when mailer is true: a founding node writes it into the circle's relay message."
+        },
+        {
+          "name": "hosting",
+          "type": "boolean",
+          "description": "Whether the relay opens a new circle now: its operator has hosting on and another circle's share fits."
+        },
+        {
+          "name": "home",
+          "type": "string",
+          "required": false,
+          "description": "The home circle's root, sha256:<hex>; absent or null on a relay with no home, which hosts nothing."
+        },
+        {
+          "name": "last_unprefixed_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "The last request on an unprefixed circle route, which only the home circle answers; null when none has arrived since the relay hosted many circles."
+        }
+      ]
     }
   },
   "resources": {
@@ -635,7 +712,7 @@
       "operations": [
         {
           "method": "POST",
-          "description": "Append one envelope. Three shapes are bootstrap appends, accepted without Digestif-Key when the signatures inside them verify against the fold so far: a dinner, a join, and a device message whose key is its own envelope author and whose identity signature is by an admitted, unrevoked identity (a member who lost their only laptop has no admitted device left to post from). A join may also be pushed signed by any admitted, unrevoked device or mail key, which replicates a join another relay accepted: its invite's expiry is then judged by the join's created_at rather than the relay's clock (docs/protocol.md, The admission fold). Every other append requires an admitted, unrevoked device or mail key as both request signer and envelope author. Idempotent by envelope hash.",
+          "description": "Append one envelope. Three shapes are bootstrap appends, accepted without Digestif-Key when the signatures inside them verify against the fold so far: a dinner, a join, and a device message whose key is its own envelope author and whose identity signature is by an admitted, unrevoked identity (a member who lost their only laptop has no admitted device left to post from). A join may also be pushed signed by any admitted, unrevoked device or mail key, which replicates a join another relay accepted: its invite's expiry is then judged by the join's created_at rather than the relay's clock (docs/protocol.md, The admission fold). Every other append requires an admitted, unrevoked device or mail key as both request signer and envelope author. Idempotent by envelope hash. A circle opens with its root's bootstrap append at its address: the home circle's root as it is, any other carrying a Digestif-Voucher header from an admitted device of a circle the relay already hosts (docs/protocol.md, Hosted circles).",
           "body": "signed_envelope",
           "responses": {
             "201": {
@@ -655,7 +732,27 @@
             },
             "429": {
               "type": "relay_error",
-              "description": "rate_limited."
+              "description": "rate_limited, or too_many_circles on a founding."
+            },
+            "403": {
+              "type": "relay_error",
+              "description": "A founding the relay refuses: not_vouched, not_hosting."
+            },
+            "404": {
+              "type": "relay_error",
+              "description": "circle_unknown: the relay hosts no circle at this address, and the body is not its root."
+            },
+            "410": {
+              "type": "relay_error",
+              "description": "circle_suspended."
+            },
+            "503": {
+              "type": "relay_error",
+              "description": "moving: retry after Retry-After."
+            },
+            "507": {
+              "type": "relay_error",
+              "description": "relay_full on a founding, circle_full on any append past the circle's share."
             }
           }
         }
@@ -700,7 +797,7 @@
         {
           "method": "GET",
           "path": "/:invite_key",
-          "description": "The bootstrap read: the dinner envelope, with its body, that names this invite key. Signed by the invite key itself as Digestif-Key, so only whoever holds the invite code can read it, and answered only while the invite is unspent and unexpired. The guest's app reads it before it is admitted, to learn the dinner hash its join names and every relay to append the join to.",
+          "description": "The bootstrap read: the dinner envelope, with its body, that names this invite key. Signed by the invite key itself as Digestif-Key, so only whoever holds the invite code can read it, and answered only while the invite is unspent and unexpired. The guest's app reads it before it is admitted, to learn the dinner hash its join names and every relay to append the join to. Answered at a circle's address for that circle's invites, and at the relay's own /v0/invites/:invite_key across every circle it hosts; the answer carries circle, the address of the circle the invite opens.",
           "parameters": [
             {
               "name": "invite_key",
@@ -815,6 +912,20 @@
             "200": {
               "type": "string",
               "description": "text/html: the answer went in, or why it did not (used, expired, wrong secret, refused by the fold)."
+            }
+          }
+        }
+      ]
+    },
+    "relay_info": {
+      "path": "/v0/relay",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Unsigned: the relay release, whether it mails and its sealing key, whether it hosts new circles now, its home circle and the last unprefixed request. A founding node reads it to write a circle's relay message; a person checking a relay reads it with no key.",
+          "responses": {
+            "200": {
+              "type": "relay_info"
             }
           }
         }

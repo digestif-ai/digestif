@@ -41,7 +41,15 @@ export enum ErrorCode {
   WrongCircle = 'wrong_circle',
   RetractNotAuthor = 'retract_not_author',
   NotMailer = 'not_mailer',
-  UnknownDigest = 'unknown_digest'
+  UnknownDigest = 'unknown_digest',
+  CircleUnknown = 'circle_unknown',
+  CircleSuspended = 'circle_suspended',
+  Moving = 'moving',
+  NotVouched = 'not_vouched',
+  NotHosting = 'not_hosting',
+  RelayFull = 'relay_full',
+  CircleFull = 'circle_full',
+  TooManyCircles = 'too_many_circles'
 }
 
 export enum KeyRole {
@@ -225,6 +233,24 @@ export interface RelayError {
   message: string;
 }
 
+/**
+ * What anyone may read of a relay, unsigned (docs/protocol.md, Hosted circles).
+ */
+export interface RelayInfo {
+  /** The relay release, as relay_build reports it; absent on an unstamped Worker. */
+  relay_version?: string;
+  /** Whether the relay mails the digests of the circles it hosts. */
+  mailer: boolean;
+  /** The mailing relay's sealing key, x25519:<base64url>, present when mailer is true: a founding node writes it into the circle's relay message. */
+  encryption_key?: string;
+  /** Whether the relay opens a new circle now: its operator has hosting on and another circle's share fits. */
+  hosting: boolean;
+  /** The home circle's root, sha256:<hex>; absent or null on a relay with no home, which hosts nothing. */
+  home?: string;
+  /** The last request on an unprefixed circle route, which only the home circle answers; null when none has arrived since the relay hosted many circles. */
+  last_unprefixed_at?: ISODateTimeString;
+}
+
 export interface RelayLimits {
   /** Envelope plus body. Default 65536. */
   max_envelope_bytes: number;
@@ -272,6 +298,8 @@ export interface StoredEnvelope {
   envelope: Envelope;
   body?: any;
   received_at: ISODateTimeString;
+  /** On a bootstrap read alone: the address of the circle the invite opens on this relay, <base>/c/<root hex>, where the guest's app reads and appends from then on. */
+  circle?: string;
 }
 
 // ============================================================================
@@ -363,6 +391,11 @@ export interface CreateMailReceiptOptions {
 }
 
 export interface GetRelayBuildOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetRelayInfoOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -598,6 +631,29 @@ export class ApiClient {
     });
   }
 
+  async getRelayInfo(context: CallContext, params?: GetRelayInfoOptions): Promise<RelayInfo> {
+    return context.recorder.call(context, 'GET /v0/relay', async (note) => {
+      const url = `${this.baseUrl}/v0/relay`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<RelayInfo>(response, 'RelayInfo');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
   async createSignedEnvelope(context: CallContext, params: CreateSignedEnvelopeOptions): Promise<AppendReceipt> {
     return context.recorder.call(context, 'POST /v0/envelopes', async (note) => {
       const url = `${this.baseUrl}/v0/envelopes`;
@@ -622,11 +678,31 @@ export class ApiClient {
         throw new RelayErrorResponse(response);
       }
 
+      if (response.status === 403) {
+        throw new RelayErrorResponse(response);
+      }
+
+      if (response.status === 404) {
+        throw new RelayErrorResponse(response);
+      }
+
+      if (response.status === 410) {
+        throw new RelayErrorResponse(response);
+      }
+
       if (response.status === 422) {
         throw new RelayErrorsResponse(response);
       }
 
       if (response.status === 429) {
+        throw new RelayErrorResponse(response);
+      }
+
+      if (response.status === 503) {
+        throw new RelayErrorResponse(response);
+      }
+
+      if (response.status === 507) {
         throw new RelayErrorResponse(response);
       }
 
