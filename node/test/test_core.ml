@@ -1669,7 +1669,9 @@ let signer_set_shape () =
 let approval_set_change () =
   let k () = Keys.public (Crypto.generate_signing_key ()) in
   let a = k () and b = k () and c = k () and d = k () in
-  let set l = List.map (fun key -> { Approval.name = "n"; key }) l in
+  let set l =
+    List.map (fun key -> { Approval.name = "n"; key; identity = None }) l
+  in
   let doc l =
     Approval.signers_document ~created_at:"2026-11-14T15:00:00.000Z" (set l)
   in
@@ -1695,6 +1697,176 @@ let approval_set_change () =
   Alcotest.(check bool)
     "a key twice" true
     (Result.is_error (check ~kind:Promotion [ a; b ] [ a; b; a ]))
+
+(* docs/protocol.md, revoke: an admin key of the signer set the fold holds revokes a member, posted
+   by a device of the identity its key is bound to, once every key of the set is bound; never a
+   sitting admin, never while a key is unbound or revoked, and never from another member's device.
+   The circle was founded at a dinner, so its set starts from the release signers given to the fold
+   and changes by each signer_set that verifies against it. DIG-397 *)
+let admin_revokes_member () =
+  let c = make_circle () in
+  let host_device = ok (Node.device_key c.host) in
+  let roman_device = ok (Node.device_key c.roman) in
+  let host_identity = Option.get (Log.get_config c.host.log Node.k_identity) in
+  let roman_identity =
+    Keys.public (ok (Phrase.derive c.roman_phrase)).identity
+  in
+  let a = Crypto.generate_signing_key ()
+  and b = Crypto.generate_signing_key () in
+  let release_signers =
+    [
+      { Approval.name = "A"; key = Keys.public a; identity = None };
+      { Approval.name = "B"; key = Keys.public b; identity = None };
+    ]
+  in
+  let base = Unix.gettimeofday () +. 60. in
+  let at n = Time_fmt.of_unix (base +. float_of_int n) in
+  let entry (sg : Envelope.signed) =
+    {
+      Fold.hash = Envelope.hash sg.envelope;
+      envelope = sg.envelope;
+      body = sg.body;
+    }
+  in
+  let fold sgs =
+    Fold.run ~release_signers ~root:c.root
+      (Log.fold_entries c.host.Node.log @ List.map entry sgs)
+  in
+  let release_body ~domain document signers =
+    `Assoc
+      [
+        ("document", `String (B64url.encode document));
+        ( "signatures",
+          `List
+            (List.map
+               (fun k ->
+                 `Assoc
+                   [
+                     ("key", `String (Keys.public k));
+                     ("signature", `String (Keys.sign k (domain ^ document)));
+                   ])
+               signers) );
+      ]
+  in
+  let bind ~seq ~n bindings =
+    let document =
+      Approval.signers_document ~created_at:(at n)
+        (List.map2
+           (fun (s : Approval.signer) identity -> { s with identity })
+           release_signers bindings)
+    in
+    Envelope.create ~key:host_device ~seq ~created_at:(at n) ~epoch:1
+      ~kind:"signer_set"
+      (release_body ~domain:Approval.signers_domain document [ a; b ])
+  in
+  let revoke ?(author = host_device) ?(target = roman_identity) ~seq ~n by =
+    let body =
+      Bodies.make_revoke ~by ~target
+        ~after_seq:
+          (if target = roman_identity then [ (Keys.public roman_device, 0) ]
+           else [])
+        ~mail_read:[]
+    in
+    Envelope.create ~key:author ~seq ~created_at:(at n) ~epoch:1 ~kind:"revoke"
+      body
+  in
+  let revoked f k =
+    match Fold.find f k with Some k -> k.revoked_by <> None | None -> false
+  in
+  let hash (sg : Envelope.signed) = Envelope.hash sg.envelope in
+  let both = bind ~seq:50 ~n:1 [ Some host_identity; Some host_identity ] in
+  let by_a = revoke ~seq:51 ~n:2 a in
+  let f = fold [ both; by_a ] in
+  Alcotest.(check (list (pair string string))) "nothing refused" [] f.rejected;
+  Alcotest.(check bool)
+    "an admin key of the bound set revokes a member" true
+    (revoked f roman_identity);
+  Alcotest.(check bool)
+    "and every key under them" true
+    (revoked f (Keys.public roman_device));
+  Alcotest.(check bool)
+    "the admin is not revoked" false (revoked f host_identity);
+  let f = fold [ by_a ] in
+  Alcotest.(check bool)
+    "a set with an unbound key revokes nobody" false (revoked f roman_identity);
+  Alcotest.(check bool)
+    "the revoke waits on the set" true
+    (List.mem_assoc (hash by_a) f.waiting);
+  let one = bind ~seq:50 ~n:1 [ Some host_identity; None ] in
+  Alcotest.(check bool)
+    "one unbound key is enough to refuse" false
+    (revoked (fold [ one; by_a ]) roman_identity);
+  let outsider = revoke ~seq:51 ~n:2 (Crypto.generate_signing_key ()) in
+  Alcotest.(check bool)
+    "a key outside the set revokes nobody" false
+    (revoked (fold [ both; outsider ]) roman_identity);
+  let posted_by_member = revoke ~author:roman_device ~seq:51 ~n:2 a in
+  let f = fold [ both; posted_by_member ] in
+  Alcotest.(check (option string))
+    "posted by a device of another identity, refused"
+    (Some "author is not a device of the admin key's identity")
+    (List.assoc_opt (hash posted_by_member) f.rejected);
+  let seated = bind ~seq:50 ~n:1 [ Some host_identity; Some roman_identity ] in
+  let f = fold [ seated; by_a ] in
+  Alcotest.(check bool)
+    "a sitting admin is never revoked by another admin" false
+    (revoked f roman_identity);
+  let forged =
+    let doc =
+      Approval.signers_document ~created_at:(at 1)
+        (List.map
+           (fun (s : Approval.signer) ->
+             { s with identity = Some host_identity })
+           release_signers)
+    in
+    Envelope.create ~key:host_device ~seq:50 ~created_at:(at 1) ~epoch:1
+      ~kind:"signer_set"
+      (release_body ~domain:Approval.signers_domain doc [ a ])
+  in
+  Alcotest.(check bool)
+    "a binding not every key signed binds nothing" false
+    (revoked (fold [ forged; by_a ]) roman_identity);
+  let revocation =
+    let doc =
+      Yojson.Safe.to_string
+        (`Assoc
+           [
+             ("format", `String "digestif-revocation-v0");
+             ("key", `String (Keys.public b));
+             ("revoked_at", `String (at 1));
+           ])
+    in
+    Envelope.create ~key:host_device ~seq:52 ~created_at:(at 1) ~epoch:1
+      ~kind:"release_revocation"
+      (release_body ~domain:Fold.revocation_domain doc [ a ])
+  in
+  Alcotest.(check bool)
+    "a revoked key in the set halts admin revokes" false
+    (revoked (fold [ both; revocation; by_a ]) roman_identity);
+  Alcotest.(check (list (pair string (option string))))
+    "the fold reports each key's binding"
+    [ (Keys.public a, Some host_identity); (Keys.public b, Some host_identity) ]
+    (Fold.admin_bindings (fold [ both ]))
+
+(* docs/protocol.md, circle: a root naming one admin and no identity binds that admin's key to its
+   host; a root naming the identity binds it as named. *)
+let root_admin_binding () =
+  let host = Keys.public (Crypto.generate_signing_key ()) in
+  let other = Keys.public (Crypto.generate_signing_key ()) in
+  let admin = Keys.public (Crypto.generate_signing_key ()) in
+  let bindings admins =
+    let t = Fold.empty "root" in
+    t.signer_set <- Some (Fold.root_signer_set ~host admins);
+    Fold.admin_bindings t
+  in
+  Alcotest.(check (list (pair string (option string))))
+    "one admin, no identity: bound to the host"
+    [ (admin, Some host) ]
+    (bindings [ { Approval.name = "F"; key = admin; identity = None } ]);
+  Alcotest.(check (list (pair string (option string))))
+    "an identity named: bound to it"
+    [ (admin, Some other) ]
+    (bindings [ { Approval.name = "F"; key = admin; identity = Some other } ])
 
 (* An unanswered join ask revokes, and the host's node signs that revoke unattended: the device key
    that wrote the dinner revokes the identity a join on it admitted, as itself, for seven days after
@@ -2593,6 +2765,9 @@ let () =
           Alcotest.test_case "revoke cutoffs" `Quick revoke_cutoffs;
           Alcotest.test_case "host device revokes a joiner" `Quick
             host_device_revokes_joiner;
+          Alcotest.test_case "an admin key revokes a member" `Quick
+            admin_revokes_member;
+          Alcotest.test_case "a root binds its admins" `Quick root_admin_binding;
           Alcotest.test_case "retract" `Quick retract;
           Alcotest.test_case "epoch floor" `Quick epoch_floor;
         ] );

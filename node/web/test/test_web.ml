@@ -11707,7 +11707,7 @@ let approvals () =
   let rk_ada = Crypto.generate_signing_key ()
   and rk_pia = Crypto.generate_signing_key ()
   and rk_bo = Crypto.generate_signing_key () in
-  let signer name k = { Approval.name; key = Keys.public k } in
+  let signer name k = { Approval.name; key = Keys.public k; identity = None } in
   (* The set this node holds is its update state's (ISS-87810), which the set change's effect
      advances. *)
   let set = ref [] in

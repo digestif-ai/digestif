@@ -147,9 +147,17 @@ let reply_of_json j =
 (* ---- the documents: a digestif-signers-v0 here, a digestif-admission-v0 in
    Digestif_invite.Approved_invite ---- *)
 
-type signer = { name : string; key : string }
+(* One entry of a signer set: its holder's name, the ed25519 admin key, and the circle identity of
+   the admin who holds it (docs/protocol.md, circle), which a node and a relay read to tell a sitting
+   admin from a member. An entry without one leaves its key unbound. *)
+type signer = { name : string; key : string; identity : string option }
 
-(* A digestif-signers-v0 (docs/releases.md, Changing the signer set): the whole new set. *)
+let signer_fields s =
+  [ ("name", `String s.name); ("key", `String s.key) ]
+  @ opt_field "identity" s.identity
+
+(* A digestif-signers-v0 (docs/releases.md, Changing the signer set): the whole new set, each entry
+   naming its holder's identity when the set binds one. *)
 let signers_document ~created_at signers =
   Yojson.Safe.to_string
     (`Assoc
@@ -157,11 +165,7 @@ let signers_document ~created_at signers =
          ("format", `String signers_format);
          ("created_at", `String created_at);
          ( "signers",
-           `List
-             (List.map
-                (fun s ->
-                  `Assoc [ ("name", `String s.name); ("key", `String s.key) ])
-                signers) );
+           `List (List.map (fun s -> `Assoc (signer_fields s)) signers) );
        ])
 
 (* A digestif-admission-v0 (docs/protocol.md, Approvals): the invite every admin signs. Its body
@@ -185,22 +189,38 @@ let admission_document ~circle ~created_at ~guest_name ~guest_email ~role
 
 let parse_json = Jcs.parse_unique
 
-let parse_signers bytes =
-  let* j = parse_json bytes in
+(* An entry's optional [identity]: absent, or an ed25519 key; anything else is an error. *)
+let parse_identity s =
+  match get "identity" s with
+  | None -> Ok None
+  | Some (`String i) -> (
+      match Keys.parse_ed25519 i with
+      | Ok i -> Ok (Some i)
+      | Error _ -> Error "a signer's identity is an ed25519 key")
+  | Some _ -> Error "a signer's identity is an ed25519 key"
+
+(* The entries of a digestif-signers-v0 or a circle root's admins, in order. *)
+let parse_signer_list l =
+  List.fold_right
+    (fun s acc ->
+      let* acc = acc in
+      match (str "name" s, Option.map Keys.parse_ed25519 (str "key" s)) with
+      | Some name, Some (Ok key) ->
+          let* identity = parse_identity s in
+          Ok ({ name; key; identity } :: acc)
+      | _ -> Error "every signer has a name and an ed25519 key")
+    l (Ok [])
+
+let parse_signers_json j =
   if str "format" j <> Some signers_format then Error ("not a " ^ signers_format)
   else
     match get "signers" j with
-    | Some (`List l) ->
-        List.fold_right
-          (fun s acc ->
-            let* acc = acc in
-            match
-              (str "name" s, Option.map Keys.parse_ed25519 (str "key" s))
-            with
-            | Some name, Some (Ok key) -> Ok ({ name; key } :: acc)
-            | _ -> Error "every signer has a name and an ed25519 key")
-          l (Ok [])
+    | Some (`List l) -> parse_signer_list l
     | _ -> Error "no signers list"
+
+let parse_signers bytes =
+  let* j = parse_json bytes in
+  parse_signers_json j
 
 (* Whether [signature] by the release key [key] is over [kind]'s domain line and [document]. *)
 let verifies ~kind ~document ~key ~signature =

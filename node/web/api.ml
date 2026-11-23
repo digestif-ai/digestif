@@ -6339,9 +6339,15 @@ module Approvals = struct
   module A = Store.Approvals
   module I = Store.Items
 
-  let approval_signers =
+  (* Each key named with the identity the circle's fold binds it to (Fold.admin_bindings), which a
+     removal's document names again for every key it keeps (docs/protocol.md, Approvals). *)
+  let approval_signers ?(bound = []) =
     List.map (fun (s : Digestif_update.Release.signer) ->
-        { Approval.name = s.name; key = s.key })
+        {
+          Approval.name = s.name;
+          key = s.key;
+          identity = Option.join (List.assoc_opt s.key bound);
+        })
 
   (* The signer set this node judges approvals by: the circle's own admins when its root names them
      (Circle_admins), else the release signer set in its update state, which every adopted
@@ -6353,7 +6359,10 @@ module Approvals = struct
         ~state_path:(Digestif_update.Schedule.state_path c.node.dir)
         c.node
     with
-    | Ok trust -> approval_signers trust.signers
+    | Ok trust ->
+        approval_signers
+          ~bound:(Fold.admin_bindings (Node.fold c.node))
+          trust.signers
     | Error _ -> approval_signers (Digestif_update.Trust_root.signers ())
 
   let signer_set = ref folded_signers
@@ -6414,7 +6423,7 @@ module Approvals = struct
                    List.find_opt (fun (x : Approval.signer) -> x.key = k) named
                  with
                 | Some x -> x
-                | None -> { Approval.name = k; key = k }))
+                | None -> { Approval.name = k; key = k; identity = None }))
           needed
 
   (* What every approval of one request is judged against: the signer set and the halt, each read
@@ -6476,9 +6485,9 @@ module Approvals = struct
       | _ -> None
     in
     fun (s : Approval.signer) ->
-      match List.assoc_opt s.key learned with
-      | Some id -> Some id
-      | None -> named s.name
+      match (s.identity, List.assoc_opt s.key learned) with
+      | Some id, _ | None, Some id -> Some id
+      | None, None -> named s.name
 
   let holders c = holders_of c (progressed (judge c) c)
 
@@ -7144,7 +7153,9 @@ end
    signer_set): the circle's own admins when its root names them (Circle_admins), else the channel's
    release signer set in the node's update state, which every signer-set change on the circle or the channel advances
    (Circle_signer_set), each key with whether it is revoked, and whether the halt holds. A key is
-   tied to a member only where this node knows it: its own member, by this machine's signer.json. *)
+   tied to a member where this node knows it: the identity the circle's fold binds it to
+   (Fold.admin_bindings, docs/protocol.md, circle), else its own member, by this machine's
+   signer.json. *)
 module Signers = struct
   module U = Digestif_update
 
@@ -7157,6 +7168,7 @@ module Signers = struct
     | Ok trust ->
         let own = U.Signer_halt.own_key () in
         let me = self_identity c in
+        let bound = Fold.admin_bindings (Node.fold c.node) in
         ok
           (`Assoc
              [
@@ -7166,8 +7178,13 @@ module Signers = struct
                       (fun (s : U.Release.signer) ->
                         `Assoc
                           ([ ("key", str s.key); ("name", str s.name) ]
-                          @ (match (own, me) with
-                            | Some k, Some id when k = s.key ->
+                          @ (match
+                               ( Option.join (List.assoc_opt s.key bound),
+                                 own,
+                                 me )
+                             with
+                            | Some id, _, _ -> [ ("member", member_ref c id) ]
+                            | None, Some k, Some id when k = s.key ->
                                 [ ("member", member_ref c id) ]
                             | _ -> [])
                           @ [

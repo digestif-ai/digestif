@@ -5971,10 +5971,21 @@ let ap_signers_json ?(revoked = []) set =
       ("halted", `Bool (revoked <> []));
     ]
 
+(* Each member's identity: a real ed25519 key, one per name, since a signer-set document names it. *)
+let ap_identities = Hashtbl.create 4
+
+let ap_identity name =
+  match Hashtbl.find_opt ap_identities name with
+  | Some k -> k
+  | None ->
+      let k = Keys.public (Crypto.generate_signing_key ()) in
+      Hashtbl.replace ap_identities name k;
+      k
+
 let ap_member name s =
   `Assoc
     [
-      ("identity", `String ("ed25519:identity-" ^ name));
+      ("identity", `String (ap_identity name));
       ("name", `String name);
       ("agent_name", `String (name ^ "'s agent"));
     ]
@@ -6231,7 +6242,14 @@ let test_approve_promotion_first_signature () =
             [ Keys.public mike; Keys.public roman; Keys.public carol ]
             (List.map (fun (s : Release.signer) -> s.key) set);
           Alcotest.(check string)
-            "under the member's name" "Carol" (List.nth set 2).name
+            "under the member's name" "Carol" (List.nth set 2).name;
+          Alcotest.(check (list (option string)))
+            "the new key bound to the promoted member, the others as the node \
+             binds them"
+            [ None; None; Some (ap_identity "Carol") ]
+            (List.map
+               (fun (s : Approval.signer) -> s.identity)
+               (Result.get_ok (Approval.parse_signers doc)))
       | Error e -> Alcotest.fail e)
   | _ -> Alcotest.fail "expected one POST"
 
@@ -6249,7 +6267,10 @@ let test_approve_admin_waits_on_promoted_member () =
 
 let set_doc keys =
   Approve.signers_document ~created_at:"2026-11-14T15:00:00.000Z"
-    (List.map (fun (n, s) -> { Release.name = n; key = Keys.public s }) keys)
+    (List.map
+       (fun (n, s) ->
+         { Approval.name = n; key = Keys.public s; identity = None })
+       keys)
 
 let test_approve_promotion_admin_signs_completed () =
   let doc = set_doc [ ("Mike", mike); ("Roman", roman); ("Carol", carol) ] in
@@ -6378,7 +6399,8 @@ let test_approve_accepts_compact_signers () =
   let doc =
     Approval.signers_document ~created_at:"2026-11-14T15:00:00.000Z"
       (List.map
-         (fun (n, k) -> { Approval.name = n; key = Keys.public k })
+         (fun (n, k) ->
+           { Approval.name = n; key = Keys.public k; identity = None })
          [ ("Mike", mike); ("Roman", roman) ])
   in
   match Approve.canonical_signers doc with
