@@ -302,11 +302,22 @@ turn, until each has passed the current text) → hand over the checked text wit
   too many entries past the listing cap, could not be read for any other failure), JSON on stdin,
   for the node's one local notice. It names folders, so it goes nowhere else; a node that cannot
   take it is logged and the run goes on (ISS-81609).
+- **Usage limits.** When the writer's harness answers that the account's usage limit is reached
+  (Claude Code's `You've hit your 5-hour limit, resets 7:30am (America/New_York)`, Codex's `try
+  again in 2 hours`), the try is not counted against the date's three: `nightly.json` keeps
+  `waiting` (the date and the instant it runs again, the reset plus five minutes), the problem's
+  `--detail` names the cause and that time in the member's time (`Claude's usage limit was
+  reached; the note runs again after 7:30 AM`), and the hook exits 4 so the node leaves the date
+  due without counting the run. Every firing before that instant returns at once. A limit that
+  names no reset waits 30 minutes, then 1, 2 and 4 hours. The read behavior holds its batch the
+  same way, unread and with no run of the day's budget spent, and the checks hand the note over
+  unchecked, as for any check that could not finish (DIG-371).
 - **Problems.** Every failure goes to the node's one problem record by job and kind (docs/design.md,
   One way a failure is reported), never in the run's own words: `digestif problem report --job
   write_version --kind signed_out` when the writer's harness has no login (the run retries at later
   firings, so signing in posts that day's note), `--kind out_of_budget` when its run reached the
-  budget (a failed try, retried like any other), `--kind model_unavailable` when it hung, and
+  budget (a failed try, retried like any other), `--kind model_unavailable` when it hung or when
+  the agent's account reached its usage limit, and
   `--job source --kind source_failed --source <label>` for a command source that failed. A command
   source that fails is tried again 1, 2, 4 and 8 minutes later, once the other sources are read and
   never past half the deadline's awake time, since a failure just after the machine wakes is often

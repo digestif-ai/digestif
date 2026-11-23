@@ -25,7 +25,7 @@ export interface Selection {
   sources: Source[];
   form?: SourcesForm;
 }
-import { DEFAULT_MAX_BUDGET_USD, writeNote, type WriterOptions } from "./writer.ts";
+import { agentOf, DEFAULT_MAX_BUDGET_USD, resetInstant, usageLimitDetail, writeNote, type UsageReset, type WriterOptions } from "./writer.ts";
 import { promptsOf, releasePrompt, type NotePrompt, type Suggestion } from "./prompts.ts";
 
 /** The Note time a standalone run uses when none is given: the node's default (node/web/store.ml, Settings). */
@@ -38,6 +38,29 @@ export const DEADLINE_MARGIN_MS = 60_000;
  * shows until a note is written; after the last the date is over.
  */
 export const MAX_ATTEMPTS = 3;
+
+/**
+ * A usage limit is no try of the date (DIG-371): the run waits until the limit's reset, plus this
+ * margin for the account's clock, and runs then.
+ */
+export const USAGE_LIMIT_MARGIN_MS = 5 * 60_000;
+/**
+ * The waits after a usage limit that named no reset, one per limited try, the last repeated: past
+ * the five hours a Claude window holds, rather than the node's next pass.
+ */
+export const USAGE_LIMIT_BACKOFF_MS = [30 * 60_000, 60 * 60_000, 2 * 60 * 60_000, 4 * 60 * 60_000];
+
+/**
+ * When the run tries again after a usage limit, at `now`: the reset plus the margin, else the
+ * backoff's wait for the `waits`-th limited try in a row (1 the first).
+ */
+export function usageLimitNext(reset: UsageReset | undefined, waits: number, now: number): { at: number; named: boolean } {
+  if (reset !== undefined) {
+    const at = resetInstant(reset, now);
+    if (at > now - 60 * 60_000) return { at: Math.max(at, now) + USAGE_LIMIT_MARGIN_MS, named: true };
+  }
+  return { at: now + (USAGE_LIMIT_BACKOFF_MS[waits - 1] ?? USAGE_LIMIT_BACKOFF_MS.at(-1)!), named: false };
+}
 
 /** The node's problem record (docs/design.md, One way a failure is reported): its jobs and kinds. */
 export type ProblemJob = "write_version" | "pii_check" | "rules_check" | "source" | "learnings" | "read_circle" | "pull_request";
@@ -138,6 +161,9 @@ export async function resolveProblem(bin: string, job: ProblemJob, source?: stri
  *                                          handed over, or nothing to say)
  *       "outcome": "posted",               posted | quiet, for `handled`
  *       "attempts": { "date": "2026-10-30", "count": 1 },   failed tries of a date not yet handled
+ *       "waiting": { "date": "2026-10-30", "until": 1761822000000, "waits": 1 }
+ *                                          a usage limit: the date's run starts no earlier than
+ *                                          `until`, and `waits` limited tries in a row were no try
  *       "record": { "source:claude-code": { "at": 1761722460000 } }
  *                                          standalone: each source's point, the end of the last
  *                                          note handed over, which stands in for its approval
@@ -155,6 +181,7 @@ export interface State {
   /** "refused" is a state an older run wrote, when the deny layer refused notes. */
   outcome?: "posted" | "quiet" | "refused";
   attempts?: { date: string; count: number };
+  waiting?: { date: string; until: number; waits: number };
   record?: Record<string, End>;
 }
 
@@ -388,6 +415,11 @@ export type NightlyResult =
   /** A check could not finish: the note went to the node unseen, and its checks run again. */
   | { status: "unchecked"; date: string }
   | { status: "failed"; date: string; message: string }
+  /**
+   * The agent's usage limit: no try of the date, which runs again no earlier than `until` (DIG-371).
+   * The hook exits NIGHTLY_WAITING, which the node does not count as a run.
+   */
+  | { status: "waiting"; date: string; until: number; message?: string }
   | { status: "dry_run"; date: string; note?: string }
   /** The revise hook handed the waiting note a revised version. */
   | { status: "revised"; date: string }
@@ -568,6 +600,8 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     if (state.attempts?.date === date && state.attempts.count >= MAX_ATTEMPTS) return { status: "gave_up", date };
   }
   const st: State = state ?? { version: 1 };
+  // A usage limit holds the date until its reset: a firing before then reads and runs nothing.
+  if (!o.dryRun && st.waiting?.date === date && o.now.getTime() < st.waiting.until) return { status: "waiting", date, until: st.waiting.until };
   // The node's deadline, in awake time: no step starts inside the margin before it. A step already
   // running is the node's SIGTERM to end.
   let currentStep = "start";
@@ -602,10 +636,24 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     await log("gave up for the date");
     return { status: "gave_up", date, message };
   };
+  // A usage limit is no try: the date waits for the reset (or a backoff past the limit's window) and
+  // the problem says so, in the member's time. A dry run is told and records nothing.
+  const limited = async (reset: UsageReset | undefined, message: string): Promise<NightlyResult> => {
+    const now = o.now.getTime();
+    const waits = (st.waiting?.date === date ? st.waiting.waits : 0) + 1;
+    const next = usageLimitNext(reset, waits, now);
+    if (o.dryRun) return { status: "waiting", date, until: next.at, message };
+    await saveState(o.stateDir, { ...st, waiting: { date, until: next.at, waits } });
+    await log(`${message}; no try of the date, which runs again after ${new Date(next.at).toISOString()}`);
+    const agent = o.writer?.agent ?? agentOf(o.writer?.harness ?? "claude");
+    const shown = next.named ? next.at - USAGE_LIMIT_MARGIN_MS : next.at;
+    await report("write_version", "model_unavailable", undefined, usageLimitDetail(agent, "the note", shown, next.named, now));
+    return { status: "waiting", date, until: next.at, message };
+  };
   // Standalone, a note handed over stands in for its approval: each source starts at its end.
   let ends: Record<string, End> = {};
   const finish = async (outcome: "posted" | "quiet") => {
-    const { attempts: _dropped, ...rest } = st;
+    const { attempts: _dropped, waiting: _waited, ...rest } = st;
     const record = !hook && outcome === "posted" ? { record: { ...st.record, ...ends } } : {};
     await saveState(o.stateDir, hook ? rest : { ...rest, ...record, handled: date, outcome });
   };
@@ -733,6 +781,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     await report("write_version", "signed_out");
     return { status: "signed_out", date };
   }
+  if (w.status === "usage_limited") return limited(w.reset, w.message);
   if (w.status === "out_of_budget") return fail(`the writer reached its budget of $${o.writer?.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD}`, "out_of_budget");
   if (w.status === "hung") return fail(`the writer wrote nothing for ${Math.round(w.quietMs / 60_000)} minutes of awake time`, "model_unavailable");
   if (w.status !== "note") return fail(w.status === "failed" ? w.message : `the writer ended with ${w.status}`);

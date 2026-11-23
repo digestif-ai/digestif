@@ -3128,6 +3128,30 @@ let behavior_retry () =
   Alcotest.(check int)
     "the failures are forgotten" 0
     (Behaviors.failures n.log ~date:"2026-10-30");
+  (* DIG-371: a run its agent's usage limit held exits 4: no try of the date, which stays due. *)
+  let held min = local_time ~day:31 ~hour:4 ~min in
+  let before = failure () in
+  write_exit "4";
+  List.iter
+    (fun min ->
+      Alcotest.(check string)
+        "held by the usage limit" "exited 4"
+        (pass_at (held min)))
+    [ 0; 5; 10; 15 ];
+  Alcotest.(check int)
+    "no run counted" 0
+    (Behaviors.failures n.log ~date:"2026-10-31");
+  Alcotest.(check bool)
+    "still due after more than three" true
+    (Behaviors.nightly_due n.log ~now:(held 20));
+  Alcotest.(check bool)
+    "the node adds no problem of its own" true
+    (failure () = before);
+  write_exit "0";
+  Alcotest.(check string) "the reset: it runs" "exited 0" (pass_at (held 20));
+  Alcotest.(check bool)
+    "handled" false
+    (Behaviors.nightly_due n.log ~now:(held 25));
   (* Writing a note is the job's success: the problem closes. *)
   ignore (ok (Api.submit_note_text n "A note."));
   Alcotest.(check bool) "a written note closes it" true (failure () = None)
