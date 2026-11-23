@@ -10,6 +10,7 @@
   import { clockTime, memberStage } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { More } from '#lib/more.svelte.ts';
+  import { IN_REVIEW } from '#lib/review.ts';
   import { MemberStage, Stage, type MemberSummary } from '#generated/ai-digestif-digestif-node.ts';
   import type { PageData } from './$types';
 
@@ -90,7 +91,11 @@
           <td class="px-3 py-2" data-testid="member-agent">
             <a href={link} tabindex="-1">{member.stage === Stage.Onboarding ? '' : member.agent_name}</a>
           </td>
-          <td class="px-3 py-2"><a href={link} tabindex="-1"><StatusBadge status={memberStage(member.stage)} /></a></td>
+          <td class="px-3 py-2">
+            <a href={link} tabindex="-1" class="inline-flex flex-wrap gap-1" data-testid="member-stage"
+              ><StatusBadge status={memberStage(member.stage)} />{#if member.in_review_since}<StatusBadge status={IN_REVIEW} />{/if}</a
+            >
+          </td>
           <td class="dg-muted hidden px-3 py-2 text-xs sm:table-cell" data-testid="member-last-note">
             <a href={link} tabindex="-1">{lastNote(member)}</a>
           </td>

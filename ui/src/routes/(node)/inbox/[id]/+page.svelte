@@ -12,6 +12,7 @@
   import DraftReply from '#lib/components/DraftReply.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
+  import ReviewPanel from '#lib/components/ReviewPanel.svelte';
   import ReviewText from '#lib/components/ReviewText.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { clockTime, relativeTime } from '#lib/format.ts';
@@ -28,6 +29,7 @@
     noticeActions,
     onlyMine
   } from '#lib/items.ts';
+  import { reviewPage } from '#lib/review.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -236,11 +238,38 @@
   );
   const decline = (): Promise<void> => act('decline', () => client.declineApproval(approval?.id ?? ''));
 
+  // Member review (DES-376): the item the node raised about a member in review, or the notice a
+  // removed member finds. An admin keeps the member with Keep; removing them is the command shown.
+  const reviewed = $derived(data.review !== undefined && 'data' in data.review.member ? data.review.member.data : undefined);
+  const reviewSigners = $derived(data.review !== undefined && 'data' in data.review.signers ? data.review.signers.data : undefined);
+  const review = $derived(reviewPage(item, reviewed, self));
+  const canKeep = $derived(review === 'admin' && reviewed?.in_review_since !== undefined && item.done === undefined);
+  const keep = (): Promise<void> => act('keep', () => client.keep(reviewed?.identity ?? ''));
+  const reviewBadge = $derived.by((): { label: string; tone: 'warn' | 'good' | 'bad' | 'neutral' } => {
+    if (review === 'removed') return { label: 'Revoked', tone: 'bad' };
+    if (review === 'kept') return { label: 'Kept', tone: 'good' };
+    if (item.done === undefined && reviewed?.in_review_since !== undefined)
+      return review === 'admin' ? { label: 'Waiting on any admin', tone: 'warn' } : { label: 'Waiting on you', tone: 'warn' };
+    if (reviewed?.review !== undefined)
+      return reviewed.review.outcome === 'kept' ? { label: 'Kept', tone: 'good' } : { label: 'Revoked', tone: 'bad' };
+    return { label: 'Ended', tone: 'neutral' };
+  });
+  const reviewSince = $derived(
+    review === 'admin' && reviewed?.in_review_since !== undefined
+      ? 'in review since ' + clockTime(reviewed.in_review_since)
+      : clockTime(item.created_at)
+  );
+
   const reviewHeading = $derived(item.status === ItemStatus.Draft ? 'Why ' + agentName + ' drafted it' : agentName + "'s review");
 </script>
 
 <PageHeader title={pageTitle} crumbs={[{ label: 'Inbox', href: href.inbox() }]}>
   {#snippet actions()}
+    {#if canKeep}
+      <Button busy={submission.pending('keep') && 'Keeping…'} disabled={submission.busy()} onclick={keep}>Keep</Button>
+    {:else if review === 'member' && data.status.notes_awaiting_approval > 0}
+      <Button variant="primary" href={href.feed()}>Open your waiting note</Button>
+    {/if}
     {#if approval?.state === CircleApprovalState.Waiting}
       <Button busy={submission.pending('decline') && 'Declining…'} disabled={submission.busy()} onclick={decline}>{declineLabel}</Button>
     {/if}
@@ -248,7 +277,12 @@
   {/snippet}
 </PageHeader>
 
-{#if approval}
+{#if review}
+  <p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
+    <StatusBadge wrap status={reviewBadge} />
+    <span>From your node · {reviewSince}</span>
+  </p>
+{:else if approval}
   <p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
     <StatusBadge wrap status={approvalBadge(approval, self)} />
     <span
@@ -272,7 +306,9 @@
 
 <ErrorBanner errors={submission.errors} />
 
-{#if approval}
+{#if review && reviewed}
+  <ReviewPanel page={review} {item} member={reviewed} signers={reviewSigners} {self} />
+{:else if approval}
   <ApprovalPanel {approval} {self} />
 {:else if mode === 'edit'}
   <form

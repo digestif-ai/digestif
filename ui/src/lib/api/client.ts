@@ -157,6 +157,8 @@ export interface Client {
   /** The member this node is, without reading the circle (DIG-225); a 404 before they have joined. */
   self(): Promise<ApiResponse<Member>>;
   mute(identity: string, muted: boolean): Promise<ApiResponse<Member>>;
+  /** Keep a member in review: one signed Keep, sealed to every admin and the member (docs/protocol.md, Member review). */
+  keep(identity: string): Promise<ApiResponse<Member>>;
   /** The approvals this node reads, newest first, at most 50; a member who is not an admin reads none (DES-85466). */
   approvals(states?: CircleApprovalState[]): Promise<ApiResponse<CircleApproval[]>>;
   /** Start an invite, a promotion or a removal: sealed to every admin, each of whom gets an Inbox item. */
@@ -274,6 +276,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     member: (identity) => get(path('members', identity)),
     self: () => get(path('members', 'self')),
     mute: (identity, muted) => send('PUT', path('members', identity, 'mute'), { muted: muted }),
+    keep: (identity) => send('POST', path('members', identity, 'keep')),
     approvals: (states) => get(path('approvals') + '?' + [...(states ?? []).map((s) => 'state=' + s), 'limit=50'].join('&')),
     startApproval: (form) => send('POST', path('approvals'), form),
     declineApproval: (id) => send('POST', path('approvals', id, 'declines')),
