@@ -18,8 +18,9 @@
    one step instead: the rollback target recorded, the module uploaded as the Worker script itself
    with the migrations the Worker lacks, which serves it at once, since a version upload cannot
    apply a migration.
-   5. Health check: a signed GET /v0/circle answering 200 with this relay_version and the circle's
-      root, and GET /app/ answering 200, within two minutes of awake time.
+   5. Health check: a signed GET /v0/circle at the home circle's address, <url>/c/<root hex>,
+      answering 200 with this relay_version and the circle's root, and GET /app/ answering 200,
+      within two minutes of awake time.
    6. Kept, or rolled back to the recorded version, the release refused on this relay for good.
 
    A step failing before 4 changes nothing the relay serves and is kept as pending, tried again on
@@ -594,11 +595,13 @@ let upload env (r : Operate.record) ~token (m : Release.relay_manifest) ~root
            (module_parts ~root b ~scratch (metadata m b ~jwt ())))
 
 (* What the relay answers, read once: [Ok ()] when it is the version [want] (None: a Worker built
-   before relay releases, reporting none) serving the circle, else what it answered. *)
+   before relay releases, reporting none) serving the circle at its address, else what it
+   answered. *)
 let answers env (n : Node.t) ~url ~want =
   let* key = Node.device_key n in
+  let* address = Operate.home_address n ~url in
   let* () =
-    match Relay_client.circle env.relay ~base:url ~key with
+    match Relay_client.circle env.relay ~base:address ~key with
     | Error e -> Error ("it did not answer: " ^ Relay_client.error_to_string e)
     | Ok j ->
         let field name =
@@ -618,7 +621,11 @@ let answers env (n : Node.t) ~url ~want =
             ^ Option.value (field "root") ~default:"none")
         else Ok ()
   in
-  match env.relay ~meth:"GET" ~url:(url ^ "/app/") ~headers:[] ~body:None with
+  match
+    env.relay ~meth:"GET"
+      ~url:(Relay_client.relay_base url ^ "/app/")
+      ~headers:[] ~body:None
+  with
   | Ok { status = 200; _ } -> Ok ()
   | Ok { status; _ } -> Error (Printf.sprintf "/app/ answered %d" status)
   | Error e -> Error ("/app/ did not answer: " ^ e)
@@ -846,12 +853,13 @@ let reported (r : Operate.record) =
   Option.bind r.reported_version (fun s ->
       Result.to_option (Version.of_string s))
 
-(* What the relay reports now on a signed GET /v0/circle; None when it did not answer. *)
+(* What the relay reports now on a signed GET /v0/circle at the home circle's address; None when
+   it did not answer. *)
 let live env (n : Node.t) ~url =
-  match Node.device_key n with
-  | Error _ -> None
-  | Ok key -> (
-      match Relay_client.circle env.relay ~base:url ~key with
+  match (Node.device_key n, Operate.home_address n ~url) with
+  | Error _, _ | _, Error _ -> None
+  | Ok key, Ok address -> (
+      match Relay_client.circle env.relay ~base:address ~key with
       | Ok (`Assoc f) -> (
           match List.assoc_opt "relay_version" f with
           | Some (`String v) -> Some (Some v)

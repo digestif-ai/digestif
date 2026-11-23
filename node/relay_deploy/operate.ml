@@ -284,11 +284,20 @@ let check_token cloudflare (s : setup) =
   in
   cf (Cloudflare.serving_version cloudflare ~token ~account_id ~worker:s.worker)
 
-(* What the relay reports on a signed GET /v0/circle: its relay_version, absent on a Worker built
-   before relay releases. *)
+(* The home circle's address on the relay at [url], <url>/c/<root hex>: every read the operator's
+   node makes of its relay goes there, never to the unprefixed routes, whose use holds back the
+   relay release that drops them (docs/protocol.md, Hosted circles). *)
+let home_address (n : Node.t) ~url =
+  match Node.root n with
+  | Some root -> Ok (Relay_client.circle_address url ~root)
+  | None -> Error "this node holds no circle root"
+
+(* What the relay reports on a signed GET /v0/circle at the home circle's address: its
+   relay_version, absent on a Worker built before relay releases. *)
 let reported_version transport (n : Node.t) ~url =
   let* key = Node.device_key n in
-  match Relay_client.circle transport ~base:url ~key with
+  let* address = home_address n ~url in
+  match Relay_client.circle transport ~base:address ~key with
   | Error e ->
       Error
         ("the relay at " ^ url ^ " did not answer: "

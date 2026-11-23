@@ -61,6 +61,40 @@ let curl : transport =
   | Ok { code; stderr; _ } ->
       Error (Printf.sprintf "curl exited %d: %s" code (String.trim stderr))
 
+(* A circle's address on a relay (docs/protocol.md, Hosted circles): the relay's base url, then
+   /c/ and the 64 hex digits of the circle's root hash. Every circle route lives under it, and an
+   unprefixed route is the home circle's legacy address, which the relay counts as still in use. *)
+let circle_prefix = "/c/"
+
+(* The relay's base url: [url] without a trailing slash or a circle's address at its end. *)
+let relay_base url =
+  let url =
+    if String.ends_with ~suffix:"/" url then
+      String.sub url 0 (String.length url - 1)
+    else url
+  in
+  let tail = String.length circle_prefix + 64 in
+  let n = String.length url in
+  let is_hex = function '0' .. '9' | 'a' .. 'f' -> true | _ -> false in
+  if
+    n > tail
+    && String.sub url (n - tail) (String.length circle_prefix) = circle_prefix
+    && String.for_all is_hex (String.sub url (n - 64) 64)
+  then String.sub url 0 (n - tail)
+  else url
+
+(* The address of the circle whose root hash is [root] on the relay at [url]. A url that already
+   names a circle's address is taken from its base, so the answer never nests two. *)
+let circle_address url ~root =
+  let hex =
+    if String.starts_with ~prefix:Keys.sha256_prefix root then
+      String.sub root
+        (String.length Keys.sha256_prefix)
+        (String.length root - String.length Keys.sha256_prefix)
+    else root
+  in
+  relay_base url ^ circle_prefix ^ hex
+
 type error =
   | Transport of string
   | Refused of int * (string * string) list
