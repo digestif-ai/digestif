@@ -504,3 +504,73 @@ let deploy t ~token ~account_id ~worker ~version_id =
       ()
   in
   Ok ()
+
+(* GET .../workers/scripts/:name/settings: the bindings the Worker serves with, by name and type.
+   A secret's value is never answered. *)
+let bindings t ~token ~account_id ~worker =
+  let* r =
+    request t ~token ~meth:"GET"
+      ~path:(script_path ~account_id ~worker "/settings")
+      ()
+  in
+  match r with
+  | `Assoc f -> (
+      match List.assoc_opt "bindings" f with
+      | Some (`List l) ->
+          Ok
+            (List.filter_map
+               (fun b ->
+                 match (str "name" b, str "type" b) with
+                 | Some n, Some ty -> Some (n, ty, b)
+                 | _ -> None)
+               l)
+      | _ -> Ok [])
+  | _ -> Error (Failed "Cloudflare's settings answer is not an object")
+
+(* The settings a variable's write sends: every binding the Worker serves but [name] kept as it is
+   (an inherit binding, so no secret's value ever passes through here), and [name] as a plain-text
+   variable holding [value], or absent when [value] is None. *)
+let var_settings ~kept ~name value : Yojson.Safe.t =
+  `Assoc
+    [
+      ( "bindings",
+        `List
+          (List.filter_map
+             (fun (n, _, _) ->
+               if n = name then None
+               else
+                 Some
+                   (`Assoc [ ("type", `String "inherit"); ("name", `String n) ]))
+             kept
+          @
+          match value with
+          | Some v ->
+              [
+                `Assoc
+                  [
+                    ("type", `String "plain_text");
+                    ("name", `String name);
+                    ("text", `String v);
+                  ];
+              ]
+          | None -> []) );
+    ]
+
+(* PATCH .../workers/scripts/:name/settings: set the Worker variable [name] to [value], or remove it
+   when [value] is None, keeping every other binding. Cloudflare serves the change as a new version
+   at once. How `digestif circle found --relay` writes a relay's HOME_ROOT. *)
+let set_var t ft ~token ~account_id ~worker ~name value =
+  let* kept = bindings t ~token ~account_id ~worker in
+  let file = Filename.temp_file "digestif-settings" ".json" in
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove file with Sys_error _ -> ())
+    (fun () ->
+      Out_channel.with_open_bin file (fun oc ->
+          Out_channel.output_string oc
+            (Yojson.Safe.to_string (var_settings ~kept ~name value)));
+      let* _ =
+        form ~meth:"PATCH" ft ~token
+          ~path:(script_path ~account_id ~worker "/settings")
+          [ { name = "settings"; file; content_type = "application/json" } ]
+      in
+      Ok ())

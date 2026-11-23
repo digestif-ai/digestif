@@ -284,22 +284,120 @@ let check_token cloudflare (s : setup) =
   in
   cf (Cloudflare.serving_version cloudflare ~token ~account_id ~worker:s.worker)
 
-(* What the relay reports on a signed GET /v0/circle: its relay_version, absent on a Worker built
-   before relay releases. *)
+(* The relay release a relay reports: GET /v0/relay, unsigned (docs/protocol.md, Hosted circles), and,
+   from a Worker built before relays hosted many circles, which has no such route, the signed
+   GET /v0/circle. None from a Worker built before relay releases. *)
 let reported_version transport (n : Node.t) ~url =
-  let* key = Node.device_key n in
-  match Relay_client.circle transport ~base:url ~key with
+  match Relay_client.relay_info transport ~base:url with
+  | Ok i -> Ok i.relay_version
+  | Error _ -> (
+      let* key = Node.device_key n in
+      match Relay_client.circle transport ~base:url ~key with
+      | Error e ->
+          Error
+            ("the relay at " ^ url ^ " did not answer: "
+            ^ Relay_client.error_to_string e)
+      | Ok j -> (
+          match j with
+          | `Assoc f -> (
+              match List.assoc_opt "relay_version" f with
+              | Some (`String v) -> Ok (Some v)
+              | _ -> Ok None)
+          | _ -> Ok None))
+
+(* Store the deploy token and the deployment record for [url], keeping what the deploy pass learned
+   from an [existing] record for the same relay. *)
+let store (n : Node.t) ~url ~existing ~serving ~reported (s : setup) =
+  let* () = n.keystore.put token_name s.token in
+  let record =
+    match existing with
+    | Some r ->
+        (* A new token for the same relay: keep what the deploy pass has learned, and clear a
+           wait on the old token. *)
+        {
+          r with
+          url;
+          account_id = s.account_id;
+          worker = s.worker;
+          database_id = s.database_id;
+          rollback_version_id = serving;
+          reported_version = reported;
+          pending = None;
+          told_not_operator = false;
+          token_refused = false;
+        }
+    | None ->
+        {
+          url;
+          account_id = s.account_id;
+          worker = s.worker;
+          database_id = s.database_id;
+          rollback_version_id = serving;
+          reported_version = reported;
+          pending = None;
+          refused = [];
+          told_not_operator = false;
+          token_refused = false;
+          notes = [];
+        }
+  in
+  save n.dir record;
+  Ok ()
+
+(* A relay with no home, read unsigned before a first circle is founded on it (docs/design.md, Who
+   may found a circle on a relay): refused home_set when its home already names a circle, since a
+   relay has exactly one home. *)
+let homeless ?(transport = Relay_client.curl) ~url () =
+  match Relay_client.relay_info transport ~base:url with
   | Error e ->
       Error
-        ("the relay at " ^ url ^ " did not answer: "
-        ^ Relay_client.error_to_string e)
-  | Ok j -> (
-      match j with
-      | `Assoc f -> (
-          match List.assoc_opt "relay_version" f with
-          | Some (`String v) -> Ok (Some v)
-          | _ -> Ok None)
-      | _ -> Ok None)
+        ("the relay at " ^ url ^ " did not answer GET /v0/relay ("
+        ^ Relay_client.error_to_string e
+        ^ "): a first circle is founded on a relay that hosts many circles")
+  | Ok { home = Some h; _ } ->
+      Error
+        (Printf.sprintf
+           "home_set: the relay at %s already has its home circle %s, and \
+            a             relay has exactly one; found from your circle there \
+            without             --relay, which vouches for the new one"
+           url (Relay_url.short_root h))
+  | Ok i -> Ok i
+
+(* Write [root] into the relay's HOME_ROOT through Cloudflare's settings API with the deploy token,
+   then wait until GET /v0/relay reports it as the relay's home. [root = None] clears it again. *)
+let write_home ?(cloudflare = Cloudflare.curl) ?(form = Cloudflare.form_curl)
+    ?(transport = Relay_client.curl) ?(wait = 90.) ~url (s : setup) root =
+  let* () =
+    cf
+      (Cloudflare.set_var cloudflare form ~token:s.token
+         ~account_id:s.account_id ~worker:s.worker ~name:"HOME_ROOT" root)
+  in
+  let deadline = Unix.gettimeofday () +. wait in
+  let rec poll () =
+    match Relay_client.relay_info transport ~base:url with
+    | Ok i when i.home = root -> Ok ()
+    | r ->
+        if Unix.gettimeofday () > deadline then
+          Error
+            (Printf.sprintf
+               "the relay at %s did not report %s as its home within \
+                %.0f                 seconds (%s)"
+               url
+               (match root with
+               | Some r -> Relay_url.short_root r
+               | None -> "no home")
+               wait
+               (match r with
+               | Ok i ->
+                   "it reports "
+                   ^ Option.fold ~none:"none" ~some:Relay_url.short_root i.home
+               | Error e -> Relay_client.error_to_string e))
+        else begin
+          Unix.sleepf 2.;
+          poll ()
+        end
+  in
+  poll ()
 
 (* `digestif relay operate <url>`: check the token, read what the relay runs, store the token and the
    record, and make the relay's newest relay message this node's when it is not. Nothing is stored
@@ -329,39 +427,7 @@ let operate ?(cloudflare = Cloudflare.curl) ?(transport = Relay_client.curl)
   in
   let* serving = check_token cloudflare s in
   let* reported = reported_version transport n ~url in
-  let* () = n.keystore.put token_name s.token in
-  let record =
-    match existing with
-    | Some r ->
-        (* A new token for the same relay: keep what the deploy pass has learned, and clear a
-           wait on the old token. *)
-        {
-          r with
-          account_id = s.account_id;
-          worker = s.worker;
-          database_id = s.database_id;
-          rollback_version_id = serving;
-          reported_version = reported;
-          pending = None;
-          told_not_operator = false;
-          token_refused = false;
-        }
-    | None ->
-        {
-          url;
-          account_id = s.account_id;
-          worker = s.worker;
-          database_id = s.database_id;
-          rollback_version_id = serving;
-          reported_version = reported;
-          pending = None;
-          refused = [];
-          told_not_operator = false;
-          token_refused = false;
-          notes = [];
-        }
-  in
-  save n.dir record;
+  let* () = store n ~url ~existing ~serving ~reported s in
   let* claimed =
     match (Fold.relay_operator f url, identity n) with
     | Some o, Some i when o = i -> Ok []
@@ -488,3 +554,37 @@ let digest_lines (n : Node.t) ~now:(_ : float) : Line.t list =
         };
       ]
   | _ -> []
+
+(* Once this node reads its relays at the circle's address (Relay_addresses.rewrite), the relay it
+   operates is known by that address too: its deployment record names it, and, when the circle reads
+   this node as the relay's operator, the home circle's relay message is written again naming the
+   address with the same body, so every other node adds it and the operator test keeps holding at
+   the new url (docs/design.md, Moving the relays that run today). Answers what to say. *)
+let readdress (n : Node.t) ~moved : (string list, string) result =
+  let* existing = load n.dir in
+  match existing with
+  | None -> Ok []
+  | Some r -> (
+      match List.assoc_opt (normal_url r.url) moved with
+      | None -> Ok []
+      | Some address ->
+          let f = Node.fold n in
+          let operator = Fold.relay_operator f r.url in
+          save n.dir { r with url = address };
+          let* wrote =
+            match (operator, identity n, Hashtbl.find_opt f.relays r.url) with
+            | Some o, Some i, Some relay when o = i ->
+                let* _ =
+                  Node.write n ~kind:"relay"
+                    (Bodies.make_relay ~url:address ~mailer:relay.mailer
+                       ?encryption_key:relay.relay_encryption_key ())
+                in
+                Ok true
+            | _ -> Ok false
+          in
+          Ok
+            ([ "This node deploys " ^ address ^ ", its home circle's address." ]
+            @
+            if wrote then
+              [ "The home circle's relay message now names " ^ address ^ "." ]
+            else []))
