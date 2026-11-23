@@ -1571,10 +1571,56 @@ let spawn_circle_node ~machine ~dir ~release =
           | exception Unix.Unix_error (e, _, _) ->
               Error (exe ^ ": " ^ Unix.error_message e))
 
-let circle_node_ops ~machine (base : U.Supervisor.ops) : U.Circle_nodes.ops =
+(* The circle folder whose node the supervisor's own child runs in the machine's place, chosen at
+   each start of that child (Circle_nodes.stand_in) and prepared as every circle folder is: none
+   while the standard place holds a node. A folder that cannot be prepared is passed over for the
+   next; when none can be, the child runs the standard place, as before the circle folders, and
+   says why. [stand_in] holds the choice, which the circle folders leave out. DIG-351 *)
+let choose_stand_in ~machine ~stand_in () =
+  let holds = Sys.file_exists (Node.log_path machine) in
+  let rec pick previous = function
+    | [] -> None
+    | folders -> (
+        match
+          U.Circle_nodes.stand_in ~machine_holds_node:holds ~previous folders
+        with
+        | None -> None
+        | Some d -> (
+            let prepared =
+              match U.Layout.good machine with
+              | None -> Error "the machine has no good release"
+              | Some release -> prepare_circle_folder ~machine ~dir:d ~release
+            in
+            match prepared with
+            | Ok () -> Some d
+            | Error e ->
+                Printf.printf
+                  "%s supervise: %s cannot run in the machine's place: %s\n%!"
+                  (Time_fmt.now ()) d e;
+                pick None (List.filter (( <> ) d) folders)))
+  in
+  let chosen = pick !stand_in (circle_dirs ~machine ()) in
+  if chosen <> !stand_in then
+    Printf.printf "%s supervise: %s\n%!" (Time_fmt.now ())
+      (match chosen with
+      | Some d ->
+          Printf.sprintf
+            "the standard place holds no node, so its release is judged by the \
+             node of %s, run in its place"
+            d
+      | None -> "the node at the standard place runs");
+  stand_in := chosen;
+  chosen
+
+let circle_node_ops ~machine ~stand_in (base : U.Supervisor.ops) :
+    U.Circle_nodes.ops =
   let said = ref None in
   {
-    folders = circle_folders ~said ~machine;
+    folders =
+      (fun () ->
+        List.filter
+          (fun d -> Some d <> !stand_in)
+          (circle_folders ~said ~machine ()));
     release = (fun () -> U.Layout.good machine);
     prepare = prepare_circle_folder ~machine;
     spawn = spawn_circle_node ~machine;
@@ -1625,9 +1671,14 @@ let supervise =
                   (Time_fmt.now ()) (U.Version.to_string v) why
           in
           let runs_circles = Node.is_standard dir in
-          let ops = U.Supervisor.real_ops ~runs_circles ~dir () in
+          let stand_in = ref None in
+          let node () =
+            if runs_circles then choose_stand_in ~machine:dir ~stand_in ()
+            else None
+          in
+          let ops = U.Supervisor.real_ops ~runs_circles ~node ~dir () in
           let circles = ref U.Circle_nodes.empty in
-          let cops = circle_node_ops ~machine:dir ops in
+          let cops = circle_node_ops ~machine:dir ~stand_in ops in
           (* The supervisor looks at its child once a second; the circle folders' nodes are looked
              at on the same beat. *)
           let ops =
@@ -2470,7 +2521,21 @@ let run =
              that stops part way names the last thing it did. ISS-79885 *)
           Out_channel.set_buffered stdout false;
           Out_channel.set_buffered stderr false;
-          refresh_service dir;
+          (* Where this node's releases, trial, health report and update state live: its own
+             directory, unless its supervisor runs it in the machine's place (Supervisor.node_var),
+             when they are the machine's and its store, keys and UI port are the circle folder's.
+             DIG-351 *)
+          let machine = node_dir dir in
+          let dir =
+            match Sys.getenv_opt U.Supervisor.node_var with
+            | Some d when d <> "" ->
+                Printf.printf
+                  "%s run: the node of %s, in the machine's place at %s\n%!"
+                  (Time_fmt.now ()) d machine;
+                Some d
+            | _ -> dir
+          in
+          refresh_service (Some machine);
           let stop = stop_on_signals () in
           let sync_wanted = Atomic.make false in
           let server =
@@ -2560,8 +2625,7 @@ let run =
             (* An automatic update runs this release under the supervisor that was already
                running, so the links are kept here too: the first pass after good moves to a
                release carrying digestif-update makes its link (Cli_links). *)
-            U.Cli_links.link_default ~last:cli_links_failure ~dir:(node_dir dir)
-              ();
+            U.Cli_links.link_default ~last:cli_links_failure ~dir:machine ();
             let stored = ref 0 in
             let sync n =
               let r = watch_joins n in
@@ -2668,7 +2732,7 @@ let run =
           let updates =
             U.Schedule.config ~base
               ~circle:(fun () -> !circle_recalls)
-              ~dir:(node_dir dir) ()
+              ~dir:machine ()
           in
           (* A switch ends the process: the supervisor runs the new release on trial. *)
           let self_update ~woke =
@@ -2686,7 +2750,7 @@ let run =
                   (* Self-update reports through the problem record: what the updater's own
                      status says is wrong is the job's problem until a check finds nothing. *)
                   (let module P = Digestif_web.Store.Problems in
-                   match U.Status.problems ~dir:(node_dir dir) with
+                   match U.Status.problems ~dir:machine with
                    | [] -> P.resolve bnode.log ~job:"self_update" ()
                    | lines ->
                        ignore
@@ -2716,7 +2780,7 @@ let run =
             else begin
               wake_owed := false;
               self_update ~woke;
-              if hands_over_to_newer_supervisor (node_dir dir) then begin
+              if hands_over_to_newer_supervisor machine then begin
                 Printf.printf
                   "%s supervise: the service's supervisor predates the circle \
                    folders; exiting so the service starts this release's, \
@@ -2731,7 +2795,7 @@ let run =
              the first pass, whose length grows with the node's history and the network's mood and
              says nothing about whether the release runs; a pass that fails is the pass's problem
              (guarded) and never ends the process. DIG-223 *)
-          U.Health.write (node_dir dir)
+          U.Health.write machine
             {
               version = U.Version.to_string (U.Trust_root.version ());
               pid = Unix.getpid ();

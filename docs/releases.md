@@ -366,7 +366,8 @@ last healthy release, and the supervisor runs `current/bin/digestif run` as its 
 digest says to run its `service install` once. Releases live once per machine: the first node's
 supervisor runs every circle folder's node from the release its `good` names, and those nodes
 never update themselves, so one switch, trial or recall moves every circle on the machine
-(node/README.md).
+(node/README.md). A machine whose standard place holds no node judges each release by the first
+circle folder's node, which its supervisor runs in that place.
 
 `digestif service install` makes the binary it runs the node's release: the release directory the
 binary sits in, else the staged release holding the same binary (an archive staged with `digestif

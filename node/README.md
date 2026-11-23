@@ -143,7 +143,12 @@ writes its output to its own `digestif.log` and answers on the UI port its direc
 and its `current` and `good` name the release the first node's `good` names: a folder's node moves
 to a release once the first node has kept it. `digestif --circle <id> service install` installs
 the machine's service, and `digestif --circle <id> service uninstall` is refused, since it would
-stop every circle. A service installed with `$DIGESTIF_CIRCLES` set carries it.
+stop every circle. A service installed with `$DIGESTIF_CIRCLES` set carries it. On a machine whose only
+nodes are circle folders the standard place holds the machine's releases and no node: the
+supervisor runs the first circle folder's node as its own child in that place (named to it by
+`DIGESTIF_NODE_DIR`), with that folder's store, keys and UI port and the standard place's
+releases, trial, health report and update state, so each release is kept or rolled back by that
+node, and nothing answers on 7420.
 
 Before a folder's node first runs under the machine's service, every `com.digestif.node.<slug>` or
 `digestif-<slug>.service` whose own `--data-dir` names that folder is unloaded and its file removed,
