@@ -22,6 +22,7 @@ let admins =
     {
       Approval.name = "Founder";
       key = Keys.public (Crypto.generate_signing_key ());
+      identity = None;
     };
   ]
 

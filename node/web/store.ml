@@ -3911,6 +3911,20 @@ CREATE INDEX IF NOT EXISTS ui_approval_answers_approval ON ui_approval_answers (
     | [ r ] -> row_of r
     | _ -> None
 
+  (* The approvals with an answer whose reply names one of [keys]: only such an answer can have
+     counted as a signature by one of them (Approval.reply_to_json writes its key verbatim). *)
+  let answered_naming (log : Log.t) keys =
+    match keys with
+    | [] -> []
+    | _ ->
+        Log.rows log
+          ("SELECT DISTINCT approval FROM ui_approval_answers WHERE approval \
+            IS NOT NULL AND reply IS NOT NULL AND ("
+          ^ String.concat " OR " (List.map (fun _ -> "instr(reply, ?) > 0") keys)
+          ^ ")")
+          (List.map Log.s keys)
+        |> List.filter_map (function [| h |] -> Some (Log.text h) | _ -> None)
+
   (* Every answer to [approval] this node opened: (hash, author, own, reply, unix time). *)
   let answers (log : Log.t) approval =
     Log.rows log

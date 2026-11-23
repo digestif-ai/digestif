@@ -132,6 +132,8 @@ const nodeBreaks: Array<[NodeBreak, string]> = [
   ["cutoff", "node.revocation.mail-read-by-listed-hashes"],
   ["mail-cutoff", "node.revocation.mail-read-by-listed-hashes"],
   ["host-device-window", "node.revocation.host-device-window"],
+  ["admin-revoke", "node.revocation.admin-revokes-member"],
+  ["admin-revoke-admin", "node.revocation.admin-may-not-revoke-admin"],
   ["bootstrap", "node.bootstrap.bad-joins-not-admitted"],
   ["replicate", "node.bootstrap.join-replicated-after-expiry"],
   ["self-device", "node.device.self-authored"],

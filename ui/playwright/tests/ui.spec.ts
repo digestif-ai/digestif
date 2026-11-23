@@ -232,14 +232,20 @@ test.describe('after first run', () => {
   test("members show each one's stage and last note, and a member can be muted", async ({ page }) => {
     await page.goto('/members');
     await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Paused');
-    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Dee has paused Digestif.');
-    await expect(page.getByTestId('member-row').filter({ hasText: 'Cy Lund' })).toContainText("No note from Cy today; Otis couldn't run.");
+    // A status note is not a note: the row's Last note never carries one, and the member's page shows it.
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).not.toContainText('Dee has paused Digestif.');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Cy Lund' })).not.toContainText(
+      "No note from Cy today; Otis couldn't run."
+    );
     const fay = page.getByTestId('member-row').filter({ hasText: 'Fay Kim' });
     await expect(fay).toContainText('Onboarding');
     await expect(fay.getByTestId('member-agent')).toHaveText('');
     await expect(page.getByTestId('invitee-row')).toContainText('Eve Moss');
     await expect(page.getByTestId('invitee-row')).toContainText('Invited');
     await expect(page.getByTestId('invitee-row')).toContainText('Invite expires');
+    await page.getByTestId('member-row').filter({ hasText: 'Dee Rao' }).getByRole('link', { name: 'Dee Rao' }).click();
+    await expect(page.getByRole('definition').filter({ hasText: 'Dee has paused Digestif.' })).toBeVisible();
+    await page.goto('/members');
     await page.getByRole('link', { name: 'Ben Ortiz' }).click();
     await page.getByRole('button', { name: 'Mute' }).click();
     await expect(page.getByRole('button', { name: 'Unmute' })).toBeVisible();
@@ -413,7 +419,8 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' })).toHaveCount(1);
     await expect.poll(() => headerActions(page)).toContain('Pause');
     await page.goto('/members');
-    await expect(page.getByTestId('member-row').filter({ hasText: 'Ada Park' })).toContainText('Ada has paused Digestif.');
+    await page.getByTestId('member-row').filter({ hasText: 'Ada Park' }).getByRole('link', { name: 'Ada Park' }).click();
+    await expect(page.getByRole('definition').filter({ hasText: 'Ada has paused Digestif.' })).toBeVisible();
   });
 
   test('a banner on every page three days before a pause, and the pause at 30 days', async ({ page, request }) => {

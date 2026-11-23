@@ -150,7 +150,7 @@ let circle_json ~admins ~host ~name ~guests ~relays () : Yojson.Safe.t =
               `List
                 (List.map
                    (fun (s : Approval.signer) ->
-                     `Assoc [ ("name", `String s.name); ("key", `String s.key) ])
+                     `Assoc (Approval.signer_fields s))
                    admins) );
           ])
   | j -> j
@@ -170,7 +170,12 @@ let circle_admins ~kind j : (Approval.signer list option, string) result =
             match
               (str "name" a, Result.bind (str "key" a) Keys.parse_ed25519)
             with
-            | Ok name, Ok key -> Ok ({ Approval.name; key } :: acc)
+            | Ok name, Ok key ->
+                (* An identity that is not an ed25519 key binds nothing: the admin is unbound. *)
+                let identity =
+                  Option.join (Result.to_option (Approval.parse_identity a))
+                in
+                Ok ({ Approval.name; key; identity } :: acc)
             | _ -> Error "every admin has a name and an ed25519 key")
           l (Ok [])
       in

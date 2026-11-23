@@ -87,9 +87,12 @@
     <dd>{member.stage === 'onboarding' ? '' : member.agent_name}</dd>
     <dt class="dg-muted">Last note</dt>
     <dd>
-      {#if member.last_note_at === undefined}None yet{:else}{clockTime(member.last_note_at)}{#if member.last_status_note_words}
-          · {member.last_status_note_words}{/if}{/if}
+      {#if member.last_note_at === undefined}None yet{:else}{clockTime(member.last_note_at)}{/if}
     </dd>
+    {#if member.last_status_note_words && member.last_status_note_at}
+      <dt class="dg-muted">Status note</dt>
+      <dd>{clockTime(member.last_status_note_at)} · {member.last_status_note_words}</dd>
+    {/if}
     <dt class="dg-muted">Notes</dt>
     <dd>{member.muted ? 'Muted: filtered before your agent reads them' : 'Read by your agent'}</dd>
     <dt class="dg-muted">Joined</dt>

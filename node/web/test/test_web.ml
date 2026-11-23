@@ -11686,6 +11686,252 @@ let inbox_send_raced_by_a_read () =
     "one row" [ id ]
     (List.map (fun (r : Store.Items.row) -> r.id) rows)
 
+(* DIG-394 (docs/protocol.md, Member review): the rules every node reads alike. Silence is three whole
+   UTC days with no note; the review opens at the start of the fourth. A Keep verifies only as its
+   signer made it, and its id is its plaintext's, so a forwarded copy is the same Keep. *)
+let member_review_rules () =
+  let module R = Member_review in
+  let at s = Option.get (Time_fmt.to_unix s) in
+  (* A note on Friday the 13th at 23:00 UTC: Saturday, Sunday and Monday are the three days. *)
+  let friday = at "2026-11-13T23:00:00.000Z" in
+  Alcotest.(check string)
+    "the review opens at the start of the fourth silent day"
+    "2026-11-17T00:00:00.000Z"
+    (Time_fmt.of_unix (R.opens_at ~anchor:friday));
+  Alcotest.(check bool)
+    "Friday's note, then Saturday and Sunday, is two days" false
+    (R.in_review ~now:(at "2026-11-16T12:00:00.000Z") ~anchor:friday);
+  Alcotest.(check bool)
+    "a long weekend trips it" true
+    (R.in_review ~now:(at "2026-11-17T00:00:00.000Z") ~anchor:friday);
+  Alcotest.(check int)
+    "the days with no note" 3
+    (R.days_without ~now:(at "2026-11-17T08:00:00.000Z") ~anchor:friday);
+  Alcotest.(check (option (float 0.)))
+    "the count runs from the latest of note, Keep and join"
+    (Some (at "2026-11-15T10:00:00.000Z"))
+    (R.anchor ~note:(Some friday)
+       ~keep:(Some (at "2026-11-15T10:00:00.000Z"))
+       ~join:(Some (at "2026-10-01T10:00:00.000Z")));
+  let device = Crypto.generate_signing_key () in
+  let k =
+    R.make ~device ~member:"ed25519:member"
+      ~created_at:"2026-11-19T15:00:00.000Z"
+  in
+  Alcotest.(check bool) "a Keep verifies" true (R.verifies k);
+  Alcotest.(check bool)
+    "a Keep naming another member does not" false
+    (R.verifies { k with member = "ed25519:someone-else" });
+  let read = Option.get (R.of_json (R.to_json k)) in
+  Alcotest.(check string) "its id is its plaintext's" (R.id k) (R.id read);
+  Alcotest.(check bool)
+    "in force before its review opens again, with no note since" true
+    (R.in_force
+       ~now:(at "2026-11-21T00:00:00.000Z")
+       ~kept_at:(at k.created_at) ~note:None);
+  Alcotest.(check bool)
+    "not once a note followed it" false
+    (R.in_force
+       ~now:(at "2026-11-21T00:00:00.000Z")
+       ~kept_at:(at k.created_at)
+       ~note:(Some (at "2026-11-20T09:00:00.000Z")));
+  Alcotest.(check bool)
+    "not once its review opened again" false
+    (R.in_force
+       ~now:(at "2026-11-23T00:00:00.000Z")
+       ~kept_at:(at k.created_at) ~note:None)
+
+(* The set this node judges by, saved in its update state as the approvals test does: every key
+   named as the card of the member who holds it. *)
+let save_admins n names =
+  Digestif_update.State.save
+    (Digestif_update.Schedule.state_path n.Node.dir)
+    {
+      (Digestif_update.State.initial ()) with
+      trust =
+        {
+          signers =
+            List.map
+              (fun name : Digestif_update.Release.signer ->
+                { name; key = Keys.public (Crypto.generate_signing_key ()) })
+              names;
+          revoked = [];
+        };
+    }
+
+let member_named call name =
+  List.find (fun m -> s "name" m = name) (list (snd (call "members")))
+
+let review_items call =
+  List.filter (fun i -> s "subject" i = "review") (list (snd (call "items")))
+
+(* DIG-394: Last note counts no status note, for every reader. In the demo Cy's newest summary is a
+   status note an hour after his question, and Ben's note went out after his waiting note. *)
+let last_note_counts_no_status_note () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let cy = member_named call "Cy Lund" in
+  let ben = member_named call "Ben Ortiz" in
+  Alcotest.(check bool)
+    "Cy's Last note is his question, not the status note after it" true
+    (s "last_note_at" cy < s "last_status_note_at" cy);
+  Alcotest.(check string)
+    "the status note goes beside it" "could_not_run" (s "last_status_note" cy);
+  Alcotest.(check string)
+    "a status note older than the last note is not shown" ""
+    (s "last_status_note" ben);
+  let dee = member_named call "Dee Rao" in
+  Alcotest.(check string)
+    "Dee's status note is no Last note" "" (s "last_note_at" dee)
+
+(* DIG-394: In review is worked out on read and shown to the admins and the member alone; the
+   admin's item is raised by the upkeep, never by a read, and closed by a Keep, which only an admin's
+   Keep does. Dee has sent no note since she joined, weeks ago; Ada is the node. *)
+let member_review () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let dee_id = s "identity" (member_named call "Dee Rao") in
+  Alcotest.(check string)
+    "a member who is no admin sees nobody's review" ""
+    (s "in_review_since" (member_named call "Dee Rao"));
+  save_admins n [ "Ada Park" ];
+  let dee () = member_named call "Dee Rao" in
+  Alcotest.(check bool)
+    "an admin sees Dee in review" true
+    (s "in_review_since" (dee ()) <> "");
+  Alcotest.(check string)
+    "Ben, who sent a note today, is not" ""
+    (s "in_review_since" (member_named call "Ben Ortiz"));
+  Alcotest.(check int)
+    "a read raises no item" 0
+    (List.length (review_items call));
+  keep_up n;
+  (match review_items call with
+  | [ i ] ->
+      Alcotest.(check string) "the item is about Dee" dee_id (s "about" i);
+      Alcotest.(check bool)
+        "it shows the command that removes her" true
+        (contains
+           (s "detail" (snd (call ("items/" ^ enc (s "id" i)))))
+           ("digestif-update remove " ^ dee_id))
+  | l -> Alcotest.failf "one review item, got %d" (List.length l));
+  keep_up n;
+  Alcotest.(check int)
+    "the next pass raises no second item" 1
+    (List.length (review_items call));
+  (* A Keep from Pia, who is no admin, is ignored. *)
+  let pia = join_peer n "Pia Gale" in
+  let ada_raw =
+    raw_key (Keys.encryption_public (Result.get_ok (Node.encryption_key n)))
+  in
+  let forged =
+    Member_review.make ~device:pia.p_device ~member:dee_id
+      ~created_at:(Time_fmt.now ())
+  in
+  ignore
+    (peer_write n pia "keep"
+       (`Assoc
+          [
+            ( "to",
+              `List
+                [
+                  `String (Option.get (Log.get_config n.log Node.k_identity));
+                  `String (Keys.public pia.p_identity);
+                ] );
+            ( "sealed",
+              Item.seal
+                ~keys:[ ada_raw; pia.p_enc.public ]
+                (Member_review.to_json forged) );
+          ]));
+  Alcotest.(check bool)
+    "a Keep from a non-admin ends nothing" true
+    (s "in_review_since" (dee ()) <> "");
+  Alcotest.(check int)
+    "and closes no item" 0
+    (List.length (List.filter (fun i -> s "done" i <> "") (review_items call)));
+  (* Ada keeps her. *)
+  let status, kept = call ~meth:"POST" ("members/" ^ enc dee_id ^ "/keep") in
+  Alcotest.(check int) "Keep" 201 status;
+  Alcotest.(check string)
+    "she is no longer in review" "" (s "in_review_since" kept);
+  Alcotest.(check string)
+    "the outcome reads Kept" "kept"
+    (s "outcome" (member "review" kept));
+  Alcotest.(check string)
+    "by Ada" "Ada Park"
+    (s "name" (member "by" (member "review" kept)));
+  (match review_items call with
+  | [ i ] -> Alcotest.(check string) "the item settles" "resolved" (s "done" i)
+  | l -> Alcotest.failf "one review item, got %d" (List.length l));
+  let status, _ = call ~meth:"POST" ("members/" ^ enc dee_id ^ "/keep") in
+  Alcotest.(check int) "a member not in review is not kept" 422 status;
+  (* The Keep went to every admin and the member, sealed. *)
+  (match Log.of_kind n.log "keep" with
+  | [ _forged; r ] ->
+      let to_ =
+        match Item.to_of (Option.get r.signed.body) with
+        | Some (Members l) -> l
+        | _ -> []
+      in
+      Alcotest.(check bool) "sealed to Dee" true (List.mem dee_id to_)
+  | l -> Alcotest.failf "two keep envelopes, got %d" (List.length l));
+  (* Pia is promoted: Ada's node forwards the Keep still in force, sealed to her. *)
+  save_admins n [ "Ada Park"; "Pia Gale" ];
+  keep_up n;
+  let forwarded =
+    List.filter
+      (fun (r : Log.row) ->
+        match Item.to_of (Option.get r.signed.body) with
+        | Some (Members l) ->
+            List.mem (Keys.public pia.p_identity) l
+            && r.signed.envelope.author <> Keys.public pia.p_device
+        | _ -> false)
+      (Log.of_kind n.log "keep")
+  in
+  Alcotest.(check int)
+    "the Keep is forwarded to the new admin" 1 (List.length forwarded);
+  keep_up n;
+  Alcotest.(check int)
+    "once: the forged Keep, Ada's and its copy" 3
+    (List.length (Log.of_kind n.log "keep"));
+  (* Pia, an admin now, opens the forwarded copy: the same plaintext, Ada's signature. *)
+  let opened =
+    List.filter_map
+      (fun (r : Log.row) ->
+        Option.bind
+          (Item.open_sealed ~priv:pia.p_enc.secret (Option.get r.signed.body))
+          Member_review.of_json)
+      forwarded
+  in
+  Alcotest.(check bool)
+    "the forwarded Keep verifies as Ada's" true
+    (List.exists
+       (fun (k : Member_review.keep) ->
+         k.member = dee_id && Member_review.verifies k)
+       opened)
+
+(* DIG-394: a member in review is told by their own node, in a notice their digest carries; Ada has
+   just joined and written nothing, and her dinner was weeks ago. *)
+let member_review_notice () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  ok (Demo.seed ~member:Demo.New_member n);
+  let c = session n in
+  let call = call n c in
+  let me = s "identity" (snd (call "members/self")) in
+  Alcotest.(check bool)
+    "the member sees their own review" true
+    (s "in_review_since" (snd (call "members/self")) <> "");
+  keep_up n;
+  match review_items call with
+  | [ i ] ->
+      Alcotest.(check string) "about herself" me (s "about" i);
+      Alcotest.(check string)
+        "the notice" "Your membership is in review" (s "title" i)
+  | l -> Alcotest.failf "one review notice, got %d" (List.length l)
+
 (* ISS-87806 (docs/protocol.md, approval): the node folds each approval it reads into its state,
    files the reader's Inbox item, answers the approval operations, and posts the signer_set where
    it recorded the last signature of a set change. The signer set is the test's own: Ada and Pia
@@ -11707,7 +11953,7 @@ let approvals () =
   let rk_ada = Crypto.generate_signing_key ()
   and rk_pia = Crypto.generate_signing_key ()
   and rk_bo = Crypto.generate_signing_key () in
-  let signer name k = { Approval.name; key = Keys.public k } in
+  let signer name k = { Approval.name; key = Keys.public k; identity = None } in
   (* The set this node holds is its update state's (ISS-87810), which the set change's effect
      advances. *)
   let set = ref [] in
@@ -15114,6 +15360,13 @@ let () =
             reads_answer_while_log_is_held;
           Alcotest.test_case "concurrent passes sign a note once" `Quick
             send_once_under_concurrency;
+          Alcotest.test_case "member review: the rules" `Quick
+            member_review_rules;
+          Alcotest.test_case "member review: Last note" `Quick
+            last_note_counts_no_status_note;
+          Alcotest.test_case "member review" `Quick (cleaned member_review);
+          Alcotest.test_case "member review: the member's notice" `Quick
+            member_review_notice;
           Alcotest.test_case "suggestion rounds" `Quick suggestion_rounds;
           Alcotest.test_case "a suggestion adopted" `Quick suggestion_flow;
           Alcotest.test_case "a suggestion with judges" `Quick suggestion_judges;

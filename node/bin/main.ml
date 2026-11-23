@@ -2371,7 +2371,16 @@ let sign_root (n : Node.t) ~admin_key ~name ~from ~relays ~message ~ttl guests =
   in
   let folder, phrase, keys, admin = set_up n ~admin_key in
   let made = { folder; phrase; keys; root = None; ledger } in
-  let admins = [ { Approval.name = from; key = admin } ] in
+  (* The founder's admin key, bound to the founder's identity (docs/protocol.md, circle). *)
+  let admins =
+    [
+      {
+        Approval.name = from;
+        key = admin;
+        identity = Log.get_config n.Node.log Node.k_identity;
+      };
+    ]
+  in
   match
     Inv.Invite_node.found n ~add_relays:false ~admins ~name ~relays ~message
       ~ttl guests
@@ -3122,6 +3131,12 @@ let run =
                    node, New in the Inbox on the pass that finds it. *)
                 Digestif_web.Digest_lines.raise_notices n
                   ~now:(Unix.gettimeofday ());
+                (* Member review: the item and the notice, raised on the pass that finds a review
+                   open, ahead of the digest that carries the member's notice. *)
+                (match Digestif_web.Api.review_upkeep n with
+                | Ok () -> ()
+                | Error e ->
+                    Printf.eprintf "%s review: %s\n" (Time_fmt.now ()) e);
                 let module P = Digestif_web.Store.Problems in
                 match
                   Daily.run ~sync

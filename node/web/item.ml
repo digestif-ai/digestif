@@ -35,6 +35,7 @@ let subjects =
     "skipped_projects";
     "inbox_agent_failed";
     "send_invite";
+    "review";
   ]
 
 (* Local is a property of the subject, fixed here and never set per item: a local item is never on
@@ -42,7 +43,7 @@ let subjects =
 let local_subject = function
   | Some
       ( "repositories" | "folder_access" | "skipped_projects"
-      | "inbox_agent_failed" | "send_invite" ) ->
+      | "inbox_agent_failed" | "send_invite" | "review" ) ->
       true
   | _ -> false
 

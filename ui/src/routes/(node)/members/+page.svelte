@@ -38,11 +38,9 @@
     ...('errors' in data.signers ? data.signers.errors : [])
   ]);
 
-  /** When their last note went out, with a status note's fixed words beside it. */
+  /** When their last note went out; a status note is not a note and is not counted. */
   function lastNote(m: MemberSummary): string {
-    if (m.last_note_at === undefined) return '';
-    const at = clockTime(m.last_note_at);
-    return m.last_status_note_words === undefined ? at : at + ' · ' + m.last_status_note_words;
+    return m.last_note_at === undefined ? '' : clockTime(m.last_note_at);
   }
 </script>
 

@@ -74,6 +74,10 @@ The node cases start three local fake relays per case, all rooted in a fresh cir
 relays that play honest relays which each saw part of the history, and one unchecked relay that plays
 a relay which accepted what it should not have (a join on a spent invite, a retract by the wrong
 identity, an envelope whose signature or `body_hash` does not verify). The suite writes the history, runs the node's sync, and checks what the node concluded.
+The fresh circle is a founding dinner; the admin revoke cases root theirs in a circle founded on its
+own instead, whose `admins` are the suite's public test release signers, so the node folds the
+circle's signer set from the root alone and needs no release signer set of its own. A node folding a
+dinner root starts from the release signers it was built with, which never sign for the suite.
 Without `--node` it runs the reference node.
 
 ### The node adapter contract
@@ -137,7 +141,7 @@ something; a new case lands with the break that fails it.
 | Verification | | `node.verify.bad-signature`, `node.verify.bad-body-hash`, `node.verify.forged-author` |
 | `seq` regression | `relay.seq.chained-regression-refused`, `relay.seq.mail-regression-allowed` | `node.seq.mail-gaps-allowed` |
 | Revocation | `relay.revocation.device-refused`, `relay.revocation.identity-refused`, `relay.revocation.cutoff-required` | `node.revocation.ignored-from-revoke-forward`, `node.revocation.mail-read-by-listed-hashes` |
-| Admin revoke | `relay.revocation.admin-revokes-member`, `relay.revocation.admin-may-not-revoke-admin` | |
+| Admin revoke | `relay.revocation.admin-revokes-member`, `relay.revocation.admin-may-not-revoke-admin` | `node.revocation.admin-revokes-member`, `node.revocation.admin-may-not-revoke-admin` |
 | Keep | `relay.keep.served-to-readers` | |
 | Clock drift | `relay.clock.skew-inside-window`, `relay.clock.skew-outside-window`, `relay.clock.replayed-nonce` | |
 | Bootstrap | `relay.circle.root`, `relay.bootstrap.valid-join`, `relay.bootstrap.unknown-invite-refused`, `relay.bootstrap.spent-invite-refused`, `relay.bootstrap.expired-invite-refused` | `node.bootstrap.bad-joins-not-admitted` |

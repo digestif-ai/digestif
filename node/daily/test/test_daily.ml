@@ -1462,7 +1462,13 @@ let own_admins_judge_their_circle () =
       (Node.write m.node ~kind:"circle"
          (Bodies.circle_json
             ~admins:
-              [ { Approval.name = "Founder"; key = Keys.public signer_c } ]
+              [
+                {
+                  Approval.name = "Founder";
+                  key = Keys.public signer_c;
+                  identity = None;
+                };
+              ]
             ~host:m.identity ~name:"Auto dealership roll-up" ~guests:[]
             ~relays:[ mailing ] ()))
   in
