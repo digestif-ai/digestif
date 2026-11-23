@@ -1,6 +1,8 @@
-// DIG-319 storage spike: one circle's store in its own SQLite-backed Durable Object, reached
-// through an adapter that presents the D1Database handle the relay's query sites already use, so
-// src/ runs unchanged against it. Evidence for DIG-271 decision 0, not wired into any deployment.
+// One circle's store: a SQLite-backed Durable Object (CircleStore), reached through an adapter that
+// presents the D1Database handle the relay's query sites already use, so src/ runs unchanged
+// against it (docs/releases.md, Relay releases; DIG-319 measured it with the whole suite). No route
+// reads it yet: the release that creates the class carries nothing else, since a rollback cannot
+// cross the Durable Object migration that creates it.
 //
 // The adapter sends each prepared statement, or each batch, to the object as one RPC. The object
 // runs a batch inside transactionSync, so a statement that throws rolls back every statement before
@@ -8,6 +10,7 @@
 // call runs, so each RPC is atomic against every other request on the object; between two RPCs
 // another request may commit, as between two D1 round trips.
 import { DurableObject } from "cloudflare:workers";
+import { SCHEMA, type SchemaMigration } from "./schema.ts";
 
 /** One statement as it crosses the RPC: the SQL and its bind values, already normalised. */
 export interface Statement {
@@ -15,7 +18,7 @@ export interface Statement {
   params: SqlStorageValue[];
 }
 
-/** What the object answers for one statement: the rows, as objects or arrays, and D1's meta. */
+/** What the object answers for one statement: the rows, as arrays, and D1's meta. */
 export interface Answer {
   columns: string[];
   rows: SqlStorageValue[][];
@@ -25,7 +28,7 @@ export interface Answer {
 /**
  * A refusal crosses the RPC as a value, not a throw: a throw inside the object is logged by the
  * runtime as an uncaught exception on every expected refusal (a lost race, a replayed nonce,
- * link_used), and the adapter rethrows the text on the caller's side either way.
+ * link_used), and the adapter rethrows the text on the caller's side, where the relay matches it.
  */
 export type Outcome<T> = { ok: T } | { refused: string };
 
@@ -42,7 +45,43 @@ function settled<T>(outcome: Outcome<T>): T {
   return outcome.ok;
 }
 
+/**
+ * The table `wrangler d1 migrations apply` keeps, made as wrangler makes it, so the object and a
+ * D1 database record their schema the same way and either tool can read which migrations a store
+ * holds.
+ */
+const MIGRATIONS_TABLE = "CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL)";
+
+/**
+ * Applies to [sql] every migration of [schema] it lacks, in order, each with its d1_migrations row in
+ * one transaction, and answers the names it applied. A migration that fails rolls back alone and
+ * throws, so the next request tries it again.
+ */
+export function applySchema(storage: DurableObjectStorage, schema: readonly SchemaMigration[] = SCHEMA): string[] {
+  const { sql } = storage;
+  sql.exec(MIGRATIONS_TABLE);
+  const applied = new Set(sql.exec<{ name: string }>("SELECT name FROM d1_migrations").toArray().map((row) => row.name));
+  const added: string[] = [];
+  for (const migration of schema) {
+    if (applied.has(migration.name)) continue;
+    storage.transactionSync(() => {
+      for (const query of migration.queries) sql.exec(query);
+      sql.exec("INSERT INTO d1_migrations (name) VALUES (?)", migration.name);
+    });
+    added.push(migration.name);
+  }
+  return added;
+}
+
 export class CircleStore extends DurableObject {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // The schema, on first use: every relay migration the object lacks, before any statement runs.
+    // SQL storage is synchronous, so the constructor finishes it before the first call is delivered;
+    // a failure throws here, and the next call constructs the object and tries again.
+    applySchema(ctx.storage);
+  }
+
   /** One statement, outside any explicit transaction: the object's implicit write coalescing applies. */
   run(statement: Statement): Outcome<Answer> {
     return attempt(() => this.execute(statement));
@@ -115,8 +154,8 @@ function result<T>(answer: Answer): D1Result<T> {
 /**
  * A stub is an I/O object of the request that made it: a stub kept past that request fails with
  * "Cannot perform I/O on behalf of a different request". The D1 binding has no such limit, and
- * src/db.ts keys its per-isolate checks on the handle, so the handle outlives requests and makes a
- * stub per call (no I/O: get() only names the object).
+ * src/db.ts keys its per-isolate checks on the handle, so the handle keeps the object's id, outlives
+ * requests, and takes a stub per call (no I/O: get() only names the object).
  */
 type Store = () => StoreCalls;
 
@@ -211,7 +250,7 @@ export class StoreDatabase implements D1Database {
 /** applyD1Migrations (cloudflare:test) accepts only an object whose constructor is named D1Database. */
 Object.defineProperty(StoreDatabase, "name", { value: "D1Database" });
 
-/** The handle for one circle: the object named by its root. */
+/** The handle for one circle: the object named by its root, its id kept and a stub taken per call. */
 export function circleDatabase(namespace: DurableObjectNamespace<CircleStore>, root: string): D1Database {
   const id = namespace.idFromName(root);
   return new StoreDatabase(() => namespace.get(id));

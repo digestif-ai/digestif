@@ -63,8 +63,15 @@ let operator_node () =
     };
   n
 
+let plain_bundle_json =
+  {|{"main_module":"index.js","compatibility_date":"2026-08-01","compatibility_flags":["nodejs_compat"]}|}
+
+(* bundle.json of a release carrying the store class (relay/scripts/bundle-json.ts). *)
+let store_bundle_json =
+  {|{"main_module":"index.js","compatibility_date":"2026-08-01","compatibility_flags":["nodejs_compat"],"durable_objects":[{"name":"CIRCLE_STORE","class_name":"CircleStore"}],"migrations":[{"tag":"v1","new_sqlite_classes":["CircleStore"]}]}|}
+
 (* A bundle for [version] with two migrations, and its manifest. *)
-let bundle version =
+let bundle ?(bundle_json = plain_bundle_json) version =
   let dir = tmpdir () in
   let root = Filename.concat dir "b" in
   List.iter
@@ -83,9 +90,7 @@ let bundle version =
   write (Filename.concat root "app/assets/app.js") "console.log(1)";
   write (Filename.concat root "migrations/0001_init.sql") "CREATE TABLE a(x);";
   write (Filename.concat root "migrations/0002_more.sql") "CREATE TABLE b(y);";
-  write
-    (Filename.concat root "bundle.json")
-    {|{"main_module":"index.js","compatibility_date":"2026-08-01","compatibility_flags":["nodejs_compat"]}|};
+  write (Filename.concat root "bundle.json") bundle_json;
   let archive = Filename.concat dir ("digestif-relay-" ^ version ^ ".tar.gz") in
   (match Proc.run [| "tar"; "-czf"; archive; "-C"; root; "." |] with
   | Ok { code = 0; _ } -> ()
@@ -122,6 +127,11 @@ type world = {
   mutable bucket_uploads : int;  (** asset uploads Cloudflare took *)
   mutable clock : float;
   mutable sleeps : int;
+  mutable migration_tag : string option;
+      (** the newest Durable Object migration the Worker has applied *)
+  mutable scripts : int;  (** script uploads Cloudflare took *)
+  mutable rollback_refused : bool;
+      (** Cloudflare refuses a deployment of a version older than a migration *)
 }
 
 let world () =
@@ -141,6 +151,9 @@ let world () =
     bucket_uploads = 0;
     clock = 1000.;
     sleeps = 0;
+    migration_tag = None;
+    scripts = 0;
+    rollback_refused = false;
   }
 
 let answer result =
@@ -205,6 +218,20 @@ let cloudflare w : Cf.transport =
                     w.applied @ [ String.sub sql (i + 1) (j - i - 1) ]
               | None -> ());
               ok_rows [])
+        | "GET", "/accounts/acct/workers/scripts" ->
+            answer
+              (`List
+                 [
+                   `Assoc
+                     (("id", `String "digestif-relay")
+                     ::
+                     (match w.migration_tag with
+                     | Some t -> [ ("migration_tag", `String t) ]
+                     | None -> []));
+                   `Assoc [ ("id", `String "another-worker") ];
+                 ])
+        | "POST", p when p = script ^ "/deployments" && w.rollback_refused ->
+            refuse 400
         | "GET", p when p = script ^ "/versions" ->
             answer
               (`Assoc
@@ -287,8 +314,17 @@ let cloudflare w : Cf.transport =
             answer (`Assoc [ ("id", `String "dep") ])
         | _ -> Ok { Relay_client.status = 404; body = "{}" })
 
+let annotation j k =
+  match j with
+  | `Assoc f -> (
+      match List.assoc_opt "annotations" f with
+      | Some (`Assoc a) -> (
+          match List.assoc_opt k a with Some (`String s) -> s | _ -> "")
+      | _ -> "")
+  | _ -> ""
+
 let form w : Cf.form_transport =
- fun ~path ~token:t ~parts ->
+ fun ~meth ~path ~token:t ~parts ->
   match w.fail with
   | Some p when starts_with ~prefix:p path -> refuse w.fail_status
   | _ ->
@@ -321,21 +357,40 @@ let form w : Cf.form_transport =
           let j = Yojson.Safe.from_file meta.file in
           w.metadata <- Some j;
           w.uploads <- w.uploads + 1;
-          let annotation k =
-            match j with
-            | `Assoc f -> (
-                match List.assoc_opt "annotations" f with
-                | Some (`Assoc a) -> (
-                    match List.assoc_opt k a with
-                    | Some (`String s) -> s
-                    | _ -> "")
-                | _ -> "")
-            | _ -> ""
-          in
           w.versions <-
-            ("ver-new", annotation "workers/tag", annotation "workers/message")
+            ( "ver-new",
+              annotation j "workers/tag",
+              annotation j "workers/message" )
             :: w.versions;
           answer (`Assoc [ ("id", `String "ver-new") ]))
+      else if
+        meth = "PUT" && path = "/accounts/acct/workers/scripts/digestif-relay"
+      then (
+        if t <> token then refuse 401
+        else
+          let meta =
+            List.find (fun (p : Cf.part) -> p.name = "metadata") parts
+          in
+          let j = Yojson.Safe.from_file meta.file in
+          w.metadata <- Some j;
+          w.scripts <- w.scripts + 1;
+          (match j with
+          | `Assoc f -> (
+              match List.assoc_opt "migrations" f with
+              | Some (`Assoc g) -> (
+                  match List.assoc_opt "new_tag" g with
+                  | Some (`String tag) -> w.migration_tag <- Some tag
+                  | _ -> ())
+              | _ -> ())
+          | _ -> ());
+          w.versions <-
+            ( "ver-new",
+              annotation j "workers/tag",
+              annotation j "workers/message" )
+            :: w.versions;
+          (* A script upload serves its version at once. *)
+          w.serving <- "ver-new";
+          answer (`Assoc [ ("id", `String "digestif-relay") ]))
       else Ok { Relay_client.status = 404; body = "{}" }
 
 let relay w (n : Node.t) : Relay_client.transport =
@@ -637,6 +692,132 @@ let not_due () =
   Alcotest.(check int) "not without a token" 0 (List.length (pass w n bytes m));
   Alcotest.(check (list string)) "nothing deployed" [] w.deployed
 
+let field j k = match j with `Assoc f -> List.assoc_opt k f | _ -> None
+
+let store_binding =
+  `Assoc
+    [
+      ("type", `String "durable_object_namespace");
+      ("name", `String "CIRCLE_STORE");
+      ("class_name", `String "CircleStore");
+    ]
+
+let fail_outcomes os =
+  Alcotest.failf "%s" (String.concat "; " (List.map D.outcome_to_string os))
+
+(* A release whose migration tag the Worker has not applied is uploaded as the Worker script, with
+   the migration and the class's binding, and serves without a separate deployment. *)
+let uploads_the_script_for_a_new_migration_tag () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle ~bundle_json:store_bundle_json "0.2.0" in
+  (match pass w n bytes m with
+  | [ D.Deployed { version; _ } ] ->
+      Alcotest.(check string) "deployed" "0.2.0" (Version.to_string version)
+  | os -> fail_outcomes os);
+  Alcotest.(check int) "one script upload" 1 w.scripts;
+  Alcotest.(check int) "no version upload" 0 w.uploads;
+  Alcotest.(check (list string)) "no separate deployment" [] w.deployed;
+  Alcotest.(check (option string)) "the tag applied" (Some "v1") w.migration_tag;
+  let meta = Option.get w.metadata in
+  Alcotest.(check string)
+    "the migrations the Worker lacks, each step without its tag"
+    {|{"new_tag":"v1","steps":[{"new_sqlite_classes":["CircleStore"]}]}|}
+    (Yojson.Safe.to_string (Option.get (field meta "migrations")));
+  Alcotest.(check bool)
+    "binds the class" true
+    (match field meta "bindings" with
+    | Some (`List l) -> List.mem store_binding l
+    | _ -> false);
+  Alcotest.(check string)
+    "tagged with the release" "relay-v0.2.0"
+    (annotation meta "workers/tag");
+  let r = record n in
+  Alcotest.(check string)
+    "the rollback target is what served" "ver-now" r.rollback_version_id;
+  Alcotest.(check (option string))
+    "records the version" (Some "0.2.0") r.reported_version
+
+(* Once the Worker has applied the bundle's newest tag, a release is a version upload as any other,
+   still binding the class. *)
+let uploads_a_version_once_the_tag_is_applied () =
+  let n = operator_node () and w = world () in
+  w.migration_tag <- Some "v1";
+  let m, bytes = bundle ~bundle_json:store_bundle_json "0.2.0" in
+  (match pass w n bytes m with
+  | [ D.Deployed _ ] -> ()
+  | os -> fail_outcomes os);
+  Alcotest.(check int) "no script upload" 0 w.scripts;
+  Alcotest.(check int) "a version upload" 1 w.uploads;
+  Alcotest.(check (list string)) "deployed it" [ "ver-new" ] w.deployed;
+  let meta = Option.get w.metadata in
+  Alcotest.(check bool) "no migrations" true (field meta "migrations" = None);
+  Alcotest.(check bool)
+    "binds the class" true
+    (match field meta "bindings" with
+    | Some (`List l) -> List.mem store_binding l
+    | _ -> false)
+
+let refuses_a_tag_the_bundle_does_not_carry () =
+  let n = operator_node () and w = world () in
+  w.migration_tag <- Some "v9";
+  let m, bytes = bundle ~bundle_json:store_bundle_json "0.2.0" in
+  (match pass w n bytes m with
+  | [ D.Refused { why; _ } ] ->
+      Alcotest.(check bool) why true (contains why "v9")
+  | os -> fail_outcomes os);
+  Alcotest.(check int) "no upload" 0 (w.scripts + w.uploads);
+  Alcotest.(check (list string)) "deployed nothing" [] w.deployed
+
+(* A script upload that fails its health check is rolled back as any release; Cloudflare refusing
+   to deploy a version older than the migration leads the digest with the rollback to run. *)
+let a_failed_script_upload_is_rolled_back_or_says_why_not () =
+  let n = operator_node () and w = world () in
+  w.served <- [ ("ver-now", Some "0.1.0"); ("ver-new", None) ];
+  let m, bytes = bundle ~bundle_json:store_bundle_json "0.2.0" in
+  (match pass w n bytes m with
+  | [ D.Rolled_back { to_; _ } ] -> Alcotest.(check string) "to" "0.1.0" to_
+  | os -> fail_outcomes os);
+  Alcotest.(check (list string))
+    "deployed the old version back" [ "ver-now" ] w.deployed;
+  let n = operator_node () and w = world () in
+  w.served <- [ ("ver-now", Some "0.1.0"); ("ver-new", None) ];
+  w.rollback_refused <- true;
+  (match pass w n bytes m with
+  | [ D.Rollback_failed { why; _ } ] ->
+      Alcotest.(check bool)
+        why true
+        (contains why "Cloudflare did not deploy it")
+  | os -> fail_outcomes os);
+  Alcotest.(check int) "a lead line" 1 (List.length (D.lead_lines n ~now:0.))
+
+let refuses_a_malformed_store_bundle () =
+  List.iter
+    (fun (name, j) ->
+      match D.bundle_of_json (Yojson.Safe.from_string j) with
+      | Ok _ -> Alcotest.failf "%s: read" name
+      | Error _ -> ())
+    [
+      ( "a binding without its class",
+        {|{"compatibility_date":"2026-08-01","durable_objects":[{"name":"CIRCLE_STORE"}]}|}
+      );
+      ( "a step without a tag",
+        {|{"compatibility_date":"2026-08-01","migrations":[{"new_sqlite_classes":["A"]}]}|}
+      );
+      ( "a tag twice",
+        {|{"compatibility_date":"2026-08-01","migrations":[{"tag":"v1"},{"tag":"v1"}]}|}
+      );
+    ];
+  match D.bundle_of_json (Yojson.Safe.from_string store_bundle_json) with
+  | Ok b ->
+      Alcotest.(check (list (pair string string)))
+        "the binding"
+        [ ("CIRCLE_STORE", "CircleStore") ]
+        b.durable_objects;
+      Alcotest.(check (list string))
+        "the tags" [ "v1" ]
+        (List.map fst b.migrations)
+  | Error e -> Alcotest.fail e
+
 let () =
   Ci_alcotest.run "digestif-relay-deploy-pass"
     [
@@ -661,5 +842,16 @@ let () =
           Alcotest.test_case "a failed migration is refused for good" `Quick
             a_failed_migration_is_refused_for_good;
           Alcotest.test_case "not due" `Quick not_due;
+          Alcotest.test_case "uploads the script for a new migration tag" `Quick
+            uploads_the_script_for_a_new_migration_tag;
+          Alcotest.test_case "uploads a version once the tag is applied" `Quick
+            uploads_a_version_once_the_tag_is_applied;
+          Alcotest.test_case "refuses a tag the bundle does not carry" `Quick
+            refuses_a_tag_the_bundle_does_not_carry;
+          Alcotest.test_case
+            "a failed script upload is rolled back or says why not" `Quick
+            a_failed_script_upload_is_rolled_back_or_says_why_not;
+          Alcotest.test_case "refuses a malformed store bundle" `Quick
+            refuses_a_malformed_store_bundle;
         ] );
     ]

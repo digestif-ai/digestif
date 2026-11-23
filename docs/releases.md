@@ -1008,7 +1008,9 @@ read-only token while every dependency's install scripts run:
 (the map's sources repository-relative), `app/` (the phone app), `migrations/*.sql` (every D1
 migration from `0001_init.sql` on) and `bundle.json` (`relay/scripts/bundle-json.ts`): the main
 module's name, the compatibility date and flags, the assets binding, and the names, never the
-values, of the D1 binding and every var and secret a deployment sets. It carries no per-deployment
+values, of the D1 binding and every var and secret a deployment sets, with each Durable Object
+binding and the class it names and every Durable Object migration step with its tag (the top level
+of `relay/wrangler.jsonc`, which every environment repeats). It carries no per-deployment
 value, so one bundle deploys to every relay unchanged. `ci/build.slow.sh` packs a rehearsal bundle and
 runs the suite against it on every change.
 
@@ -1188,9 +1190,19 @@ nothing is deployed. Otherwise:
    source map as a new Worker version carrying `keep_bindings` for every binding kind, the `ASSETS`
    binding with the session's completion token and the assets config `bundle.json` names
    (`html_handling` `none` and `run_worker_first` when it names none), tagged `relay-v<version>` and
-   annotated with the bundle's sha256. A version already carrying both is reused.
+   annotated with the bundle's sha256. A version already carrying both is reused. Every Durable
+   Object binding `bundle.json` names is in the upload.
 4. **Deploy.** Record the Worker version serving now in `relay-deploy.json` as the rollback target,
    then deploy the new version at 100%. A pass finding it serving already deploys nothing.
+
+   **A Durable Object migration** takes steps 3 and 4 as one, since a version upload cannot apply
+   one. When `bundle.json` lists migration steps, the pass reads the tag the Worker has applied (the
+   `migration_tag` Cloudflare's Worker list reports), and when it is not the newest step's tag,
+   records the version serving now as the rollback target, then uploads the module as the Worker
+   script itself (the call `wrangler deploy` makes), carrying the steps after the applied tag (every
+   step when none is applied) with `old_tag` and `new_tag`; that upload serves at once. A Worker on a
+   tag the bundle does not list refuses the release for good. A rollback cannot cross a migration,
+   so a release that carries one changes nothing else (relay/README.md, Each circle's store).
 5. **Health check.** A signed `GET /v0/circle` answering 200 with the release's `relay_version` and
    the circle's `root`, and `GET /app/` answering 200, within two minutes of awake time counted in
    one-second steps as a trial is.
@@ -1202,8 +1214,10 @@ nothing is deployed. Otherwise:
    to run, on every digest until the relay answers a version the node knows.
 
 `bundle.json` is read for `main_module` (default `index.js`), `compatibility_date` (required),
-`compatibility_flags`, and an optional `assets` object (`binding`, `html_handling`,
-`run_worker_first`).
+`compatibility_flags`, an optional `assets` object (`binding`, `html_handling`,
+`run_worker_first`), optional `durable_objects` (`name`, `class_name`) and optional `migrations`
+(each step a `tag` and what it does). A binding without its class, a step without a tag or a tag
+listed twice refuses the bundle for good.
 
 A step failing before the deploy changes nothing the relay serves. A download, a bundle whose bytes
 do not match, or Cloudflare not answering or answering 5xx is kept as pending in

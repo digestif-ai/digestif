@@ -14,6 +14,10 @@ import { circle, invite, page } from "./read.ts";
 import { releaseSignersOf } from "./signers.ts";
 import { version } from "./version.ts";
 
+// The class of each circle's store (src/store.ts), exported so the Worker's CIRCLE_STORE binding
+// names it. No route reads it yet.
+export { CircleStore } from "./store.ts";
+
 const INVITES = "/v0/invites/";
 const LINKS = "/v0/links/";
 

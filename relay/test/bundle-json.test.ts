@@ -25,6 +25,19 @@ describe("bundle.json", () => {
     expect(described.bindings.secrets).toEqual(["RELAY_SEALING_KEY", "RESEND_API_KEY"]);
   });
 
+  it("names the store class every deployment binds, and the top level's migration steps", () => {
+    expect(described.durable_objects).toEqual([{ name: "CIRCLE_STORE", class_name: "CircleStore" }]);
+    expect(described.migrations).toEqual([{ tag: "v1", new_sqlite_classes: ["CircleStore"] }]);
+  });
+
+  it("refuses migrations an environment lists, a tag named twice, and one binding naming two classes", () => {
+    const env = config.env as Record<string, Record<string, unknown>>;
+    expect(() => bundleJson({ ...config, env: { ...env, x: { ...env["dinners"], migrations: [{ tag: "v1" }] } } })).toThrow(/only the top level/);
+    expect(() => bundleJson({ ...config, migrations: [{ tag: "v1" }, { tag: "v1" }] })).toThrow(/twice/);
+    const other = { durable_objects: { bindings: [{ name: "CIRCLE_STORE", class_name: "Other" }] } };
+    expect(() => bundleJson({ ...config, env: { ...env, x: { ...env["dinners"], ...other } } })).toThrow(/CircleStore in one deployment and Other/);
+  });
+
   it("carries no per-deployment value: no var's value, no route, no database id, no environment name", () => {
     const text = JSON.stringify(described);
     expect(text).not.toContain("sha256:");
