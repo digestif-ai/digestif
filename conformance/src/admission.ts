@@ -70,6 +70,24 @@ export function signerKeysOf(value: Json | undefined): string[] | undefined {
 }
 
 /**
+ * The identity each entry of a digestif-signers-v0 (or a circle root's `admins`) binds its key to
+ * (docs/protocol.md, circle): key to identity, for every entry naming an ed25519 `identity`. An
+ * entry without one leaves its key unbound; undefined when an `identity` is present and not an
+ * ed25519 key.
+ */
+export function signerIdentitiesOf(entries: Json | undefined): Map<string, string> | undefined {
+  const bound = new Map<string, string>();
+  if (!Array.isArray(entries)) return bound;
+  for (const s of entries) {
+    if (!isObject(s) || typeof s["key"] !== "string" || s["identity"] === undefined) continue;
+    const identity = s["identity"];
+    if (typeof identity !== "string" || !identity.startsWith("ed25519:")) return undefined;
+    bound.set(s["key"], identity);
+  }
+  return bound;
+}
+
+/**
  * The release signer set the admission fold judges dinners by, and the release keys revoked so far.
  * It starts from a set the folder trusts (a relay's build's release-signers.json) and changes only
  * by a signer_set and a release_revocation that verify against it, as a node's does.
@@ -77,9 +95,12 @@ export function signerKeysOf(value: Json | undefined): string[] | undefined {
 export class SignerSet {
   keys: string[];
   readonly revoked = new Set<string>();
+  /** Key to the circle identity its entry names (docs/protocol.md, circle); an unbound key is absent. */
+  identities: Map<string, string>;
 
-  constructor(keys: string[]) {
+  constructor(keys: string[], identities: ReadonlyMap<string, string> = new Map()) {
     this.keys = [...keys];
+    this.identities = new Map([...identities].filter(([key]) => keys.includes(key)));
   }
 
   /** True while a revoked key is in the set: admissions halt, as releases do. */
@@ -97,11 +118,28 @@ export class SignerSet {
     const doc = signedDocumentOf(body);
     if (doc === undefined) return false;
     const next = signerKeysOf(doc.value);
-    if (next === undefined || next.some((k) => this.revoked.has(k))) return false;
+    const identities = signerIdentitiesOf(doc.value["signers"]);
+    if (next === undefined || identities === undefined || next.some((k) => this.revoked.has(k))) return false;
     const valid = validSigners(SIGNERS_DOMAIN, doc);
     if (!this.keys.every((k) => valid.has(k)) || !next.every((k) => valid.has(k))) return false;
     this.keys = next;
+    this.identities = identities;
     return true;
+  }
+
+  /**
+   * docs/protocol.md, revoke: the identity an admin key revokes as. Undefined unless `key` is in the
+   * set, no key of the set is revoked, and every key of the set is bound to an identity, since a set
+   * with an unbound key cannot tell a sitting admin from a member.
+   */
+  adminIdentity(key: string): string | undefined {
+    if (!this.keys.includes(key) || this.halted || !this.keys.every((k) => this.identities.has(k))) return undefined;
+    return this.identities.get(key);
+  }
+
+  /** True when a key of the set is bound to this identity: they are a sitting admin. */
+  seats(identity: string): boolean {
+    return this.keys.some((k) => this.identities.get(k) === identity);
   }
 
   /**

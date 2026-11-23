@@ -29,7 +29,7 @@
         },
         {
           "name": "revoke",
-          "description": "Circle state. Revokes a device key (signed by the identity key) or an identity key (signed by itself or the host who admitted it). Its after_seq names, for each device key it stops, the last seq of that key's honest chain, and its mail_read, for each mail key it stops, the hashes of that key's envelopes the revoker holds; nodes read nothing outside them, whatever its created_at."
+          "description": "Circle state. Revokes a device key (signed by the identity key) or an identity key (signed by itself, by the host who admitted it, or by an admin key of the circle's signer set when the identity holds no key of that set). Its after_seq names, for each device key it stops, the last seq of that key's honest chain, and its mail_read, for each mail key it stops, the hashes of that key's envelopes the revoker holds; nodes read nothing outside them, whatever its created_at."
         },
         {
           "name": "card",
@@ -94,6 +94,10 @@
         {
           "name": "deny_list",
           "description": "Content. The member's deny list, sealed to the member's own card key, which their node writes whenever the list changes so their phone checks a circle answer as the node does (docs/protocol.md, The phone)."
+        },
+        {
+          "name": "keep",
+          "description": "Content. One admin's answer that a member in review stays (docs/protocol.md, Member review): the signed Keep naming the member, sealed to every admin and the member, naming them in the clear. Nodes honour it only from a device of an identity bound to a key of the circle's signer set when it was sent."
         },
         {
           "name": "retract",

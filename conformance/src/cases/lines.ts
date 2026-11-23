@@ -10,6 +10,9 @@ export const LINES = {
     "Revocation: appends from a revoked device are refused, and so is a revoke whose `after_seq` or `mail_read` is missing or names a key it does not stop; a node reads a revoked device's envelopes up to `after_seq` and a revoked mail key's that `mail_read` lists, and no others, whatever their `created_at`.",
   hostDeviceRevoke:
     "Host device revoke: the device key that wrote a dinner revokes an identity a join on that dinner admitted, within 7 days of the join; any other device key, a device key target, or a revoke after the window is refused.",
+  adminRevoke:
+    "Admin revoke: a revoke signed by an admin key of the circle's signer set, every key of which is bound to an identity, and authored by a device of the identity its key is bound to, revokes a member whose identity holds no key of the set; one of an identity a key of the set is bound to, by a key outside the set, or authored by another member's device is refused.",
+  keep: "Keep: a relay accepts a `keep` from an admitted author as content, checking only the envelope, and serves it, its sealed body intact, to a reader admitted before it; a node honours a Keep only from a device of an identity bound to a key of the signer set at its `created_at`, and ignores any other.",
   clock: "Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.",
   bootstrap: "Bootstrap: a join from an unknown, spent or expired invite key is refused.",
   pushedJoin:

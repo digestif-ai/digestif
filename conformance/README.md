@@ -137,6 +137,8 @@ something; a new case lands with the break that fails it.
 | Verification | | `node.verify.bad-signature`, `node.verify.bad-body-hash`, `node.verify.forged-author` |
 | `seq` regression | `relay.seq.chained-regression-refused`, `relay.seq.mail-regression-allowed` | `node.seq.mail-gaps-allowed` |
 | Revocation | `relay.revocation.device-refused`, `relay.revocation.identity-refused`, `relay.revocation.cutoff-required` | `node.revocation.ignored-from-revoke-forward`, `node.revocation.mail-read-by-listed-hashes` |
+| Admin revoke | `relay.revocation.admin-revokes-member`, `relay.revocation.admin-may-not-revoke-admin` | |
+| Keep | `relay.keep.served-to-readers` | |
 | Clock drift | `relay.clock.skew-inside-window`, `relay.clock.skew-outside-window`, `relay.clock.replayed-nonce` | |
 | Bootstrap | `relay.circle.root`, `relay.bootstrap.valid-join`, `relay.bootstrap.unknown-invite-refused`, `relay.bootstrap.spent-invite-refused`, `relay.bootstrap.expired-invite-refused` | `node.bootstrap.bad-joins-not-admitted` |
 | Pushed join | `relay.bootstrap.pushed-late-join-accepted`, `relay.bootstrap.pushed-join-after-expiry-refused`, `relay.bootstrap.pushed-join-revoked-pusher-refused` | `node.bootstrap.join-replicated-after-expiry` |
@@ -169,7 +171,7 @@ reads the protocol differently raises it on the protocol, and the suite follows.
   between; refusing it would leave the missing range nowhere to be backfilled from.
 - **Content bodies** are not fixed by protocol v0. The suite sends `summary` as `{ "text" }` (plus
   `padding` in the size case), an `item` to named members as `{ "to", "sealed" }` and a pick on it
-  (a `decision`) as `{ "item", "sealed" }`, each sealed part opaque bytes, and `retract` as
+  (a `decision`) as `{ "item", "sealed" }`, a `keep` as `{ "to", "sealed" }`, each sealed part opaque bytes, and `retract` as
   `{ "target": "<envelope hash>" }`.
 - **The node's merge order.** A node folds the union of every relay's envelopes by repeatedly taking,
   in `created_at`-then-hash order, every envelope that folds, until a pass folds nothing. The order
@@ -178,6 +180,11 @@ reads the protocol differently raises it on the protocol, and the suite follows.
   never read by this order: the node reads it up to the revoke's `after_seq`, and an envelope past
   the cutoff that folded ahead of the revoke is left out and the union folded again. A revoked mail
   key is read the same way by the envelope hashes the revoke's `mail_read` lists.
+- **The signer set an admin revoke is judged by.** The test circle's root is a dinner, so its signer
+  set is the release signers a relay under test is configured with. An admin revoke case first posts
+  a `signer_set` naming those same keys, each bound to a member the case invites (`World.bindAdmins`):
+  the keys do not change, so every admission the suite signs still counts, and a rerun binds them to
+  its own members. The fake relay folds the same set and judges no admission.
 - **Join epochs differ across relays.** Each relay folds in its own order, so two relays may give one
   member different `join_epoch` values. The divergent relay case compares epoch advances and the
   admitted set, never `join_epoch`.

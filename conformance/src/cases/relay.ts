@@ -1,5 +1,5 @@
 // Relay cases: run over HTTP against any relay URL configured with the test circle's root.
-import { namedItemBody, pickBody, relayReleaseBody, releaseRecallBody, releaseRevocationBody, retractBody, revokeBody, summaryBody } from "../bodies.ts";
+import { keepBody, namedItemBody, pickBody, relayReleaseBody, releaseRecallBody, releaseRevocationBody, retractBody, revokeBody, summaryBody } from "../bodies.ts";
 import { jcs, type Json } from "../encoding.ts";
 import { envelopeHash, isCircleState, signEnvelope, verifyEnvelope, type Kind, type SignedEnvelope, type StoredEnvelope } from "../envelope.ts";
 import { accepted, check, equal, errorCodes, ok, refused, type Case } from "../harness.ts";
@@ -288,6 +288,72 @@ export const relayCases: Case<World>[] = [
       const noMailRead = { target, by: by.key, after_seq: { [lost.key]: lost.seq } };
       const withoutMail = replacement.peek("revoke", { ...noMailRead, signature: by.sign(jcs(noMailRead)) }, epoch);
       refused(await client.append(withoutMail), [422], "malformed", "a revoke with no mail_read");
+    },
+  },
+  {
+    id: "relay.revocation.admin-revokes-member",
+    covers: LINES.adminRevoke,
+    title:
+      "An admin key of the signer set, every key of it bound, revokes a member, posted by the admin's own device; a key outside the set, or the admin's key posted by another member's device, is refused",
+    async run(world) {
+      const url = world.relay(0);
+      const [first, second, member, bystander] = await world.members(["admin revoke first admin", "admin revoke second admin", "admin revoke member", "admin revoke bystander"], [url]);
+      const [firstKey] = await world.bindAdmins([first!, second!], [url]);
+      const stranger = Signer.random();
+      refused(
+        await world.client(url, first!.device).append(await world.revoke(first!.device, stranger, member!.identity.key, [member!.device])),
+        NOT_ADMITTED,
+        "not_admitted",
+        "a revoke of a member by a key outside the signer set",
+      );
+      refused(
+        await world.client(url, bystander!.device).append(await world.revoke(bystander!.device, firstKey!, member!.identity.key, [member!.device])),
+        NOT_ADMITTED,
+        "not_admitted",
+        "an admin key's revoke posted by a device of an identity the key is not bound to",
+      );
+      accepted(
+        await world.client(url, first!.device).append(await world.revoke(first!.device, firstKey!, member!.identity.key, [member!.device])),
+        "an admin key's revoke of a member, posted by the admin's own device",
+      );
+      refused(await world.client(url, member!.device).append(await world.summary(member!.device, "after admin revoke")), NOT_ADMITTED, "not_admitted", "append by the removed member's device");
+      const view = await circleOf(world, url);
+      for (const key of [member!.identity.key, member!.device.key]) check(isRevoked(view, key), `GET /v0/circle reports ${key} revoked`);
+      check(!isRevoked(view, bystander!.identity.key), "the bystander is not revoked");
+    },
+  },
+  {
+    id: "relay.revocation.admin-may-not-revoke-admin",
+    covers: LINES.adminRevoke,
+    title: "An admin key's revoke of an identity another key of the signer set is bound to, a sitting admin, is refused",
+    async run(world) {
+      const url = world.relay(0);
+      const [first, second] = await world.members(["sitting admin first", "sitting admin second"], [url]);
+      const [firstKey] = await world.bindAdmins([first!, second!], [url]);
+      refused(
+        await world.client(url, first!.device).append(await world.revoke(first!.device, firstKey!, second!.identity.key, [second!.device])),
+        NOT_ADMITTED,
+        "not_admitted",
+        "an admin key's revoke of a sitting admin",
+      );
+      accepted(await world.client(url, second!.device).append(await world.summary(second!.device, "still an admin")), "the sitting admin still appends");
+      check(!isRevoked(await circleOf(world, url), second!.identity.key), "the sitting admin is not revoked");
+    },
+  },
+  {
+    id: "relay.keep.served-to-readers",
+    covers: LINES.keep,
+    title: "A keep from an admitted author is accepted as content and served with its sealed body to a reader admitted before it",
+    async run(world) {
+      const url = world.relay(0);
+      const [admin, member] = await world.members(["keep admin", "kept member"], [url]);
+      const body = keepBody([admin!.identity.key, member!.identity.key], world.tag);
+      const keep = admin!.device.next("keep", body, await world.epoch(url));
+      accepted(await world.client(url, admin!.device).append(keep), "the keep");
+      const served = await world.client(url, member!.device).fetchAll();
+      const got = served.find((s) => s.hash === envelopeHash(keep.envelope));
+      check(got !== undefined, "the kept member is served the keep");
+      equal(jcs(got.body ?? null), jcs(body), "the keep body the kept member is served");
     },
   },
   {

@@ -215,6 +215,7 @@ let content_kinds =
     "approval_answer";
     "digest";
     "deny_list";
+    "keep";
     "retract";
   ]
 

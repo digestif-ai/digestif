@@ -43,7 +43,8 @@ These are not part of Digestif, and nothing below describes them:
 - **Per-job failure reporting**: the failed tick, the quiet tick's note and the Approvals reason
   line. One problem record replaces them.
 - **The three-day silence report in the digest**: every member sees each member's stage and when
-  their last note went out.
+  their last note went out. Three days of silence now go to the admins and the silent member alone
+  (Member review), and to nobody's digest but the member's own.
 
 ## Mental model
 
@@ -402,10 +403,23 @@ phone at its next read and the mail in a digest written straight away, after qui
 carried by that one email. The machine acts on the first pick it reads at its next sync, and Unpause
 there is the Paused page's Unpause; an Unpause on the machine closes the choice by writing its pick,
 so its links say the question is closed.
-Members shows each member's stage and when their last note went out, invitees included as Invited,
-and every member judges for themselves. A failure on the member's own machine is a problem, one
+Members shows each member's stage and when their last note went out, invitees included as Invited;
+a member who goes silent is put to the admins (Member review, below). A failure on the member's own machine is a problem, one
 record for every job, which the member sees as a line at the top of the Feed and in a note's Log; the circle sees only No
 note from Mike today; Athena couldn't run.
+
+**Member review.** A silent member is put to the admins, and told so. A member with no note on
+three whole UTC days in a row, counted from the latest of their newest note, the newest Keep and
+their join, is In review: a status note shares nothing and does not count, and a note waiting for
+approval counts on the day it goes out. Each admin's Inbox carries an item asking Keep or Remove,
+the member's own Inbox a notice that their membership is in review, which their digest carries to
+their mail; nobody else sees it. Any one admin answers for the circle. Keep is a signed message to
+the admins and the member that ends the review and restarts the count from its day. Remove is
+`digestif-update remove <identity>`, a revoke signed with the admin's key, never on a page, and
+the member reads Revoked and returns only by a new invite. A sitting admin's key leaves the signer
+set by a `removal` approval before they can be removed. A note from the member also ends the
+review, and with no answer the member stays in review: nothing removes anyone on its own.
+docs/protocol.md (revoke, Member review) has the rules.
 
 **Quiet hours and muting.** A member sets quiet hours for the digest and can mute a member's notes; muted
 messages are filtered before any agent run.

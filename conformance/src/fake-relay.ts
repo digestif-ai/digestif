@@ -21,6 +21,7 @@ import {
   type SignedEnvelope,
   type StoredEnvelope,
 } from "./envelope.ts";
+import { testReleaseSigners } from "./admission.ts";
 import { Fold, type FoldBreak, type FoldError } from "./fold.ts";
 import { HEADER_KEY, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, requestString } from "./request.ts";
 
@@ -58,7 +59,8 @@ export type RelayBreak =
   | "version-signed"
   | "item-kinds"
   | "replaced-kinds"
-  | "deny-list-kind";
+  | "deny-list-kind"
+  | "keep-kind";
 
 export interface FakeRelayOptions {
   root: string;
@@ -133,8 +135,14 @@ export class FakeRelay {
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.now = options.now ?? (() => new Date());
     this.breaks = new Set(options.breaks ?? []);
-    const foldBreaks: FoldBreak[] = ["expiry", "spent", "revocation", "retract-author", "cutoff-shape", "self-device", "device-signature", "host-device-dinner", "release-revocation-shape", "release-recall-shape", "relay-release-shape", "signer-set-shape", "prompt-shape"];
-    this.fold = new Fold(options.root, { breaks: foldBreaks.filter((b) => this.breaks.has(b)) });
+    const foldBreaks: FoldBreak[] = ["expiry", "spent", "revocation", "retract-author", "cutoff-shape", "self-device", "device-signature", "host-device-dinner", "release-revocation-shape", "release-recall-shape", "relay-release-shape", "signer-set-shape", "prompt-shape", "admin-revoke", "admin-revoke-admin"];
+    // The fold holds the signer set a relay starts from, the public test signers a relay under test
+    // is configured with, so an admin-signed revoke is judged as a real relay judges it; the cutover
+    // past every position keeps admitting each dinner by its invite keys alone.
+    this.fold = new Fold(options.root, {
+      breaks: foldBreaks.filter((b) => this.breaks.has(b)),
+      admission: { cutover: Number.MAX_SAFE_INTEGER, signers: testReleaseSigners().map((s) => s.key) },
+    });
   }
 
   async listen(port = 0, host = "127.0.0.1"): Promise<string> {
@@ -264,6 +272,9 @@ export class FakeRelay {
     const signed = parseSigned(raw, this.breaks.has("replaced-kinds"));
     if (this.breaks.has("item-kinds") && ["item", "item_answer", "item_close"].includes(signed.envelope.kind)) {
       throw new Refusal(422, "malformed", "a relay that does not know the item kinds");
+    }
+    if (this.breaks.has("keep-kind") && signed.envelope.kind === "keep") {
+      throw new Refusal(422, "malformed", "a relay that does not know the keep kind");
     }
     if (this.breaks.has("deny-list-kind") && signed.envelope.kind === "deny_list") {
       throw new Refusal(422, "malformed", "a relay that does not know the deny_list kind");

@@ -26,7 +26,7 @@ export function dinnerBody(host: Signer, label: string, guests: Guest[], relays:
  * docs/protocol.md, circle: a circle's root, naming the circle and its founder, with any first guests
  * and no dinner, and the circle's own `admins`, who judge its later admissions.
  */
-export function circleBody(founder: Signer, name: string, guests: Guest[], relays: string[], admins: Array<{ name: string; key: string }>): Json {
+export function circleBody(founder: Signer, name: string, guests: Guest[], relays: string[], admins: Array<{ name: string; key: string; identity?: string }>): Json {
   return {
     host: founder.key,
     circle: { name },
@@ -79,6 +79,14 @@ export function retractBody(target: string): Json {
  */
 export function namedItemBody(to: string[], label: string): Json {
   return { to, sealed: b64url(bytesOf(`conformance item ${label}`)) };
+}
+
+/**
+ * A Keep (docs/protocol.md, Member review): `to` names every admin and the member in the clear, and
+ * the signed Keep is sealed to them. The sealed part is opaque bytes here, since a relay never opens it.
+ */
+export function keepBody(to: string[], label: string): Json {
+  return { to, sealed: b64url(bytesOf(`conformance keep ${label}`)) };
 }
 
 /** A pick on an item (docs/protocol.md, Items, Picks): a decision naming it, the option sealed as opaque bytes. */

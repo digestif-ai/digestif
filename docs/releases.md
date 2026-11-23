@@ -52,6 +52,10 @@ change is a `digestif-signers-v0` document, the whole new set, in the same forma
                { "name": "Sasha Ivanova", "key": "ed25519:..." } ] }
 ```
 
+An entry may name its holder's circle `identity` beside `name` and `key`; a circle reads it to tell a
+sitting admin from a member ([protocol.md](protocol.md), circle), and the channel and a node's
+update state ignore it.
+
 Each signature is over `DIGESTIF-SIGNERS-V0\n<document bytes>`. It is accepted only when:
 
 1. every key in the current set signed it,
