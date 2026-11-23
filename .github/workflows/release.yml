@@ -230,12 +230,14 @@ jobs:
             --url-base "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" \
             "${args[@]}" > assets/manifest.json
           cat assets/manifest.json
-      # The hosted install script, served at https://digestif.io/install.sh once this release is
-      # published (relay/src/install.ts), carrying each platform's sha256 from the manifest above.
+      # The hosted install script for the release's own install.sh asset, carrying each platform's
+      # sha256 from the manifest above, and linking the manifest beside its signatures on the channel:
+      # the same bytes the relay renders at https://digestif.io/install.sh once the version is
+      # published and both signers signed it (relay/src/install.ts).
       - name: write the hosted install script
         run: |
           bash ci/install-hosted.sh assets/manifest.json \
-            "https://github.com/$GITHUB_REPOSITORY/tree/main/releases/$VERSION" > assets/install.sh
+            "https://github.com/$GITHUB_REPOSITORY/tree/channel/$VERSION" > assets/install.sh
           sh -n assets/install.sh
       # Every archive, every digestif-update, install.sh and manifest.json, attested as built by
       # this workflow on the tag at this commit, before any of them reaches the draft.

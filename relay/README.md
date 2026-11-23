@@ -88,8 +88,7 @@ Worker variables, in `wrangler.jsonc` (`vars`) or per deployment with `wrangler 
 | `RELEASE_SIGNERS` | A `digestif-signers-v0` document the admission fold starts from in place of the build's `node/update/release-signers.json`. Set only at the top level, to the conformance suite's public test signers; no deployed environment sets it. | the build's `release-signers.json` |
 | `MAIL_FROM` | The From header of the digest email, an address on the circle's domain. | `Digestif <digest@mail.digestif.io>` |
 | `RELAY_URL` | The URL answer links name, when the relay is reached through another address than the request's origin (a tunnel in front of `wrangler dev`). | the request origin |
-| `INSTALL_SCRIPT_URL` | Where `GET /install.sh` reads the hosted install script from: the newest published release's `install.sh` (docs/releases.md, "The hosted install script"). Unset, the relay serves no `/install.sh`. | unset |
-| `SITE_HOST` | The circle's bare domain, on which the relay answers `/install.sh` and nothing else. | unset |
+| `SITE_HOST` | The circle's bare domain, on which the relay answers `/install.sh` and nothing else: the install template rendered from the newest published node manifest that every key of the build's `release-signers.json` signed, never `RELEASE_SIGNERS` (`src/install.ts`, docs/releases.md "The hosted install script"). Unset, the relay serves no `/install.sh`. | unset |
 
 Secrets, set with `wrangler secret put`, required when `MAILER` is `"1"` and unread otherwise:
 
@@ -168,7 +167,7 @@ assets or bindings into an environment, so each repeats them; the top-level conf
 | Address | custom domains `dinners.digestif.io`, and `digestif.io` for `/install.sh` | its `workers.dev` address, `dinners.<Roman's subdomain>.workers.dev` |
 | `MAILER` | `"1"`, the one relay that mails | `"0"`, never mails |
 | `RELAY_URL` | `https://dinners.digestif.io` | a placeholder, replace it with the relay's URL |
-| `INSTALL_SCRIPT_URL`, `SITE_HOST` | the latest release's `install.sh`, `digestif.io` | unset |
+| `SITE_HOST` | `digestif.io` | unset |
 | Secrets (`secrets.required`) | `RELAY_SEALING_KEY`, `RESEND_API_KEY` | `RELAY_SEALING_KEY` |
 
 Both name the founding circle as their home with `vars.CIRCLE_ROOT` (dinner 2's dinner message),

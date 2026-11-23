@@ -52,7 +52,7 @@
   // "secrets.required" and they are set with `wrangler secret put <NAME> --env <environment>`.
   "env": {
     // dinners: the mailer, in the project's Cloudflare account, at dinners.digestif.io, and the
-    // hosted install script at digestif.io/install.sh (src/install.ts).
+    // hosted install script at digestif.io/install.sh (SITE_HOST, src/install.ts).
     "dinners": {
       "name": "digestif-dinners",
       "keep_vars": true,
@@ -72,7 +72,6 @@
         "MAILER": "1",
         "MAIL_FROM": "Digestif <digest@mail.digestif.io>",
         "RELAY_URL": "https://dinners.digestif.io",
-        "INSTALL_SCRIPT_URL": "https://github.com/digestif-ai/digestif/releases/latest/download/install.sh",
         "SITE_HOST": "digestif.io"
       },
       "assets": {
