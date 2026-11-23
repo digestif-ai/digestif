@@ -9,8 +9,10 @@
 type choice = { id : string; label : string }
 
 (* How an answer arrived: the person at this node, a decision envelope (from the laptop's UI, a
-   phone, or an answer link), or the ask lapsing on its on_no_answer. *)
-type via = Person | Decision of string | Lapse
+   phone, or an answer link), the ask lapsing on its on_no_answer, or a rule of a later release
+   that settles a question it no longer asks (Invite_node.settle_first_join_asks). An earlier
+   release reads a rule's answer as the person's. *)
+type via = Person | Decision of string | Lapse | Rule
 
 type t = {
   key : string;
@@ -71,6 +73,7 @@ let via_of_row via decision =
   match (Log.text_opt via, Log.text_opt decision) with
   | Some "decision", Some d -> Some (Decision d)
   | Some "lapse", _ -> Some Lapse
+  | Some "rule", _ -> Some Rule
   | Some _, _ -> Some Person
   | None, _ -> None
 
@@ -78,6 +81,7 @@ let via_columns = function
   | Person -> ("person", None)
   | Decision d -> ("decision", Some d)
   | Lapse -> ("lapse", None)
+  | Rule -> ("rule", None)
 
 let of_row = function
   | [|

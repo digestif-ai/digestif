@@ -297,6 +297,93 @@ let join_for (d : Dinner.t) env n =
   let jenv = Join.envelope ~now:(hours 2) ~code:inv.code body in
   Result.get_ok (Join.verify jenv)
 
+(* DIG-421: an open invite is written as an earlier release reads it, an earlier release's
+   "expected" reads as open, and a first-join ask an earlier release raised is recognized, while a
+   second identity's ask is not. *)
+let test_host_watch_earlier_release () =
+  let d, env = signed_dinner () in
+  let ledger =
+    Host_watch.records_of_dinner
+      ~dinner_hash:(Envelope.hash env.envelope)
+      ~message:"" d
+  in
+  let states j =
+    match j with
+    | `List items ->
+        List.map
+          (function
+            | `Assoc fs -> (
+                match List.assoc_opt "state" fs with
+                | Some (`String s) -> s
+                | _ -> "?")
+            | _ -> "?")
+          items
+    | _ -> []
+  in
+  Alcotest.(check (list string))
+    "an open invite is written as sent" [ "sent"; "sent" ]
+    (states (Host_watch.to_json ledger));
+  let expected =
+    match Host_watch.to_json ledger with
+    | `List (`Assoc fs :: rest) ->
+        `List
+          (`Assoc (("state", `String "expected") :: List.remove_assoc "state" fs)
+          :: rest)
+    | j -> j
+  in
+  (match Host_watch.of_json expected with
+  | Ok back ->
+      Alcotest.(check bool) "expected reads as open" true (back = ledger)
+  | Error e -> Alcotest.fail e);
+  let roman = join_for d env 0 in
+  let invite_key = roman.invite_key in
+  let unconfirmed =
+    List.map
+      (fun (r : Host_watch.record) ->
+        if r.invite_key = invite_key then
+          {
+            r with
+            state =
+              Host_watch.Joined
+                { identity_key = roman.identity_key; confirmed = false };
+          }
+        else r)
+      ledger
+  in
+  let ask about =
+    let a =
+      Host_watch.to_store
+        {
+          Host_watch.key = "join:" ^ invite_key;
+          identity_key = about;
+          title = "";
+          context = "";
+          options = [ Host_watch.Confirm; Host_watch.Revoke ];
+          recommended = Host_watch.Revoke;
+          default = Host_watch.Revoke;
+          lapses_at = hours 74;
+        }
+    in
+    a
+  in
+  Alcotest.(check bool)
+    "an earlier release's first-join ask" true
+    (Host_watch.first_join_ask unconfirmed (ask roman.identity_key));
+  Alcotest.(check bool)
+    "a second identity's ask is not one" false
+    (Host_watch.first_join_ask unconfirmed (ask (Keys.public (fresh_key ()))));
+  Alcotest.(check bool)
+    "nor an ask on a confirmed join" false
+    (Host_watch.first_join_ask
+       (fst
+          (Host_watch.answer unconfirmed ~invite_key
+             ~identity_key:roman.identity_key Host_watch.Confirm))
+       (ask roman.identity_key));
+  Alcotest.(check bool)
+    "nor an answered ask" false
+    (Host_watch.first_join_ask unconfirmed
+       { (ask roman.identity_key) with answer = Some "revoke" })
+
 let test_host_watch () =
   let d, env = signed_dinner () in
   let ledger =
@@ -304,65 +391,73 @@ let test_host_watch () =
       ~dinner_hash:(Envelope.hash env.envelope)
       ~message:"Great talking with you." d
   in
-  let ledger =
-    Host_watch.mark_expected ledger ~invite_key:(invite_of d 0).invite_key
-  in
   let roman = join_for d env 0 and phong = join_for d env 1 in
+  (* DIG-421: the first join on an open invite is the guest the host invited, with nothing asked. *)
   let ledger, o = Host_watch.observe ~now:(hours 2) ledger roman in
   (match o with
   | Host_watch.Shown r ->
-      Alcotest.(check string) "expected" "Roman Cherkasov" r.guest_name
-  | _ -> Alcotest.fail "an expected join asked");
+      Alcotest.(check string) "shown" "Roman Cherkasov" r.guest_name;
+      Alcotest.(check bool)
+        "recorded as joined" true
+        (r.state
+        = Host_watch.Joined
+            { identity_key = roman.identity_key; confirmed = true })
+  | _ -> Alcotest.fail "a join on an open invite asked");
   let ledger, o = Host_watch.observe ~now:(hours 2) ledger roman in
   (match o with
   | Host_watch.Already_handled _ -> ()
   | _ -> Alcotest.fail "a repeat on another relay was not recognized");
   let ledger, o = Host_watch.observe ~now:(hours 2) ledger phong in
   (match o with
+  | Host_watch.Shown r ->
+      Alcotest.(check string) "shown" "Phong Nguyen" r.guest_name
+  | _ -> Alcotest.fail "a join on an open invite asked");
+  (* A second identity on Phong's invite, which another relay accepted, is the one join that asks. *)
+  let other = join_for d env 1 in
+  let ledger', o = Host_watch.observe ~now:(hours 2) ledger other in
+  Alcotest.(check bool) "asking changes no record" true (ledger' = ledger);
+  (match o with
   | Host_watch.Asked (_, ask) ->
       Alcotest.(check string)
         "one ask per invite"
         ("join:" ^ (invite_of d 1).invite_key)
         ask.key;
+      Alcotest.(check string)
+        "about the second identity" other.identity_key ask.identity_key;
       Alcotest.(check bool)
         "an unanswered ask revokes" true
         (ask.default = Host_watch.Revoke);
       Alcotest.(check string)
         "lapses in 72 hours" "2026-10-31T04:00:00.000Z"
         (Dinner.iso8601 ask.lapses_at)
-  | _ -> Alcotest.fail "an unexpected join did not ask");
+  | _ -> Alcotest.fail "a second identity on one invite did not ask");
   (* Raised late, the ask still lapses inside the dinner device's revoke window. *)
-  let fresh_ledger =
-    Host_watch.records_of_dinner
-      ~dinner_hash:(Envelope.hash env.envelope)
-      ~message:"Great talking with you." d
-  in
-  (match Host_watch.observe ~now:(hours (2 + (5 * 24))) fresh_ledger phong with
+  (match Host_watch.observe ~now:(hours (2 + (5 * 24))) ledger other with
   | _, Host_watch.Asked (_, ask) ->
       Alcotest.(check string)
         "an ask raised five days late lapses six days after the join"
         "2026-11-03T04:00:00.000Z"
         (Dinner.iso8601 ask.lapses_at)
-  | _ -> Alcotest.fail "an unexpected join did not ask");
+  | _ -> Alcotest.fail "a second identity on one invite did not ask");
   (* A lapse inside the window is revoked by the node's device key; past it, it needs the phrase. *)
   (match
-     Host_watch.lapsed ledger ~invite_key:phong.invite_key
-       ~identity_key:phong.identity_key ~now:(hours 74)
-       ~joined_at:phong.created_at
+     Host_watch.lapsed ledger ~invite_key:other.invite_key
+       ~identity_key:other.identity_key ~now:(hours 74)
+       ~joined_at:other.created_at
    with
   | l, Host_watch.Revoke_as_device ->
       Alcotest.(check bool)
         "the lapse marks the record revoked" true
         (List.exists
            (fun (r : Host_watch.record) ->
-             r.state = Host_watch.Revoked { identity_key = phong.identity_key })
+             r.state = Host_watch.Revoked { identity_key = other.identity_key })
            l)
   | _ -> Alcotest.fail "a lapse inside the window needs the phrase");
   (match
-     Host_watch.lapsed ledger ~invite_key:phong.invite_key
-       ~identity_key:phong.identity_key
+     Host_watch.lapsed ledger ~invite_key:other.invite_key
+       ~identity_key:other.identity_key
        ~now:(hours (2 + (7 * 24) + 1))
-       ~joined_at:phong.created_at
+       ~joined_at:other.created_at
    with
   | l, Host_watch.Needs_phrase ->
       Alcotest.(check bool)
@@ -541,7 +636,12 @@ let () =
           Alcotest.test_case "bootstrap path" `Quick test_bootstrap_path;
         ] );
       ( "host",
-        [ Alcotest.test_case "unexpected joins ask" `Quick test_host_watch ] );
+        [
+          Alcotest.test_case "a join on an open invite is shown" `Quick
+            test_host_watch;
+          Alcotest.test_case "an earlier release's ledger and asks" `Quick
+            test_host_watch_earlier_release;
+        ] );
       ( "email",
         [
           Alcotest.test_case "invite email" `Quick test_email;

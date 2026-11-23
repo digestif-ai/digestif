@@ -1,6 +1,7 @@
 (* The invite flow on real nodes over the in-process relays: the host invites, a guest joins with
-   the bootstrap read, the host's sync shows an expected join and asks about an unexpected one, and
-   a revoke answer signed with the phrase's identity key revokes the stranger. *)
+   the bootstrap read, the host's sync shows every join on an open invite with nothing asked,
+   settles a first-join ask an earlier release raised, and a revoke answer signed with the phrase's
+   identity key revokes the identity it names. *)
 
 open Digestif_core
 open Digestif_invite
@@ -79,8 +80,8 @@ let guest_joins net (inv : Invite_node.invited) n =
 
 let flow () =
   let host, host_phrase, inv, relays, net = host_circle () in
-  let phong = (List.nth inv.dinner.invites 1).invite_key in
-  ignore (ok (Invite_node.expect host ~guest:"phong nguyen"));
+  let roman_invite = (List.nth inv.dinner.invites 0).invite_key
+  and phong = (List.nth inv.dinner.invites 1).invite_key in
   let roman, roman_phrase, w = guest_joins net inv 0 in
   Alcotest.(check string)
     "the join names the dinner" inv.dinner_hash w.dinner_hash;
@@ -108,28 +109,71 @@ let flow () =
   let _, phong_phrase, _ = guest_joins net inv 1 in
   let _, seen, _ = ok (Invite_node.sync ~transport:net host) in
   let outcomes = List.map (fun (s : Invite_node.seen) -> s.outcome) seen in
-  Alcotest.(check bool)
-    "the expected join is shown" true
-    (List.exists
-       (function Host_watch.Shown r -> r.invite_key = phong | _ -> false)
-       outcomes);
-  let key = "join:" ^ (List.hd inv.dinner.invites).invite_key in
-  (match Asks.list host.log with
-  | [ a ] ->
-      Alcotest.(check string) "one ask, for the unexpected join" key a.key;
-      Alcotest.(check (option string))
-        "about the identity that joined"
-        (Some (identity_of roman_phrase))
-        a.about;
-      Alcotest.(check string)
-        "an unanswered ask revokes" "revoke" a.on_no_answer;
+  (* DIG-421: a join on the host's own open invite is the guest it invited: shown, nothing asked. *)
+  List.iter
+    (fun key ->
       Alcotest.(check bool)
-        "not lapsed yet" false
-        (Asks.lapsed ~now:(Time_fmt.now ()) a)
-  | l -> Alcotest.failf "%d asks, want 1" (List.length l));
+        "the join on an open invite is shown" true
+        (List.exists
+           (function Host_watch.Shown r -> r.invite_key = key | _ -> false)
+           outcomes))
+    [ roman_invite; phong ];
+  Alcotest.(check int) "nothing is asked" 0 (List.length (Asks.list host.log));
   let _, again, _ = ok (Invite_node.sync ~transport:net host) in
   Alcotest.(check int)
-    "a join seen once is not asked twice" 0 (List.length again);
+    "a join seen once is not watched twice" 0 (List.length again);
+  (* A first-join ask an earlier release raised on Roman's join is confirmed by the next sync. *)
+  let key = "join:" ^ roman_invite in
+  let ledger =
+    List.map
+      (fun (r : Host_watch.record) ->
+        if r.invite_key = roman_invite then
+          {
+            r with
+            state =
+              Joined
+                { identity_key = identity_of roman_phrase; confirmed = false };
+          }
+        else r)
+      (ok (Host_watch.load host.dir))
+  in
+  ok (Host_watch.save host.dir ledger);
+  let raise_about identity =
+    let r =
+      List.find
+        (fun (r : Host_watch.record) -> r.invite_key = roman_invite)
+        ledger
+    in
+    ok
+      (Asks.raise_ host.log
+         (Host_watch.to_store
+            (Host_watch.ask_for
+               ~now:(Invite_node.to_ptime (Unix.gettimeofday ()))
+               ~joined_at:(Invite_node.to_ptime (Unix.gettimeofday ()))
+               r ~identity_key:identity ~why:"Someone joined.")))
+  in
+  raise_about (identity_of roman_phrase);
+  let _, _, problems = ok (Invite_node.sync ~transport:net host) in
+  Alcotest.(check int) "no problem" 0 (List.length problems);
+  (match Asks.find host.log key with
+  | Some a ->
+      Alcotest.(check (option string))
+        "answered confirm" (Some "confirm") a.answer;
+      Alcotest.(check bool) "by rule" true (a.answered_via = Some Asks.Rule)
+  | None -> Alcotest.fail "the ask is gone");
+  Alcotest.(check bool)
+    "the ledger records the join confirmed" true
+    (List.exists
+       (fun (r : Host_watch.record) ->
+         r.state
+         = Joined { identity_key = identity_of roman_phrase; confirmed = true })
+       (ok (Host_watch.load host.dir)));
+  (* A second identity's ask is left for the person, and Revoke revokes the identity it names. *)
+  raise_about (identity_of phong_phrase);
+  ignore (ok (Invite_node.sync ~transport:net host));
+  Alcotest.(check int)
+    "a second identity's ask stays open" 1
+    (List.length (Asks.list host.log));
   Alcotest.(check bool)
     "a wrong answer is refused" true
     (Result.is_error
@@ -151,17 +195,18 @@ let flow () =
     report.relays;
   List.iter
     (fun (r : Fake_relay.t) ->
-      match Fold.find (Fake_relay.fold r) (identity_of roman_phrase) with
+      match Fold.find (Fake_relay.fold r) (identity_of phong_phrase) with
       | Some k ->
           Alcotest.(check bool)
-            (r.url ^ " revoked the stranger")
+            (r.url ^ " revoked the identity")
             true (k.revoked_by <> None)
       | None -> Alcotest.fail "the identity is unknown to the relay")
     relays;
-  (match Fold.find (Node.fold host) (identity_of phong_phrase) with
+  (match Fold.find (Node.fold host) (identity_of roman_phrase) with
   | Some k ->
-      Alcotest.(check bool) "the expected guest stays" true (k.revoked_by = None)
-  | None -> Alcotest.fail "the expected guest is not admitted");
+      Alcotest.(check bool)
+        "the confirmed guest stays" true (k.revoked_by = None)
+  | None -> Alcotest.fail "the confirmed guest is not admitted");
   match ok (Host_watch.load host.dir) with
   | ledger ->
       Alcotest.(check bool)
@@ -1376,7 +1421,7 @@ let unreadable_ledger_record () =
     "the join is still watched" true
     (List.exists
        (fun (s : Invite_node.seen) ->
-         match s.outcome with Host_watch.Asked _ -> true | _ -> false)
+         match s.outcome with Host_watch.Shown _ -> true | _ -> false)
        seen);
   Alcotest.(check (list string))
     "the bad record is reported"
@@ -1413,14 +1458,13 @@ let unreadable_ledger_file () =
     (In_channel.with_open_text p In_channel.input_all)
 
 (* DIG-292: a join stored while invites.json is not a ledger is watched by the first sync that
-   reads it again, so the host is still asked about a stranger who joined in that window, and once
-   only. *)
+   reads it again, so the host still sees the guest who joined in that window, and once only. *)
 let join_while_ledger_unreadable () =
   let host, _, inv, _, net = host_circle () in
   let p = Host_watch.file host.dir in
   let ledger = In_channel.with_open_text p In_channel.input_all in
   Out_channel.with_open_text p (fun oc -> output_string oc "{ not json");
-  let _, stranger_phrase, _ = guest_joins net inv 0 in
+  let _, guest_phrase, _ = guest_joins net inv 0 in
   let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
   Alcotest.(check int) "nothing watched while unreadable" 0 (List.length seen);
   Alcotest.(check int)
@@ -1429,28 +1473,23 @@ let join_while_ledger_unreadable () =
   Out_channel.with_open_text p (fun oc -> output_string oc ledger);
   let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
   Alcotest.(check int) "no problem once it reads" 0 (List.length problems);
-  let key = "join:" ^ (List.hd inv.dinner.invites).invite_key in
+  let invite_key = (List.hd inv.dinner.invites).invite_key in
   Alcotest.(check bool)
-    "the missed join is asked about" true
+    "the missed join is shown" true
     (List.exists
        (fun (s : Invite_node.seen) ->
          match s.outcome with
-         | Host_watch.Asked (_, a) -> a.key = key
+         | Host_watch.Shown r -> r.invite_key = invite_key
          | _ -> false)
        seen);
-  (match Asks.list host.log with
-  | [ a ] ->
-      Alcotest.(check string) "the ask is the stranger's invite" key a.key;
-      Alcotest.(check (option string))
-        "about the identity that joined"
-        (Some (identity_of stranger_phrase))
-        a.about
-  | l -> Alcotest.failf "%d asks, want 1" (List.length l));
+  Alcotest.(check int) "nothing is asked" 0 (List.length (Asks.list host.log));
   Alcotest.(check bool)
     "the ledger records the join" true
     (List.exists
        (fun (r : Host_watch.record) ->
-         match r.state with Host_watch.Joined _ -> true | _ -> false)
+         r.state
+         = Host_watch.Joined
+             { identity_key = identity_of guest_phrase; confirmed = true })
        (ok (Host_watch.load host.dir)));
   let _, again, _ = ok (Invite_node.sync ~transport:net host) in
   Alcotest.(check int)
@@ -1561,11 +1600,11 @@ let join_on_unreadable_record () =
   let _, seen, problems = ok (Invite_node.sync ~transport:net host) in
   Alcotest.(check int) "no problem once it reads" 0 (List.length problems);
   Alcotest.(check bool)
-    "the held join is asked about" true
+    "the held join is shown" true
     (List.exists
        (fun (s : Invite_node.seen) ->
          match s.outcome with
-         | Host_watch.Asked (_, a) -> a.key = "join:" ^ roman
+         | Host_watch.Shown r -> r.invite_key = roman
          | _ -> false)
        seen);
   let _, again, _ = ok (Invite_node.sync ~transport:net host) in
@@ -1656,9 +1695,9 @@ let cursor_kept_in_a_list () =
   | _ -> Alcotest.fail "the ledger is a list");
   let w = ok (Host_watch.load_watch host.dir) in
   Alcotest.(check bool) "the sync saved a cursor" true (w.cursor <> None);
-  ignore (ok (Invite_node.expect host ~guest:"phong nguyen"));
+  ok (Host_watch.save host.dir (ok (Host_watch.load host.dir)));
   let w' = ok (Host_watch.load_watch host.dir) in
-  Alcotest.(check bool) "expect keeps it" true (w'.cursor = w.cursor)
+  Alcotest.(check bool) "a save keeps it" true (w'.cursor = w.cursor)
 
 (* ---- founding against relays that host many circles (DIG-349) ---- *)
 

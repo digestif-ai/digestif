@@ -40,7 +40,7 @@ let due (ledger : Inv.Host_watch.ledger) ~now =
   List.filter
     (fun (r : Inv.Host_watch.record) ->
       r.approved <> None
-      && (match r.state with Open _ -> true | Joined _ | Revoked _ -> false)
+      && (match r.state with Open -> true | Joined _ | Revoked _ -> false)
       && Ptime.is_later r.expires_at ~than:now)
     ledger
 
