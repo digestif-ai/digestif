@@ -607,12 +607,15 @@ build-from-source path for contributors.
 (`relay/src/install.ts`, on the host `SITE_HOST` names in `relay/wrangler.jsonc`), and the bare
 domain answers nothing else. It reads the channel's `index.json`, takes the newest version no
 recall signed by a key of the set takes out, reads that version's manifest and signatures, and
-checks that every key of the signer set the relay's own build carries
+checks that every key of the signer set signed the manifest's exact bytes. The set is the one the
+channel's `signers/` chain leaves, folded from the set the relay's own build carries
 (`node/update/release-signers.json`, never the `RELEASE_SIGNERS` the conformance suite's top level
-sets) signed the manifest's exact bytes. It then answers the template applied to that manifest,
-from its copy of the template (`relay/src/install-template.ts`). A channel it cannot read, a newest
-version whose manifest is not signed by every key, or a manifest the template cannot be applied to
-is answered `502` with the reason, which `curl -f` stops on, never with a script and never with an
+sets) exactly as a node folds it (Changing the signer set), with the channel's revocations applied,
+so a signer-set change published on the channel moves the script without a relay release. It then
+answers the template applied to that manifest, from its copy of the template
+(`relay/src/install-template.ts`). A channel it cannot read, a signer set holding a revoked key, a
+newest version whose manifest is not signed by every key, or a manifest the template cannot be
+applied to is answered `502` with the reason, which `curl -f` stops on, never with a script and never with an
 older version's. So publishing a version both signers signed publishes its script, and nothing a
 writer of the repository's releases or channel replaces reaches a new member.
 
