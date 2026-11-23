@@ -342,14 +342,36 @@ let stop_requested = ref false
    one in its place (digestif run). *)
 let runs_circles_var = "DIGESTIF_SUPERVISOR_RUNS_CIRCLES"
 
-let real_ops ?(runs_circles = false) ~dir () =
+(* Set in the environment of the child that runs a circle folder's node in the machine's place
+   (DIG-351): a machine whose standard place holds no node, only releases, has its supervisor run
+   the first circle folder's node as its child. That child keeps its store, keys and UI port in the
+   folder this names, and reads and writes the machine's releases, trial, health report and update
+   state at its --data-dir, so the trial judges each release by it. A release from before it reads
+   nothing of it and runs the standard place, as every release did before. *)
+let node_var = "DIGESTIF_NODE_DIR"
+
+(* The environment of the child: [base] with the two variables above set as asked, and the folder
+   variable never inherited from [base], since only this supervisor decides it. *)
+let child_env ~runs_circles ~node base =
+  let prefix = node_var ^ "=" in
+  let inherited =
+    List.filter
+      (fun kv -> not (String.starts_with ~prefix kv))
+      (Array.to_list base)
+  in
+  Array.of_list
+    (inherited
+    @ (if runs_circles then [ runs_circles_var ^ "=1" ] else [])
+    @ match node with Some d -> [ prefix ^ d ] | None -> [])
+
+(* [node] names, at each start of the child, the circle folder whose node it runs in the machine's
+   place, if any. *)
+let real_ops ?(runs_circles = false) ?(node = fun () -> None) ~dir () =
   {
     spawn =
       (fun exe ->
         let env =
-          if runs_circles then
-            Array.append (Unix.environment ()) [| runs_circles_var ^ "=1" |]
-          else Unix.environment ()
+          child_env ~runs_circles ~node:(node ()) (Unix.environment ())
         in
         Unix.create_process_env exe
           [| exe; "run"; "--data-dir"; dir |]

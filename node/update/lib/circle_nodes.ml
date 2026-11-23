@@ -13,7 +13,10 @@
    the machine nothing and holds up no other.
 
    Before a folder's node first runs here, any per-node service DIG-264 installed for it is retired
-   (Service.retire, read from the unit's own --data-dir), so no node runs twice. *)
+   (Service.retire, read from the unit's own --data-dir), so no node runs twice.
+
+   On a machine whose standard place holds no node, the supervisor's own child runs one folder's
+   node in its place (stand_in), and that folder is not run here. DIG-351 *)
 
 type ops = {
   folders : unit -> string list;
@@ -65,6 +68,18 @@ let folders ~machine dirs =
       else (c :: seen, d :: acc))
     ([], []) dirs
   |> snd |> List.rev
+
+(* The circle folder whose node the supervisor runs as its own child, in the machine's place, among
+   [folders] (DIG-351): none while the machine's standard place holds a node, else the folder it ran
+   last while that one is still there, else the first. Running that folder's node is what lets a
+   machine whose only nodes are circle folders judge a release by one of them, and it leaves no node
+   at the standard place for nobody to set up. That folder is left out of the ones run here. *)
+let stand_in ~machine_holds_node ~previous folders =
+  if machine_holds_node then None
+  else
+    match previous with
+    | Some p when List.mem p folders -> Some p
+    | _ -> ( match folders with d :: _ -> Some d | [] -> None)
 
 let start ops ~now ~release c =
   match release with

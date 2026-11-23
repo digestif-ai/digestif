@@ -6675,6 +6675,40 @@ let test_circle_nodes_folders () =
     "the machine's own node and a second spelling of one are left out" [ a ]
     (Circle_nodes.folders ~machine [ link; a; a_link; machine ])
 
+(* A machine whose only nodes are circle folders runs one of them in its place, and no node at the
+   standard place. DIG-351 *)
+let test_circle_nodes_stand_in () =
+  let pick ?previous ~holds folders =
+    Circle_nodes.stand_in ~machine_holds_node:holds ~previous folders
+  in
+  Alcotest.(check (option string))
+    "a machine holding a node runs it" None
+    (pick ~holds:true [ "/c/a"; "/c/b" ]);
+  Alcotest.(check (option string))
+    "a machine holding none runs its first circle folder's node" (Some "/c/a")
+    (pick ~holds:false [ "/c/a"; "/c/b" ]);
+  Alcotest.(check (option string))
+    "and keeps the folder it ran while it is there" (Some "/c/b")
+    (pick ~previous:"/c/b" ~holds:false [ "/c/a"; "/c/b" ]);
+  Alcotest.(check (option string))
+    "a folder that went is replaced by the first" (Some "/c/a")
+    (pick ~previous:"/c/gone" ~holds:false [ "/c/a"; "/c/b" ]);
+  Alcotest.(check (option string))
+    "with no folder the standard place runs" None (pick ~holds:false [])
+
+let test_supervisor_child_env () =
+  let env ~runs_circles ~node base =
+    Array.to_list (Supervisor.child_env ~runs_circles ~node (Array.of_list base))
+  in
+  Alcotest.(check (list string))
+    "a folder run in the machine's place is named to the child"
+    [ "PATH=/bin"; "DIGESTIF_SUPERVISOR_RUNS_CIRCLES=1"; "DIGESTIF_NODE_DIR=/c/a" ]
+    (env ~runs_circles:true ~node:(Some "/c/a") [ "PATH=/bin" ]);
+  Alcotest.(check (list string))
+    "one this supervisor did not choose is never inherited" [ "PATH=/bin" ]
+    (env ~runs_circles:false ~node:None
+       [ "DIGESTIF_NODE_DIR=/elsewhere"; "PATH=/bin" ])
+
 (* A circle folder's node reads the machine's one release through its own links. *)
 let test_layout_share () =
   let machine = supervised_node () in
@@ -6929,6 +6963,8 @@ let () =
           t "nodes follow the kept release" test_circle_nodes_follow_the_release;
           t "a refused prepare" test_circle_nodes_refused_prepare;
           t "folders" test_circle_nodes_folders;
+          t "the folder run in the machine's place" test_circle_nodes_stand_in;
+          t "the child's environment" test_supervisor_child_env;
           t "layout share" test_layout_share;
         ] );
       ( "supervisor",
