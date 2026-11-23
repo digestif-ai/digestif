@@ -143,3 +143,39 @@ let hook_path ~dir path =
           with Unix.Unix_error _ -> false
       then candidate
       else path
+
+(* A circle folder's node runs the machine's one release (DIG-347): its releases/ is a link to the
+   machine node's, and its current and good name the release the machine's good names, so every
+   path a node reads through them (its behaviors, their prompts, the Node.js they run with) is the
+   machine's copy. Releases the folder kept of its own, from when a service of its own updated it,
+   are removed. *)
+
+let rec remove_tree path =
+  match Unix.lstat path with
+  | { st_kind = Unix.S_DIR; _ } ->
+      Array.iter
+        (fun f -> remove_tree (Filename.concat path f))
+        (Sys.readdir path);
+      Unix.rmdir path
+  | _ -> Unix.unlink path
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+
+let share ~machine dir ~release =
+  let target = releases_dir (Node.canonical_dir machine) in
+  let link = releases_dir dir in
+  let make () = Unix.symlink target link in
+  (match Unix.lstat link with
+  | { st_kind = Unix.S_LNK; _ } when Unix.readlink link = target -> ()
+  | { st_kind = Unix.S_DIR; _ } ->
+      remove_tree link;
+      make ()
+  | _ ->
+      Unix.unlink link;
+      make ()
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> make ());
+  (* A trial or a crash count of the folder's own belongs to a release it no longer runs. *)
+  List.iter
+    (fun f -> try Sys.remove f with Sys_error _ -> ())
+    [ trial_path dir; crashes_path dir ];
+  if current dir <> Some release then point_current dir release;
+  if good dir <> Some release then point_good dir release

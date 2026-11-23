@@ -336,13 +336,24 @@ and after_child ~on_trial ~on_crash ~self_test ops dir ~release (status, awake)
 
 let stop_requested = ref false
 
-let real_ops ~dir =
+(* Set in the environment of the node a supervisor that runs the circle folders starts (DIG-347). A
+   standard node under the machine's service that finds it unset runs under a supervisor from before
+   the circle folders, and once its own release is good it exits, so the service starts the newer
+   one in its place (digestif run). *)
+let runs_circles_var = "DIGESTIF_SUPERVISOR_RUNS_CIRCLES"
+
+let real_ops ?(runs_circles = false) ~dir () =
   {
     spawn =
       (fun exe ->
-        Unix.create_process exe
+        let env =
+          if runs_circles then
+            Array.append (Unix.environment ()) [| runs_circles_var ^ "=1" |]
+          else Unix.environment ()
+        in
+        Unix.create_process_env exe
           [| exe; "run"; "--data-dir"; dir |]
-          Unix.stdin Unix.stdout Unix.stderr);
+          env Unix.stdin Unix.stdout Unix.stderr);
     poll =
       (fun pid ->
         match Unix.waitpid [ Unix.WNOHANG ] pid with
