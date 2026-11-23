@@ -5,9 +5,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { MAX_ATTEMPTS, nightly, noteTimeMinutes, readState, reportUnjudged, SOURCE_RETRY_DELAYS_MS, sourceFailedDetail, type NightlyOptions } from "../src/nightly.ts";
+import { MAX_ATTEMPTS, nightly, USAGE_LIMIT_BACKOFF_MS, USAGE_LIMIT_MARGIN_MS, noteTimeMinutes, readState, reportUnjudged, SOURCE_RETRY_DELAYS_MS, sourceFailedDetail, type NightlyOptions } from "../src/nightly.ts";
 import { modelPiiCheck, removesNothing, type ModelCheck } from "../src/checks.ts";
 import { jsonl, user } from "./fixtures.ts";
+import { memberTime, resetInstant } from "../src/writer.ts";
 
 const here = import.meta.dirname;
 const harness = join(here, "fake-harness.mjs");
@@ -490,4 +491,44 @@ test("a node that cannot take the skipped projects is logged, and the note still
   assert.deepEqual(skippedReports(), [{ projects: 1, folders: [{ folder: "/x", reason: "no_access" }] }]);
   process.env["FAKE_DIGESTIF_EXIT"] = "2";
   assert.match((await reportUnjudged(fakeNode, { projects: 0, folders: [] }))!, /^digestif skipped exited 2/);
+});
+
+test("a usage limit spends no try: the date waits for the reset and the problem says when the note runs (DIG-371)", async () => {
+  process.env["FAKE_FIXTURE"] = fixture("usage-limit.txt");
+  process.env["FAKE_EXIT"] = "1";
+  const now = at("2026-10-29T03:21:00");
+  const reset = resetInstant({ kind: "clock", hour: 7, minute: 30, zone: "America/New_York" }, now.getTime());
+  const r = await nightly(opts("2026-10-29T03:21:00"));
+  assert.deepEqual(r, { status: "waiting", date: "2026-10-29", until: reset + USAGE_LIMIT_MARGIN_MS, message: "Claude's usage limit was reached: You've hit your 5-hour limit, resets 7:30am (America/New_York)" });
+  assert.deepEqual(problems().filter((p) => p.startsWith("report")), [`report --job write_version --kind model_unavailable --detail Claude's usage limit was reached; the note runs again after ${memberTime(reset, now.getTime())}`]);
+  assert.equal((await readState(stateDir))?.attempts, undefined, "no try counted");
+  // Every firing before the reset returns at once, however many: none is a try, none reads or writes.
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  for (let i = 0; i <= MAX_ATTEMPTS; i++) assert.equal((await nightly({ ...opts("2026-10-29T03:21:00"), now: new Date(reset - 60_000) })).status, "waiting");
+  assert.ok(!existsSync(join(dir, "harness.log")), "no harness ran before the reset");
+  assert.equal(recorded().length, 0);
+  // After the reset and its margin, the note is written.
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  process.env["FAKE_EXIT"] = "0";
+  assert.equal((await nightly({ ...opts("2026-10-29T03:21:00"), now: new Date(reset + USAGE_LIMIT_MARGIN_MS) })).status, "posted");
+  const st = await readState(stateDir);
+  assert.equal(st?.waiting, undefined);
+  assert.equal(st?.handled, "2026-10-29");
+});
+
+test("a usage limit that names no reset backs off past the limit's window, not the next pass (DIG-371)", async () => {
+  const limit = join(dir, "limit.txt");
+  writeFileSync(limit, "You've hit your usage limit.");
+  process.env["FAKE_FIXTURE"] = limit;
+  process.env["FAKE_EXIT"] = "1";
+  let t = at("2026-10-29T03:21:00").getTime();
+  let waited = 0;
+  for (const wait of [...USAGE_LIMIT_BACKOFF_MS, USAGE_LIMIT_BACKOFF_MS.at(-1)!]) {
+    const r = await nightly({ ...opts("2026-10-29T03:21:00"), now: new Date(t) });
+    assert.deepEqual([r.status, (r as { until: number }).until], ["waiting", t + wait]);
+    t += wait;
+    waited += wait;
+  }
+  assert.ok(waited > 5 * 60 * 60_000, "the waits run past five hours");
+  assert.match(problems().filter((p) => p.startsWith("report"))[0]!, /--detail Claude's usage limit was reached; the note tries again after /);
 });

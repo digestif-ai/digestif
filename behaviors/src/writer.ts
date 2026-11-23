@@ -89,11 +89,14 @@ export type WriteResult =
   | { status: "signed_out" }
   | { status: "out_of_budget" }
   | { status: "hung"; quietMs: number }
+  /** The member's agent account reached its usage limit; `reset` says when it lifts, when the agent said. */
+  | { status: "usage_limited"; reset?: UsageReset; message: string }
   | { status: "failed"; message: string };
 
 /**
  * The problem kind a harness run that gave no answer is reported as (nightly.ts ProblemKind): no
- * login, the budget spent, or anything else the model did not answer.
+ * login, the budget spent, or anything else the model did not answer. A usage limit is reported as
+ * model_unavailable, with a detail naming the limit and when the run tries again (usageLimitDetail).
  */
 export type AgentProblem = "signed_out" | "out_of_budget" | "model_unavailable";
 
@@ -107,6 +110,133 @@ const SIGNED_OUT = /not logged in|please run \/login|run \/login|claude auth log
 
 export function isSignedOut(code: number | null, output: string): boolean {
   return code !== 0 && SIGNED_OUT.test(output);
+}
+
+/**
+ * When a usage limit lifts, as the agent said it: an instant (Claude Code's older
+ * `Claude AI usage limit reached|<epoch seconds>`), a time of day with an optional month and day in
+ * an optional IANA zone (`resets 7:30am (America/New_York)`, `resets Nov 24, 10am`, Codex's
+ * `try again at 3:12 PM`), or a span from now (Codex's `try again in 2 hours 5 minutes`). A time
+ * with no zone is the machine's.
+ */
+export type UsageReset =
+  | { kind: "at"; at: number }
+  | { kind: "clock"; month?: number; day?: number; hour: number; minute: number; zone?: string }
+  | { kind: "in"; ms: number };
+
+/** The agent's own answer that the account's usage limit is reached, as Claude Code and Codex word it. */
+const USAGE_LIMIT =
+  /usage limit reached|\b(?:you'?ve|you have) (?:hit|reached) your\b[^.\n]{0,40}?\blimit\b|\b(?:5-hour|five-hour|session|weekly|opus|sonnet|daily) limit reached\b|usage_limit_reached/i;
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+/** `resets 7:30am (America/New_York)`, `resets Nov 24, 10am`, `try again at 3:12 PM`, `try again at Nov 24th, 2026 3:12 PM`. */
+const RESET_CLOCK =
+  /\b(?:resets?(?: at)?|try again at)\s+(?:([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:\d{4},?\s+)?(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)(?:\s*\(([A-Za-z_]+(?:\/[A-Za-z_+-]+)*)\))?/i;
+const RESET_IN = /\btry again in\s+((?:\d+\s*(?:days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)[\s,and]*)+)/i;
+const RESET_EPOCH = /usage limit reached\|(\d{9,11})\b/i;
+
+/**
+ * Whether a run that ended in error was the agent account's usage limit, and when it lifts when the
+ * agent said. Undefined for any other failure.
+ */
+export function usageLimitOf(output: string): { reset?: UsageReset } | undefined {
+  if (!USAGE_LIMIT.test(output)) return undefined;
+  const epoch = RESET_EPOCH.exec(output);
+  if (epoch) return { reset: { kind: "at", at: Number(epoch[1]) * 1000 } };
+  const clock = RESET_CLOCK.exec(output);
+  if (clock) {
+    const month = clock[1] === undefined ? -1 : MONTHS.indexOf(clock[1].slice(0, 3).toLowerCase());
+    let hour = Number(clock[3]) % 12;
+    if (/^p/i.test(clock[5]!)) hour += 12;
+    const minute = clock[4] === undefined ? 0 : Number(clock[4]);
+    if (minute < 60 && Number(clock[3]) <= 12) {
+      return {
+        reset: {
+          kind: "clock",
+          hour,
+          minute,
+          ...(month >= 0 ? { month: month + 1, day: Number(clock[2]) } : {}),
+          ...(clock[6] === undefined ? {} : { zone: clock[6] }),
+        },
+      };
+    }
+  }
+  const span = RESET_IN.exec(output);
+  if (span) {
+    const unit: Record<string, number> = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000 };
+    let ms = 0;
+    for (const m of span[1]!.matchAll(/(\d+)\s*([dhms])/gi)) ms += Number(m[1]) * unit[m[2]!.toLowerCase()]!;
+    if (ms > 0) return { reset: { kind: "in", ms } };
+  }
+  return {};
+}
+
+/** The parts of the wall clock in `zone` (the machine's when undefined) at `at`. */
+function zonedParts(at: number, zone: string | undefined): { year: number; month: number; day: number; hour: number; minute: number } {
+  const f = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" });
+  const p = Object.fromEntries(f.formatToParts(new Date(at)).map((x) => [x.type, x.value]));
+  return { year: Number(p["year"]), month: Number(p["month"]), day: Number(p["day"]), hour: Number(p["hour"]) % 24, minute: Number(p["minute"]) };
+}
+
+/** The instant the wall clock in `zone` reads this date and time. */
+function zonedInstant(year: number, month: number, day: number, hour: number, minute: number, zone: string | undefined): number {
+  const wanted = Date.UTC(year, month - 1, day, hour, minute);
+  let at = wanted;
+  // Twice: the zone's offset at the guess, then at the answer, which differs only across a change.
+  for (let i = 0; i < 2; i++) {
+    const p = zonedParts(at, zone);
+    at += wanted - Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+  }
+  return at;
+}
+
+function knownZone(zone: string | undefined): string | undefined {
+  if (zone === undefined) return undefined;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return zone;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The instant a usage limit lifts, read at `now`: a time of day is its next occurrence (a minute
+ * past it still reads as now, so a reset that just passed is not a day away), a dated one this year
+ * unless that is more than a day gone.
+ */
+export function resetInstant(reset: UsageReset, now: number): number {
+  if (reset.kind === "at") return reset.at;
+  if (reset.kind === "in") return now + reset.ms;
+  const zone = knownZone(reset.zone);
+  const today = zonedParts(now, zone);
+  if (reset.month !== undefined && reset.day !== undefined) {
+    const at = zonedInstant(today.year, reset.month, reset.day, reset.hour, reset.minute, zone);
+    return at < now - 86_400_000 ? zonedInstant(today.year + 1, reset.month, reset.day, reset.hour, reset.minute, zone) : at;
+  }
+  const at = zonedInstant(today.year, today.month, today.day, reset.hour, reset.minute, zone);
+  return at < now - 60_000 ? zonedInstant(today.year, today.month, today.day + 1, reset.hour, reset.minute, zone) : at;
+}
+
+/** The agent's name, as a member reads it in a problem's detail. */
+export function agentName(agent: AgentKind): string {
+  return agent === "claude_code" ? "Claude" : agent === "codex" ? "Codex" : "Your agent";
+}
+
+/** A time in the member's words, in the machine's zone (`timeZone` in tests): 7:30 AM, or Nov 24, 7:30 AM when not on `now`'s day. */
+export function memberTime(at: number, now: number, timeZone?: string): string {
+  const time = new Date(at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone });
+  const day = (t: number) => new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone });
+  return day(at) === day(now) ? time : `${day(at)}, ${time}`;
+}
+
+/**
+ * What a problem says of a usage limit: the cause, and when the work runs again, in the member's
+ * time. `what` is the work ("the note"); `resetAt`, the limit's own reset when the agent named one,
+ * else the run's next try.
+ */
+export function usageLimitDetail(agent: AgentKind, what: string, next: number, named: boolean, now: number, timeZone?: string): string {
+  const owner = agent === "other" ? "Your agent's" : `${agentName(agent)}'s`;
+  return `${owner} usage limit was reached; ${what} ${named ? "runs" : "tries"} again after ${memberTime(next, now, timeZone)}`;
 }
 
 /**
@@ -495,6 +625,10 @@ export async function askHarness(system: string, input: string, options: Harness
     if (isSignedOut(r.code === 0 && result?.isError ? 1 : r.code, said + "\n" + r.stderr)) return { status: "signed_out" };
     if (isOutOfBudget(result)) return { status: "out_of_budget" };
     if (r.code !== 0 || result?.isError) {
+      const limited = usageLimitOf(said + "\n" + r.stderr);
+      if (limited !== undefined) {
+        return { status: "usage_limited", ...limited, message: `${agentName(agent)}'s usage limit was reached: ${(said.trim() || r.stderr.trim()).slice(0, 300)}` };
+      }
       const why = (said.trim() || result?.subtype || r.stderr.trim()).slice(0, 300);
       return { status: "failed", message: `the harness exited ${r.code}: ${why}` };
     }

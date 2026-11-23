@@ -319,6 +319,7 @@ function modelCheck(file: string, causes: Record<string, Cause>, options: Harnes
       if (r.status === "out_of_budget") return { status: "could_not_finish", reason: "the agent is out of budget", problem: agentProblem(r) };
       if (r.status === "hung") return { status: "could_not_finish", reason: `the check wrote nothing for ${Math.round(r.quietMs / 60_000)} minutes` };
       if (r.status === "failed") return { status: "could_not_finish", reason: r.message };
+      if (r.status === "usage_limited") return { status: "could_not_finish", reason: r.message };
       return { status: "could_not_finish", reason: "the check gave no answer" };
     },
   };

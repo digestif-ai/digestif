@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { AwakeClock, holdAwake, SLEEP_GAP_MS } from "../src/awake.ts";
-import { agentOf, ALWAYS_ON_RULES, buildSystemPrompt, CODEX_CATALOG_NO_TOOLS, CODEX_FILING_FEATURES, CODEX_TOOL_FEATURES, codexArgs, codexCatalog, FILING_TOOLS, codexResult, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, sessionCookieName, writeNote } from "../src/writer.ts";
+import { agentOf, ALWAYS_ON_RULES, buildSystemPrompt, CODEX_CATALOG_NO_TOOLS, CODEX_FILING_FEATURES, CODEX_TOOL_FEATURES, codexArgs, codexCatalog, FILING_TOOLS, codexResult, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resetInstant, resultEvent, sessionCookieName, usageLimitDetail, usageLimitOf, writeNote, type UsageReset } from "../src/writer.ts";
 import { noLoopback } from "./loopback.ts";
 import { assertGone } from "./processes.ts";
 
@@ -359,4 +359,44 @@ test("each node's session cookie is named for its port, so two nodes on one mach
   assert.equal(sessionCookieName(new URL("http://127.0.0.1:7421/api/v0/")), "digestif_session_7421");
   assert.equal(sessionCookieName(new URL("http://[::1]:7533")), "digestif_session_7533");
   assert.equal(sessionCookieName(new URL("http://127.0.0.1")), "digestif_session");
+});
+
+test("a usage limit is its own answer, with the reset the agent named (DIG-371)", async () => {
+  process.env["FAKE_FIXTURE"] = fixture("usage-limit.txt");
+  process.env["FAKE_EXIT"] = "1";
+  const r = await writeNote(digest, { harness });
+  assert.equal(r.status, "usage_limited");
+  assert.deepEqual((r as { reset?: UsageReset }).reset, { kind: "clock", hour: 7, minute: 30, zone: "America/New_York" });
+  assert.match((r as { message: string }).message, /^Claude's usage limit was reached: You've hit your 5-hour limit/);
+});
+
+test("usageLimitOf reads Claude Code's and Codex's wording, and nothing else (DIG-371)", () => {
+  assert.deepEqual(usageLimitOf("You've hit your 5-hour limit, resets 7:30am (America/New_York)"), { reset: { kind: "clock", hour: 7, minute: 30, zone: "America/New_York" } });
+  assert.deepEqual(usageLimitOf("You've hit your limit · resets 7pm (Europe/London)"), { reset: { kind: "clock", hour: 19, minute: 0, zone: "Europe/London" } });
+  assert.deepEqual(usageLimitOf("Weekly limit reached ∙ resets Nov 24, 10am"), { reset: { kind: "clock", hour: 10, minute: 0, month: 11, day: 24 } });
+  assert.deepEqual(usageLimitOf("Claude AI usage limit reached|1763814600"), { reset: { kind: "at", at: 1763814600000 } });
+  assert.deepEqual(usageLimitOf("You've hit your usage limit. Upgrade to Pro or try again in 2 hours 5 minutes."), { reset: { kind: "in", ms: (2 * 60 + 5) * 60_000 } });
+  assert.deepEqual(usageLimitOf("You've hit your usage limit. Upgrade to Plus or try again at 3:12 PM."), { reset: { kind: "clock", hour: 15, minute: 12 } });
+  assert.deepEqual(usageLimitOf("You've hit your usage limit."), {}, "a limit with no reset");
+  assert.equal(usageLimitOf("API Error: 529 overloaded"), undefined);
+  assert.equal(usageLimitOf("Not logged in · Please run /login"), undefined);
+});
+
+test("resetInstant is the next time the zone's clock reads the reset (DIG-371)", () => {
+  // 2026-11-22 12:04 UTC is 7:04 AM in New York: 7:30 AM is 26 minutes on.
+  const now = Date.parse("2026-11-22T12:04:00Z");
+  assert.equal(resetInstant({ kind: "clock", hour: 7, minute: 30, zone: "America/New_York" }, now), Date.parse("2026-11-22T12:30:00Z"));
+  // At 7:45 AM the reset is the next day's.
+  assert.equal(resetInstant({ kind: "clock", hour: 7, minute: 30, zone: "America/New_York" }, Date.parse("2026-11-22T12:45:00Z")), Date.parse("2026-11-23T12:30:00Z"));
+  // Across the change to summer time.
+  assert.equal(resetInstant({ kind: "clock", hour: 7, minute: 30, zone: "America/New_York" }, Date.parse("2026-03-08T05:00:00Z")), Date.parse("2026-03-08T11:30:00Z"));
+  assert.equal(resetInstant({ kind: "clock", month: 11, day: 24, hour: 10, minute: 0, zone: "UTC" }, now), Date.parse("2026-11-24T10:00:00Z"));
+  assert.equal(resetInstant({ kind: "in", ms: 60_000 }, now), now + 60_000);
+  assert.equal(resetInstant({ kind: "clock", hour: 7, minute: 30, zone: "Not/AZone" }, now) > 0, true, "an unknown zone reads as the machine's");
+});
+
+test("usageLimitDetail names the cause and when the work runs again, in the member's time (DIG-371)", () => {
+  const now = Date.parse("2026-11-22T12:04:00Z");
+  assert.equal(usageLimitDetail("claude_code", "the note", Date.parse("2026-11-22T12:30:00Z"), true, now, "America/New_York"), "Claude's usage limit was reached; the note runs again after 7:30 AM");
+  assert.equal(usageLimitDetail("codex", "the note", Date.parse("2026-11-23T12:30:00Z"), false, now, "America/New_York"), "Codex's usage limit was reached; the note tries again after Nov 23, 7:30 AM");
 });

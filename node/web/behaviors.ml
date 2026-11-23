@@ -548,6 +548,11 @@ let signal_name s =
    due again on the next pass. The hook stops saying so once its day's budget is spent. DIG-294 *)
 let read_left_more = "exited 3"
 
+(* The exit status of a nightly run its agent's usage limit held (docs/behaviors.md, Output, exit and
+   the deadline): the date stays due and the run is no try of it, so the next pass spawns it again,
+   and the behavior returns at once until the limit's reset. DIG-371 *)
+let nightly_waiting = "exited 4"
+
 (* Whether a run ended as a success: exited 0, or a read run that left more for the next. *)
 let succeeded h status =
   status = "exited 0" || (h = Read && status = read_left_more)
@@ -633,6 +638,10 @@ let settle_nightly ?(now = Unix.gettimeofday ()) ~say (log : Log.t) r status =
     handle_date log r.date;
     arm_revise ~now log r
   end
+  else if status = nightly_waiting then
+    say
+      "the agent's usage limit holds the run; the next pass tries again, not \
+       counted"
   else if not (date_handled log r.date) then begin
     let n = failures log ~date:r.date + 1 in
     (* A run that said why (the agent signed out, the model down) reported it itself. *)
