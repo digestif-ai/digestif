@@ -16,7 +16,8 @@
    Every GET the UI reads is called [samples] times over a socket of its own against the node served
    as the daemon serves it (Server.serve), which is the node's whole server time for a request: the
    connection's thread, the request parsed, the log reopened, the session check, the route, the
-   store's reads and the JSON written out. A route fails when its p95 exceeds [budget_ms], or when it exceeds what
+   store's reads and the JSON written out. A route fails when its p95 exceeds [budget_ms], stretched
+   on a machine whose CPU is slower than the baseline's ([budget_scale]), or when it exceeds what
    baseline.json recorded for it, scaled by the run's [machine_shift], by more than [regression]
    allows. A route the baseline does not
    name yet is held to the budget alone and printed, so adding a route is adding its line.
@@ -103,7 +104,7 @@ let suggestions = knob "suggestions" 1
    of what it measured over what was recorded, and never below one, so a fast machine is held to
    the baseline as recorded. A median is moved by the machine and not by one route: a route that
    regresses still stands out from the rest by its factor, and a slower page everywhere is still
-   held to the budget, which no shift scales (ISS-42329). *)
+   held to the budget, which the shift alone never scales (ISS-42329, [budget_scale]). *)
 let factor = 3.
 let slack_ms = 5.
 
@@ -119,6 +120,19 @@ let median = function
       let n = Array.length a in
       Some
         (if n mod 2 = 1 then a.(n / 2) else (a.((n / 2) - 1) +. a.(n / 2)) /. 2.)
+
+(* How much the 50ms budget stretches on this run's machine (ISS-131965). A cloud runner sometimes
+   runs every CPU instruction four to five times slower than usual, so the route with the least
+   headroom goes over 50ms while it sits under its own baseline once the shift is taken out. The
+   routes' [shift] alone cannot excuse that: a change that makes every page five times slower moves
+   the same median. So the run also times a fixed piece of work that is not node code ([calibrate])
+   against what the baseline recorded for it, [cpu]. That ratio moves with the machine and never
+   with the tree. The budget stretches by the smaller of the two, so it stretches only when the
+   machine and the routes both read slow by the same amount, and never below the budget as written:
+   no calibration recorded, a fast machine, or routes that moved more than the CPU did, and a page
+   is held to 50ms. *)
+let budget_scale ~shift ~cpu =
+  match cpu with Some c -> Float.max 1. (Float.min shift c) | None -> 1.
 
 (* How much slower than the baseline's machine this run's machine is: the median of measured over
    recorded across the routes the baseline names, at least one. *)
@@ -767,27 +781,67 @@ let measure n cookie (name, path) =
   ignore (once ());
   (name, p95 (List.init samples (fun _ -> once ())))
 
+(* A fixed piece of CPU work that is not node code: a JSON document of two thousand rows written
+   out, digested and read back, the kind of work a page spends its time on. Timed [samples] times
+   before the routes are measured and again after, so a machine that slows part way through is
+   seen in both halves, and its median against the one baseline.json recorded is how much slower
+   this run's CPU is than the baseline's ([budget_scale]). It reads no file, no socket and no
+   store, so nothing a change to the node does moves it. *)
+let calibration_doc =
+  `List
+    (List.init 2000 (fun i ->
+         `Assoc
+           [
+             ("id", `Int i);
+             ("name", `String (Printf.sprintf "member-%d" i));
+             ("hash", `String (Digest.to_hex (Digest.string (string_of_int i))));
+             ( "tags",
+               `List (List.init 4 (fun j -> `String (string_of_int (i * j)))) );
+           ]))
+
+let calibrate () =
+  let once () =
+    let t = cpu () in
+    let s = Yojson.Safe.to_string calibration_doc in
+    ignore (Sys.opaque_identity (Digest.string s));
+    ignore (Sys.opaque_identity (Yojson.Safe.from_string s));
+    (cpu () -. t) *. 1000.
+  in
+  ignore (once ());
+  List.init samples (fun _ -> once ())
+
+let calibration_of times = Option.value ~default:0. (median times)
+
 (* the baseline *)
 
 let baseline_file = "baseline.json"
 
-let read_baseline () =
+let read_fields () =
   match Yojson.Safe.from_file baseline_file with
-  | `Assoc f -> (
-      match List.assoc_opt "p95_ms" f with
-      | Some (`Assoc routes) ->
-          List.filter_map
-            (fun (k, v) ->
-              match v with
-              | `Float x -> Some (k, x)
-              | `Int x -> Some (k, float_of_int x)
-              | _ -> None)
-            routes
-      | _ -> [])
+  | `Assoc f -> f
   | _ -> []
   | exception Sys_error _ -> []
 
-let write_baseline file measured =
+(* What [calibrate] measured on the baseline's machine, in milliseconds of CPU. *)
+let read_calibration () =
+  match List.assoc_opt "calibration_ms" (read_fields ()) with
+  | Some (`Float x) when x > 0. -> Some x
+  | Some (`Int x) when x > 0 -> Some (float_of_int x)
+  | _ -> None
+
+let read_baseline () =
+  match List.assoc_opt "p95_ms" (read_fields ()) with
+  | Some (`Assoc routes) ->
+      List.filter_map
+        (fun (k, v) ->
+          match v with
+          | `Float x -> Some (k, x)
+          | `Int x -> Some (k, float_of_int x)
+          | _ -> None)
+        routes
+  | _ -> []
+
+let write_baseline file ~calibration measured =
   Out_channel.with_open_bin file @@ fun oc ->
   output_string oc
   @@ Yojson.Safe.pretty_to_string
@@ -809,6 +863,8 @@ let write_baseline file measured =
                   ("approvals", `Int approvals);
                   ("suggestions", `Int suggestions);
                 ] );
+            ( "calibration_ms",
+              `Float (Float.round (calibration *. 1000.) /. 1000.) );
             ( "p95_ms",
               `Assoc
                 (List.map
@@ -820,8 +876,8 @@ let write_baseline file measured =
 (* What an over-budget route measured beside its baseline and the run's [shift], so the failure
    alone tells a machine that was slower everywhere (the route near its baseline once the shift is
    taken out) from a route that grew (ISS-125158): the published log carries the failure and not
-   the table [budget] prints. The budget itself is never shifted (ISS-42329). *)
-let over_budget ~shift ~baseline (name, ms) =
+   the table [budget] prints. The budget stretches by [scale] alone ([budget_scale]). *)
+let over_budget ~scale ~shift ~baseline (name, ms) =
   let against =
     match List.assoc_opt name baseline with
     | Some b ->
@@ -829,14 +885,22 @@ let over_budget ~shift ~baseline (name, ms) =
           (if b > 0. then ms /. b else Float.infinity)
     | None -> "no baseline yet"
   in
+  let budget =
+    if scale > 1. then
+      Printf.sprintf
+        "%.1fms budget, %.0fms stretched %.2fx for this run's slower CPU"
+        (budget_ms *. scale) budget_ms scale
+    else Printf.sprintf "%.0fms budget" budget_ms
+  in
   Printf.sprintf
-    "%s: p95 %.1fms is over the %.0fms budget (%s; this run's machine is %.2fx \
-     the baseline's, so %.1fms on the baseline's machine)"
-    name ms budget_ms against shift (ms /. shift)
+    "%s: p95 %.1fms is over the %s (%s; this run's machine is %.2fx the \
+     baseline's, so %.1fms on the baseline's machine)"
+    name ms budget against shift (ms /. shift)
 
-(* Why a route's p95 fails, or None. *)
-let verdict ?(shift = 1.) ~baseline (name, ms) =
-  if ms > budget_ms then Some (over_budget ~shift ~baseline (name, ms))
+(* Why a route's p95 fails, or None. [scale] stretches the budget ([budget_scale]). *)
+let verdict ?(scale = 1.) ?(shift = 1.) ~baseline (name, ms) =
+  if ms > budget_ms *. scale then
+    Some (over_budget ~scale ~shift ~baseline (name, ms))
   else
     match List.assoc_opt name baseline with
     | Some b when regression ~shift ~baseline:b ms ->
@@ -856,11 +920,13 @@ let verdict ?(shift = 1.) ~baseline (name, ms) =
    route costs and not what the machine was doing. *)
 let rounds = 3
 
-let rec settle n cookie ~all ~shift ~baseline ~round (name, path) measured =
-  let failed = verdict ~shift ~baseline measured <> None in
+let rec settle n cookie ~all ~scale ~shift ~baseline ~round (name, path)
+    measured =
+  let failed = verdict ~scale ~shift ~baseline measured <> None in
   if round < rounds && (all || failed) then
     let again =
-      settle n cookie ~all ~shift ~baseline ~round:(round + 1) (name, path)
+      settle n cookie ~all ~scale ~shift ~baseline ~round:(round + 1)
+        (name, path)
         (measure n cookie (name, path))
     in
     if snd again < snd measured then again else measured
@@ -876,12 +942,23 @@ let budget () =
     | _ -> None
   in
   let routes = routes n cookie in
+  let before = calibrate () in
   let first = List.map (measure n cookie) routes in
+  let calibration = calibration_of (before @ calibrate ()) in
   let shift = if record <> None then 1. else machine_shift ~baseline first in
+  let cpu = Option.map (fun b -> calibration /. b) (read_calibration ()) in
+  let scale = if record <> None then 1. else budget_scale ~shift ~cpu in
   Printf.printf "this run's machine against the baseline's: %.2fx\n" shift;
+  Printf.printf "this run's CPU against the baseline's: %s (%.3fms)\n"
+    (match cpu with
+    | Some c -> Printf.sprintf "%.2fx" c
+    | None -> "not recorded")
+    calibration;
+  Printf.printf "the budget on this machine: %.1fms (%.2fx)\n"
+    (budget_ms *. scale) scale;
   let measured =
     List.map2
-      (settle n cookie ~all:(record <> None) ~shift ~baseline ~round:1)
+      (settle n cookie ~all:(record <> None) ~scale ~shift ~baseline ~round:1)
       routes first
   in
   let failures =
@@ -891,12 +968,12 @@ let budget () =
           (match List.assoc_opt name baseline with
           | Some b -> Printf.sprintf "%.2fms" b
           | None -> "none yet");
-        verdict ~shift ~baseline (name, ms))
+        verdict ~scale ~shift ~baseline (name, ms))
       measured
   in
   Option.iter
     (fun f ->
-      write_baseline f measured;
+      write_baseline f ~calibration measured;
       Printf.printf "recorded the baseline in %s\n" f)
     record;
   close_session cookie;
@@ -965,6 +1042,41 @@ let shifts () =
         machine is 1.00x the baseline's, so 60.0ms on the baseline's machine)")
     (verdict ~baseline:[] ("new", 60.))
 
+(* ISS-131965: a machine whose CPU is slower stretches the budget, and only by as much as the routes
+   moved with it. *)
+let stretched () =
+  let baseline = [ ("search", 13.44); ("status", 3.91) ] in
+  let search = ("search", 52.2) in
+  let scale = budget_scale ~shift:5.12 ~cpu:(Some 4.8) in
+  Alcotest.(check bool)
+    "a box five times slower everywhere stretches by the smaller ratio" true
+    (Float.abs (scale -. 4.8) < 0.001);
+  Alcotest.(check (option string))
+    "search on fly128 passes once the budget stretches" None
+    (verdict ~scale ~shift:5.12 ~baseline search);
+  Alcotest.(check bool)
+    "every page five times slower on an ordinary CPU still fails" true
+    (verdict
+       ~scale:(budget_scale ~shift:5.12 ~cpu:(Some 1.))
+       ~shift:5.12 ~baseline search
+    <> None);
+  Alcotest.(check bool)
+    "a slow CPU stretches no further than the routes moved" true
+    (budget_scale ~shift:1.2 ~cpu:(Some 5.) = 1.2);
+  Alcotest.(check bool)
+    "no calibration recorded, no stretch" true
+    (budget_scale ~shift:5.12 ~cpu:None = 1.);
+  Alcotest.(check bool)
+    "a fast CPU never tightens the budget" true
+    (budget_scale ~shift:1. ~cpu:(Some 0.5) = 1.);
+  Alcotest.(check (option string))
+    "a stretched budget says so"
+    (Some
+       "search: p95 80.0ms is over the 75.0ms budget, 50ms stretched 1.50x for \
+        this run's slower CPU (baseline 13.44ms, 5.95x it; this run's machine \
+        is 2.00x the baseline's, so 40.0ms on the baseline's machine)")
+    (verdict ~scale:1.5 ~shift:2. ~baseline ("search", 80.))
+
 let () =
   Ci_alcotest.run "perf"
     [
@@ -972,6 +1084,7 @@ let () =
         [
           Alcotest.test_case "what counts as slower" `Quick regressions;
           Alcotest.test_case "a slower machine" `Quick shifts;
+          Alcotest.test_case "a slower CPU" `Quick stretched;
           Alcotest.test_case "every page within budget" `Quick budget;
         ] );
     ]

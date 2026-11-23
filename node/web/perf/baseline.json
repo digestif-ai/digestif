@@ -13,6 +13,7 @@
     "approvals": 1,
     "suggestions": 1
   },
+  "calibration_ms": 2.2,
   "p95_ms": {
     "status": 3.91,
     "feed": 4.12,
