@@ -67,10 +67,15 @@ for a core, which is the box's load and not the page's cost. A route fails when 
 `node/web/perf/baseline.json` recorded and more than 5ms above it, the baseline first scaled by how
 much slower the run's machine is: the median, over every route the baseline names, of measured over
 recorded, never below one. A slow or loaded runner moves every route at once, so it moves the median
-and fails nothing; a route that regresses on its own still stands out from the rest by three times,
-and the 50ms budget is never scaled. It runs with node/'s dune suite,
+and fails nothing; a route that regresses on its own still stands out from the rest by three times.
+The 50ms budget stretches only on a machine whose CPU is slower than the baseline's: the run times a
+fixed piece of work that is not node code (a JSON document written out, digested and read back)
+against the `calibration_ms` the baseline recorded for it, and the budget is multiplied by the smaller
+of that ratio and the routes' median, never below one. A runner whose CPU runs five times slow
+stretches it, while a change that makes every page slower on an ordinary CPU moves the routes and not
+the calibration, so it is still held to 50ms. It runs with node/'s dune suite,
 so `ci/build.slow.sh` runs it. A route the baseline does not name yet is held to the budget alone; a
-change meant to make a page slower retakes the baseline:
+change meant to make a page slower retakes the baseline, calibration included:
 
     cd node && DIGESTIF_PERF_RECORD=$PWD/web/perf/baseline.json dune exec web/perf/test_perf.exe
 
