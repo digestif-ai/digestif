@@ -7,7 +7,8 @@
 //
 // It holds the main module's name, the compatibility date and flags, the assets binding and how
 // assets are served, and the NAMES of the bindings the Worker reads: the D1 binding, every var and
-// every secret any deployment in wrangler.jsonc sets. No value of a var, no route, no database id
+// every secret any deployment in wrangler.jsonc sets, and the Worker's Durable Object classes: each
+// binding with the class it names, and the top level's migrations, every step with its tag. No value of a var, no route, no database id
 // and no secret is in it, so one bundle deploys to every relay unchanged, and a deploy keeps each
 // deployment's own values (the deploy step's keep_bindings).
 import { readFileSync } from "node:fs";
@@ -23,7 +24,19 @@ interface BundleJson {
   compatibility_flags: string[];
   assets: { directory: string; binding: string; html_handling?: string; run_worker_first?: boolean };
   bindings: { d1: string[]; vars: string[]; secrets: string[] };
+  /** The Worker's Durable Object bindings, each with the class of this module it names. */
+  durable_objects: DurableObjectBinding[];
+  /** Every Durable Object migration step, oldest first, as wrangler.jsonc's top level lists them. */
+  migrations: MigrationStep[];
 }
+
+interface DurableObjectBinding {
+  name: string;
+  class_name: string;
+}
+
+/** One lifecycle step of the Worker's classes: its tag, and what it does, as Cloudflare's upload takes it. */
+type MigrationStep = { tag: string } & Record<string, unknown>;
 
 function record(value: unknown, what: string): Config {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${what} is not an object`);
@@ -39,6 +52,41 @@ function str(value: unknown, what: string): string {
 function deployments(config: Config): Config[] {
   const envs = config.env === undefined ? {} : record(config.env, "env");
   return [config, ...Object.entries(envs).map(([name, env]) => record(env, `env.${name}`))];
+}
+
+/** The Durable Object bindings of every deployment, one per name, each naming the same class everywhere. */
+function durableObjects(all: Config[]): DurableObjectBinding[] {
+  const byName = new Map<string, string>();
+  for (const d of all) {
+    if (d.durable_objects === undefined) continue;
+    const bindings = record(d.durable_objects, "durable_objects").bindings;
+    if (!Array.isArray(bindings)) throw new Error("durable_objects.bindings is not a list");
+    bindings.forEach((b, i) => {
+      const binding = record(b, `durable_objects.bindings[${i}]`);
+      if (binding.script_name !== undefined) throw new Error(`durable_objects.bindings[${i}] names another Worker's class`);
+      const name = str(binding.name, `durable_objects.bindings[${i}].name`);
+      const className = str(binding.class_name, `durable_objects.bindings[${i}].class_name`);
+      const seen = byName.get(name);
+      if (seen !== undefined && seen !== className) throw new Error(`the binding ${name} names ${seen} in one deployment and ${className} in another`);
+      byName.set(name, className);
+    });
+  }
+  return [...byName.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, class_name]) => ({ name, class_name }));
+}
+
+/** The top level's migrations: wrangler applies them to every environment, so an environment's own are refused. */
+function migrations(config: Config, all: Config[]): MigrationStep[] {
+  if (all.slice(1).some((d) => d.migrations !== undefined)) throw new Error("an environment lists migrations; only the top level may");
+  const steps = config.migrations ?? [];
+  if (!Array.isArray(steps)) throw new Error("migrations is not a list");
+  const tags = new Set<string>();
+  return steps.map((s, i) => {
+    const step = record(s, `migrations[${i}]`);
+    const tag = str(step.tag, `migrations[${i}].tag`);
+    if (tags.has(tag)) throw new Error(`migrations name the tag ${tag} twice`);
+    tags.add(tag);
+    return { ...step, tag };
+  });
 }
 
 function sorted(names: Iterable<string>): string[] {
@@ -68,6 +116,8 @@ export function bundleJson(config: Config): BundleJson {
       ...(typeof assets.run_worker_first === "boolean" ? { run_worker_first: assets.run_worker_first } : {}),
     },
     bindings: { d1: sorted(d1), vars: sorted(vars), secrets: sorted(secrets) },
+    durable_objects: durableObjects(all),
+    migrations: migrations(config, all),
   };
 }
 

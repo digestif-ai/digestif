@@ -24,6 +24,13 @@
     "html_handling": "none",
     "run_worker_first": true
   },
+  // Each circle's store (src/store.ts): a SQLite-backed Durable Object of the Worker's own class.
+  "durable_objects": { "bindings": [{ "name": "CIRCLE_STORE", "class_name": "CircleStore" }] },
+  // Top level only: wrangler applies migrations to every environment. A tag names one lifecycle step
+  // of the Worker's classes and is never edited once released; the release that first carries a tag
+  // applies it, so the deploy step uploads the Worker script for it rather than a version
+  // (docs/releases.md, The deploy step), and every later release repeats it unchanged.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CircleStore"] }],
   "d1_databases": [
     {
       "binding": "DB",
@@ -71,6 +78,8 @@
         // handful of envelopes a pass, so the ceiling only bites a flood. DIG-228
         { "name": "APPEND_LIMITER", "namespace_id": "2280", "simple": { "limit": 120, "period": 60 } }
       ],
+      // Bindings are not inherited: each environment names the store class it binds.
+      "durable_objects": { "bindings": [{ "name": "CIRCLE_STORE", "class_name": "CircleStore" }] },
       "d1_databases": [
         {
           "binding": "DB",
@@ -107,6 +116,8 @@
         // The same ceiling as dinners.
         { "name": "APPEND_LIMITER", "namespace_id": "2281", "simple": { "limit": 120, "period": 60 } }
       ],
+      // Bindings are not inherited: each environment names the store class it binds.
+      "durable_objects": { "bindings": [{ "name": "CIRCLE_STORE", "class_name": "CircleStore" }] },
       "d1_databases": [
         {
           "binding": "DB",

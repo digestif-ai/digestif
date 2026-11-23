@@ -1,10 +1,13 @@
 // The Worker's bindings and variables (wrangler.jsonc). Runtime types come from `wrangler types`
 // (worker-configuration.d.ts, generated, not checked in), which `npm run check` and `npm test` run.
 import type { D1Migration } from "cloudflare:test";
+import type { CircleStore } from "./store.ts";
 
 declare global {
   interface Env {
     DB: D1Database;
+    /** The circles' stores: one SQLite-backed Durable Object per circle, named by its root (src/store.ts). */
+    CIRCLE_STORE: DurableObjectNamespace<CircleStore>;
     /** sha256:<hex> of the root envelope (a circle, or a founding dinner) of the circle this relay serves. */
     CIRCLE_ROOT: string;
     MAX_ENVELOPE_BYTES?: string;
