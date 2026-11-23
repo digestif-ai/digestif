@@ -10,12 +10,13 @@
 #   waits for this run.
 # - Every push to main, every pull request, and by hand: the same builds and checks as a dry run of
 #   whatever version the commit is (0.0.0 between tags), uploading nothing.
-#   A fleet merge build's pull request (batch-*) is the one pull request it skips.
+#   A fleet merge build's pull request (batch-*) is the one pull request it skips, and so is a push
+#   to main touching only release/, the channel `ci/release.sh publish` and a signer's take-backs
+#   write (docs/releases.md, The channel).
 # - Dispatched on main with a `candidate` version, by `ci/release.sh candidate` once both signers
-#   signed and the version is under candidate/ on the channel branch: no build, only the test
-#   nodes for that version (docs/releases.md, Test nodes). A push to the channel branch starts
-#   nothing, since GitHub reads a push's workflow from the pushed commit and that branch holds
-#   none.
+#   signed and the combined manifest.sig.json is on the prerelease: no build, only the test nodes
+#   for that version (docs/releases.md, Test nodes). A push to the channel branch starts nothing,
+#   since GitHub reads a push's workflow from the pushed commit and that branch holds none.
 
 name: Release
 run-name: ${{ inputs.candidate != '' && format('Test nodes {0}', inputs.candidate) || '' }}
@@ -24,11 +25,13 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # A tag push is never filtered by path.
+    paths-ignore: ["release/**"]
   pull_request:
   workflow_dispatch:
     inputs:
       candidate:
-        description: A version under candidate/ on the channel branch, for the test nodes
+        description: A prerelease both signers signed, for the test nodes
         required: false
         default: ""
 
@@ -118,13 +121,23 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      # What's new (docs/releases.md): the commit's ledger, when `ci/release.sh changelog` left one
-      # on the channel branch, and every version's commit titles otherwise.
+      # What's new (docs/releases.md): the version's ledger, the message of its tag when
+      # `ci/release.sh build --changelog` wrote one, else what `ci/release.sh changelog` left on the
+      # channel branch, and every version's commit titles otherwise.
       - name: the changelog
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
         run: |
           mkdir -p dist
           ledger=()
-          if git fetch --quiet origin refs/heads/channel 2>/dev/null &&
+          if [ "$REF_TYPE" = tag ] &&
+            git fetch --quiet --force origin "refs/tags/$TAG:refs/tags/$TAG" &&
+            [ "$(git cat-file -t "refs/tags/$TAG")" = tag ] &&
+            git tag -l --format='%(contents)' "$TAG" > dist/ledger.json &&
+            jq -e 'type == "array"' dist/ledger.json >/dev/null 2>&1; then
+            ledger=(dist/ledger.json)
+          elif git fetch --quiet origin refs/heads/channel 2>/dev/null &&
             git show "FETCH_HEAD:changelog/$GITHUB_SHA.json" > dist/ledger.json 2>/dev/null; then
             ledger=(dist/ledger.json)
           fi
@@ -202,16 +215,28 @@ jobs:
         with:
           pattern: release-*
           path: release
+      # A tag's message is the notes when a person wrote it; a ledger `ci/release.sh build
+      # --changelog` wrote there is What's new, not notes. Otherwise the commit titles since the
+      # newest version the release list names (main's release/, the channel branch's while main's
+      # names none), since no release is marked Latest.
       - name: the notes
         run: |
           # checkout can leave a pushed annotated tag as a lightweight one; read the remote's.
           git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          message=""
           if [ "$(git cat-file -t "refs/tags/$TAG")" = tag ]; then
-            git tag -l --format='%(contents)' "$TAG" > notes.txt
+            message="$(git tag -l --format='%(contents)' "$TAG")"
+          fi
+          if [ -n "$message" ] && ! jq -e 'type == "array"' <<<"$message" >/dev/null 2>&1; then
+            printf '%s\n' "$message" > notes.txt
           else
-            last="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+            newest='[ .releases[].version ] | sort_by(split(".") | map(tonumber)) | last // empty'
+            last="$(git show origin/main:release/index.json 2>/dev/null | jq -r "$newest" || true)"
+            if [ -z "$last" ] && git fetch --quiet origin refs/heads/channel 2>/dev/null; then
+              last="$(git show FETCH_HEAD:index.json | jq -r "$newest" || true)"
+            fi
             range="$GITHUB_SHA"
-            [ -z "$last" ] || range="$last..$GITHUB_SHA"
+            [ -z "$last" ] || range="v$last..$GITHUB_SHA"
             git log --no-merges --format='- %s' "$range" > notes.txt
           fi
           cat notes.txt
@@ -231,13 +256,14 @@ jobs:
             "${args[@]}" > assets/manifest.json
           cat assets/manifest.json
       # The hosted install script for the release's own install.sh asset, carrying each platform's
-      # sha256 from the manifest above, and linking the manifest beside its signatures on the release page:
-      # the same bytes the relay renders at https://digestif.io/install.sh once the version is
-      # published and both signers signed it (relay/src/install.ts).
+      # sha256 from the manifest above, and linking the version's release page, which shows
+      # manifest.json beside every signature: the same bytes the relay renders at
+      # https://digestif.io/install.sh once the version is published and both signers signed it
+      # (relay/src/install.ts).
       - name: write the hosted install script
         run: |
           bash ci/install-hosted.sh assets/manifest.json \
-            "https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION" > assets/install.sh
+            "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" > assets/install.sh
           sh -n assets/install.sh
       # Every archive, every digestif-update, install.sh and manifest.json, attested as built by
       # this workflow on the tag at this commit, before any of them reaches the draft.
