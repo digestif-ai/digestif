@@ -4,8 +4,8 @@
 // not_mailer elsewhere) and its own bootstrap read. The home circle answers the same routes
 // unprefixed. Three routes are the relay's own: the unsigned GET /v0/version and GET /v0/relay, and
 // the bootstrap read GET /v0/invites/<invite key> across every circle. Beside them, the phone app
-// under /app/ and the hosted install script at /install.sh on the relay whose INSTALL_SCRIPT_URL
-// is set (src/install.ts).
+// under /app/ and, on the relay whose SITE_HOST names the circle's bare domain, the hosted install
+// script at that domain's /install.sh (src/install.ts).
 import { envelopeHash } from "../../conformance/src/envelope.ts";
 import { append, appendRaw, parseSigned, readBody, throttle } from "./append.ts";
 import { app, APP_PREFIX } from "./app.ts";
@@ -132,9 +132,8 @@ async function inviteAnywhere(context: Context, key: string): Promise<Response> 
 
 async function serve(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const install = env.INSTALL_SCRIPT_URL;
-  if (install !== undefined && install !== "" && url.pathname === INSTALL_PATH) return installScript(install, request);
   if (env.SITE_HOST !== undefined && env.SITE_HOST !== "" && url.hostname === env.SITE_HOST) {
+    if (url.pathname === INSTALL_PATH) return installScript(request);
     throw new Refusal(404, "malformed", `no route ${request.method} ${url.pathname}`);
   }
   if (url.pathname === APP_PREFIX || url.pathname.startsWith(`${APP_PREFIX}/`)) return app(env.ASSETS, request, url);

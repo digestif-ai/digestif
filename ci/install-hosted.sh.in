@@ -16,7 +16,8 @@
 # link lets anyone compare the sha256 with the one both release signers signed. Every update after
 # this one is checked against both signatures (docs/releases.md).
 #
-# Written for each release from its manifest by ci/install-hosted.sh; edit ci/install-hosted.sh.in.
+# Written for each release from its manifest by ci/install-hosted.sh and rendered by the relay;
+# edit ci/install-hosted.sh.in and relay/src/install-template.ts together.
 
 set -eu
 

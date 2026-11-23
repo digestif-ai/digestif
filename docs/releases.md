@@ -566,7 +566,7 @@ sha256 for every platform in it. It:
 
 1. picks this machine's platform from `uname`, and stops when the release has none for it;
 2. downloads the archive and prints the sha256 it expects, the sha256 the download has, and a link
-   to the release's signed manifest (`releases/<version>/` on `main`, the manifest beside its
+   to the release's signed manifest (`<version>/` on the `channel` branch, the manifest beside its
    signatures); a mismatch stops it with nothing installed;
 3. unpacks the archive and stages it with the binary inside it, `digestif update stage <archive>`:
    the checks a node runs before it runs a release (staging, above), into `<data dir>/releases/`,
@@ -584,11 +584,23 @@ after the install is checked against both signatures (above). Nothing is built: 
 no npm, and no Node.js, since the archive carries its own. The repo-root `install.sh` stays the
 build-from-source path for contributors.
 
-The Release workflow attaches `install.sh` to the draft release, and the newest published release
-is the one `https://github.com/digestif-ai/digestif/releases/latest/download/install.sh` names. The
-`dinners` relay answers `https://digestif.io/install.sh` with that file (`relay/src/install.ts`,
-`INSTALL_SCRIPT_URL` and `SITE_HOST` in `relay/wrangler.jsonc`), so publishing a release publishes
-its script, and the bare domain answers nothing else.
+**The relay renders it.** The `dinners` relay answers `https://digestif.io/install.sh` itself
+(`relay/src/install.ts`, on the host `SITE_HOST` names in `relay/wrangler.jsonc`), and the bare
+domain answers nothing else. It reads the channel's `index.json`, takes the newest version no
+recall signed by a key of the set takes out, reads that version's manifest and signatures, and
+checks that every key of the signer set the relay's own build carries
+(`node/update/release-signers.json`, never the `RELEASE_SIGNERS` the conformance suite's top level
+sets) signed the manifest's exact bytes. It then answers the template applied to that manifest,
+from its copy of the template (`relay/src/install-template.ts`). A channel it cannot read, a newest
+version whose manifest is not signed by every key, or a manifest the template cannot be applied to
+is answered `502` with the reason, which `curl -f` stops on, never with a script and never with an
+older version's. So publishing a version both signers signed publishes its script, and nothing a
+writer of the repository's releases or channel replaces reaches a new member.
+
+The Release workflow still attaches `install.sh` to the draft release, for the direct GitHub link,
+written by `ci/install-hosted.sh` with the same link; `ci/install-hosted-test.sh` holds the relay's
+rendering byte for byte equal to it, template and renderer alike, so edit `ci/install-hosted.sh.in`
+and `relay/src/install-template.ts` together.
 
 ## Signing a release
 

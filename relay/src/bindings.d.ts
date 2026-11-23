@@ -41,15 +41,14 @@ declare global {
     MAIL_FROM?: string;
     /** The URL answer links name, when the relay is reached through another (a tunnel); the request origin otherwise. */
     RELAY_URL?: string;
-    /** Where /install.sh is read from: the newest published release's install.sh (src/install.ts). Unset: no /install.sh. */
-    INSTALL_SCRIPT_URL?: string;
     /**
      * A digestif-signers-v0 document the admission fold starts from in place of the build's
      * node/update/release-signers.json (src/signers.ts): set at wrangler.jsonc's top level only, to
-     * the conformance suite's public test signers. No deployed environment sets it.
+     * the conformance suite's public test signers. No deployed environment sets it, and /install.sh
+     * never reads it (src/install.ts).
      */
     RELEASE_SIGNERS?: string;
-    /** The circle's bare domain, which answers /install.sh and nothing else. */
+    /** The circle's bare domain, which answers /install.sh, rendered from the newest signed manifest (src/install.ts), and nothing else. Unset: no /install.sh. */
     SITE_HOST?: string;
     /** The per-address ceiling on POST /v0/envelopes (wrangler.jsonc, ratelimits), on the deployed environments only. */
     APPEND_LIMITER?: RateLimit;

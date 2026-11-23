@@ -64,7 +64,7 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
   sha="$(shasum -a 256 "$tmp/digestif-$platform.tar.gz" | awk '{ print $1 }')"
 fi
-link="https://github.com/digestif-ai/digestif/tree/main/releases/9.9.9"
+link="https://github.com/digestif-ai/digestif/tree/channel/9.9.9"
 
 # A matching archive installs.
 manifest "$sha" > "$tmp/manifest.json"
@@ -163,3 +163,27 @@ if bash "$root/ci/install-hosted.sh" "$tmp/short.json" "$link" > /dev/null 2>&1;
   fail "a short sha256 was written into the script"
 fi
 echo "ok: an unsafe manifest is refused"
+
+# The relay renders https://digestif.io/install.sh itself (relay/src/install.ts), from its copy of
+# the template and its own renderer: for the same manifest and link it writes these exact bytes,
+# and it refuses what the generator refuses.
+command -v node >/dev/null 2>&1 || fail "node not found; the relay's install renderer needs it"
+render="$root/relay/scripts/install-render.ts"
+jq '.artifacts += [
+  { platform: "darwin-arm64", url: "https://example.test/a.tar.gz", sha256: ("sha256:" + ("a" * 64)), size: 1 },
+  { platform: "linux-arm64", url: "https://example.test/b.tar.gz", sha256: ("sha256:" + ("b" * 64)), size: 1 } ]' \
+  "$tmp/manifest.json" > "$tmp/many.json"
+for m in manifest many; do
+  bash "$root/ci/install-hosted.sh" "$tmp/$m.json" "$link" > "$tmp/$m.bash.sh"
+  node "$render" "$tmp/$m.json" "$link" > "$tmp/$m.relay.sh" || fail "the relay's renderer refused $m.json"
+  cmp -s "$tmp/$m.bash.sh" "$tmp/$m.relay.sh" || {
+    diff "$tmp/$m.bash.sh" "$tmp/$m.relay.sh" >&2 || true
+    fail "the relay renders $m.json other than ci/install-hosted.sh writes it"
+  }
+done
+for m in quote short; do
+  if node "$render" "$tmp/$m.json" "$link" > /dev/null 2>&1; then
+    fail "the relay's renderer wrote $m.json into a script"
+  fi
+done
+echo "ok: the relay renders the script ci/install-hosted.sh writes"
