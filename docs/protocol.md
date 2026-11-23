@@ -140,8 +140,8 @@ admits nobody and its circle is founded again.
 ```
 
 A circle founded at a dinner has that **founding dinner** as its root instead of a `circle`: its
-`host` is admitted by the message itself, each relay is configured with the hash of its envelope,
-and it folds exactly as a circle root does, its label read as the circle's name. A relay has no
+`host` is admitted by the message itself, the circle is opened on each relay at its own address by
+its founding append, and it folds exactly as a circle root does, its label read as the circle's name. A relay has no
 root of its own. Any admitted member may write a later dinner, but after the circle's admission cutover a guest entry counts only
 when its `admission` is a `digestif-admission-v0` every key of the signer set signed (Approvals,
 below; The admission fold), so in practice the starting admin's node writes every dinner once the
