@@ -263,6 +263,11 @@ bash "$root/ci/release-retry-test.sh"
 step "release: the changelog a release carries"
 bash "$root/ci/changelog-test.sh"
 
+# The channel ci/release.sh writes and reads: release/ on main, the branch's take-backs, the trim,
+# and the ledger in the tag, against a scratch repository with a local origin and a fake gh.
+step "release: the release list on main"
+bash "$root/ci/release-channel-test.sh"
+
 # The relay line's tagging (ci/release.sh relay) and its migration check, against a scratch
 # repository with a local origin.
 step "relay release: tagging and the migration check"

@@ -78,7 +78,7 @@ channel lacks is published by the next `sign --next` any admin runs (The channel
 
 `digestif-update verify --channel <channel>` checks a manifest against the set the channel's
 `signers/` chain leaves, from the build's own; `ci/release.sh` passes it once the channel lists a
-change, so a version the new set signed reaches `candidate/` and one the old set signed does not.
+change, so a version the new set signed reaches the test nodes and one the old set signed does not.
 
 ## Approvals
 
@@ -142,6 +142,17 @@ A revocation names one key and is signed by any key in the current set. From the
   is still held by its owner) and by every new key, naming a set without the revoked key;
 - a revoked key never enters a signer set again.
 
+Any one signer revokes a key with their own release key, read as `recall` reads it (A recall):
+
+    digestif-update revoke ed25519:SMoh... --reason "Laptop stolen."
+
+It writes `revocations/<key>.json` (the key without its `ed25519:` prefix) beside its
+`.sig.json`, listed under `revocations` in `index.json`, through the same channel writer as a
+recall: one commit to `release/` on main and one to the `channel` branch, with the signer's own
+`gh` login. The document is written once, and a second signer revoking the same key signs the
+bytes already there. It then prints the line that posts the same revocation on the circle from a
+machine running a node; `--channel DIR` writes into a checkout on disk and commits nothing.
+
 The revocation reaches nodes two ways: in the channel, and on the circle as a `release_revocation`
 message carrying the same document and signatures ([protocol.md](protocol.md)), so a node whose
 channel is unreachable or withholds it still halts. `digestif-update circle-body <revocation>` prints
@@ -154,45 +165,87 @@ so recovery from it is a fresh install of a build carrying the new set, announce
 
 ## The channel
 
-The channel is a directory served over https, by default the root of this repo's `channel` branch
-(`https://raw.githubusercontent.com/digestif-ai/digestif/channel/`); `digestif run --feed` names
-another, and a local directory works too. Artifacts are attached to the matching GitHub release; a
-relative `url` is resolved against the channel.
+The channel is `release/` on main of this repository, served over https at
+`https://raw.githubusercontent.com/digestif-ai/digestif/main/release/`: the **release list**,
+`index.json`, naming the versions on offer, and the revocations, recalls and signer-set changes
+that take trust back. `digestif run --feed` names another channel, and a local directory works too.
+A version's manifest and its signatures are not copied into it: the list names the
+`manifest.json` and the combined `manifest.sig.json` of the version's GitHub release by their https
+urls, and the archives are assets of that release too; a relative `url` is resolved against the
+channel.
 
 ```
-index.json
-0.2.0/manifest.json
-0.2.0/manifest.sig.json
-revocations/<name>.json
-revocations/<name>.sig.json
-signers/<name>.json
-signers/<name>.sig.json
-candidate/index.json
-candidate/0.3.0/manifest.json
-candidate/0.3.0/manifest.sig.json
-relay/index.json
-relay/0.3.0/manifest.json
-relay/0.3.0/manifest.sig.json
+release/index.json
+release/revocations/<name>.json
+release/revocations/<name>.sig.json
+release/recalls/<version>.json
+release/recalls/<version>.sig.json
+release/signers/<name>.json
+release/signers/<name>.sig.json
 ```
 
-`channel` holds no code and shares no history with `main`: main holds code only, so publishing a
-version is never a commit of `main`, which platform creates a rollout for and that rollout's job tags
-after preflight, and a push to `channel` runs
-no workflow, since GitHub reads a push's workflows from the pushed commit. What members' nodes read,
-`index.json` and the documents it names, is written only by `ci/release.sh publish` and by a
-recall, and `signers/` by `sign --next`: before it signs a version, it publishes every
-`digestif-signers-v0` its node holds and the channel lacks, with the signer's own `gh` login, so the
-channel and `ci/release.sh`'s check hold the new set before the next release ships. `relay/` is the relay line's record (Relay releases, Publishing a relay release), written
-only by `relay-publish`, and no node reads it. `changelog/<commit>.json` is what a version's What's new
-is built from (Cutting a release, What's new), written only by `ci/release.sh changelog` and read
-only by the Release workflow. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
+**The release list keeps the seven newest published versions**, plus the newest no recall takes
+out when it is older, so a run of recalls never leaves a new member with nothing to install.
+`ci/release.sh publish` adds a version and trims the rest in one commit; main's history holds every
+earlier state of the list. A node needs no old entry to reach a new one (it takes the newest listed
+version no recall takes out whose signatures pass), and it reads the manifest and signatures of
+every listed version newer than its own, so the count bounds a node's reads at fourteen. The one
+thing a member loses: `digestif update pin <version>` works only for a listed version.
+**Revocations, recalls and signer-set changes are never trimmed by count**: a revocation must never
+lapse, and a node that was off for months folds the signer-set chain link by link. A recall goes
+with its version's list entry.
 
-`candidate/` is a feed of its own, holding the one version on its way to the test nodes: its
-`index.json` names that version and the channel's revocations and signer-set changes, so a test node
-whose build predates a change follows the chain to the set that signed the candidate. Nodes never
-read it unless pointed at it with `--feed`, which is what a test node does. `ci/release.sh candidate` writes it, after
-checking again that every signer signed (below), and `publish` moves the version out of it into the
-root and its `index.json` in one commit.
+**The release list is the one record of what is published.** No GitHub release is marked Latest.
+`publish` still clears the prerelease flag, which then says only that the release's files are final
+because a list entry points at them: `drop` refuses to delete such a release, and `candidate` skips a
+version already sent on. Every reader that picks a version (the `digestif-update` `ci/release.sh`
+checks a new version with, the break-glass deploy's fallback download) takes the newest listed
+version no recall takes out.
+
+Who writes it, each through one writer: `ci/release.sh publish` lists a version (Cutting a
+release), and every take-back is a signer's own act, written by `digestif-update`'s one channel
+writer with the signer's own `gh` login: `recall` (A recall), `revoke` (Revoking a release key) and
+`sign --next`, which before it signs a version publishes every `digestif-signers-v0` its node holds
+and the channel lacks, so the channel and `ci/release.sh`'s check hold the new set before the next
+release ships. The writer clones `release/` of main, shallow and sparse, and the `channel` branch,
+writes into each, and pushes one commit to each it changed, starting again from new clones when a
+push loses a race. A commit that touches only `release/` is no new code: `release/` is in neither
+`ci/release-paths` nor `ci/relay-release-paths`, so its rollout tags nothing.
+
+### The channel branch, for nodes older than the move
+
+Every version before the first one that reads `release/` on main reads the root of the orphan
+`channel` branch (`https://raw.githubusercontent.com/digestif-ai/digestif/channel/`), which keeps its
+old layout: `index.json`, `<version>/manifest.json` and `<version>/manifest.sig.json`, and the same
+`revocations/`, `recalls/` and `signers/`. An installed node reads the branch until it runs a
+version that reads main, so the branch carries those stragglers to main:
+
+- The first version that reads main, and the one after it, are listed on both: `publish` lists a
+  version on the branch too while main's list held fewer than two versions before it.
+- From the third on, a publish writes only `release/`, and the branch is left in place and
+  readable, its index naming a version that reads main. A node older than that takes it from the
+  branch and reads main from its next pass.
+- **A publish lists on the branch again whenever no version the branch names that reads main is
+  unrecalled**, so a recall of the hop version never strands a straggler on its old version. A
+  version reads main when its tag holds `release/index.json`.
+- **Every recall, revocation and signer-set change is written to both**, by `digestif-update`'s
+  channel writer, for as long as the branch is readable. A `digestif-update` older than the move
+  still writes the branch alone, so `ci/release.sh` reads the take-backs as one set before it checks
+  anything (`channel_read`): main's `release/` with every take-back the branch holds that main lacks
+  (a recall only while main lists its version, so a trimmed recall is not brought back, and the
+  signatures of a document both hold joined). `signatures`, `candidate`, `channel` and a test
+  node's feed check a version against that set, and `publish` commits that same set to main's
+  `release/` in the commit that lists the version, so a node reading main folds the change before
+  it meets the version. The files are signed, and every reader checks them against its own set, so
+  reading or copying them vouches for nothing.
+- A recall a signer makes runs `~/.local/bin/digestif-update`, the node's own copy, which reads
+  main once that node has updated. **Each signer runs `digestif-update signer install` again from
+  the first version that reads main**, so the signing job's pinned copy writes take-backs to both
+  addresses too (The signing job).
+
+The branch also still holds `changelog/<commit>.json`, the What's new hand-off (What's new), its
+earlier `candidate/` and `relay/` records, which nothing writes or reads any more, and a node's
+pre-move manifest copies.
 
 `index.json` is unsigned and lists where things are. Its `version` is only a hint to skip fetching
 old manifests; the version that counts is the manifest's own. Because nobody signs it, a node bounds
@@ -205,7 +258,9 @@ names anything else costs that entry, reported as a problem, and the rest of the
 {
   "format": "digestif-feed-v0",
   "releases": [
-    { "version": "0.2.0", "manifest": "0.2.0/manifest.json", "signatures": "0.2.0/manifest.sig.json" }
+    { "version": "0.2.0",
+      "manifest": "https://github.com/digestif-ai/digestif/releases/download/v0.2.0/manifest.json",
+      "signatures": "https://github.com/digestif-ai/digestif/releases/download/v0.2.0/manifest.sig.json" }
   ],
   "revocations": [
     { "document": "revocations/2026-11-roman.json", "signatures": "revocations/2026-11-roman.sig.json" }
@@ -484,22 +539,29 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
    any signature beside them. `ci/release.sh build` succeeds once the draft holds all of it.
 4. Each signer runs `digestif-update sign --next`, which shows what the version holds, asks, and
    uploads their signature to the draft (Signing a release).
-5. `ci/release.sh candidate --version <version>` downloads the manifest and every `*.sig.json`
-   asset of the release and checks them with `digestif-update verify`, a node's own check against
-   the signer set, run from the `digestif-update` the newest published release holds for the
-   machine's platform, so the version under review never vouches for itself (the draft's own copy
-   is used only before any version is published). It
+5. `ci/release.sh candidate --version <version>` downloads the manifest and every signer's
+   `manifest.<signer>.sig.json` asset of the release and checks them with `digestif-update verify`,
+   a node's own check against the signer set the channel's take-backs leave (The channel branch,
+   for nodes older than the move), run from the `digestif-update` the newest listed version no
+   recall takes out holds for the machine's platform, so the version under review never vouches for
+   itself (the draft's own copy is used only before any version is listed). It
    exits 75 and changes nothing while a signer has not signed, which is what keeps Release now on
-   a rollout from sending an unsigned version on. Once every signer signed, it publishes the GitHub
-   release as a prerelease that is not Latest, so the archives can be fetched while the front page
-   still offers the last published version; writes the manifest and the signatures, one per
-   signer in one `manifest.sig.json`, under `candidate/` on the `channel` branch (The channel); and
-   dispatches main's Release workflow with the version as its `candidate` input, which starts the
-   test nodes. Run again, it dispatches again.
-6. Once every test node passed (`ci/release.sh test-nodes`, Test nodes), `ci/release.sh publish --version <version>` moves the version out of
-   `candidate/` and into `index.json` in one commit on `channel`, and marks the GitHub release
-   Latest. From then on members' nodes take it on their next update pass. Marking it Latest is also
-   what publishes the release's `install.sh` at `https://digestif.io/install.sh` (below).
+   a rollout from sending an unsigned version on. Once every signer signed, it uploads the
+   signatures, one per signer, as the release's combined `manifest.sig.json`, the one signatures
+   file a node reads; publishes the GitHub release as a prerelease that is not Latest, so the
+   archives can be fetched by a test node while no list names the version; and dispatches main's
+   Release workflow with the version as its `candidate` input, which starts the test nodes. Run
+   again, it dispatches again.
+6. Once every test node passed (`ci/release.sh test-nodes`, Test nodes), `ci/release.sh publish
+   --version <version>` lists the version in `release/index.json` on main, by the https urls of its
+   release's `manifest.json` and `manifest.sig.json`, in one commit pushed straight to main as
+   `channel_commit` pushes the branch (from main as fetched, started again from the new head when
+   the push loses a race). The same commit trims the list (The channel) and copies in every
+   take-back the branch holds that main lacks. It lists the version on the `channel` branch too
+   while older nodes still need it there (The channel branch, for nodes older than the move). Then
+   it clears the release's prerelease flag, marking no release Latest. From then on members' nodes
+   take it on their next update pass, and the relay's `https://digestif.io/install.sh` offers it
+   (below).
 
 The same workflow runs as a dry run on every push to `main`, every pull request, and by hand: it
 builds and stages every platform at the version the commit is and uploads nothing, so a change that breaks one
@@ -520,9 +582,12 @@ the empty `ui/static/changelog.json`.
 The entries are the Digestif product's entries of the changelog idempotent writes (`dev changelog
 build`). Only an identity idempotent admits reads them, and the release command holds none, so the
 Digestif rollout's job reads them (`GET /dev/changelog/releases?repo=digestif-ai/digestif&product=digestif`)
-once `ci/release.sh changed` answers `changed`, and hands them to `ci/release.sh changelog --sha
-<commit> --file <file>`, which leaves them on `channel` as `changelog/<commit>.json` before the job
-tags the commit; the Release run on that tag reads the file. Notes are
+once `ci/release.sh changed` answers `changed`, and hands them to the release command before the tag
+exists: `ci/release.sh changelog --sha <commit> --file <file>` leaves them on `channel` as
+`changelog/<commit>.json` before the job tags the commit, and the Release run on that tag reads the
+file. `ci/release.sh build --changelog <file>` writes the tag it mints as an annotated tag whose
+message is the file, kept verbatim, so the ledger can ride in the push that starts the run,
+attached to the one thing it describes. Notes are
 written after a version is released, so a version carries every earlier version's entries and its
 own as the commit titles its manifest's notes hold, which the next release replaces with its
 entries. A version whose notes are not written yet, and every version when the run finds no
@@ -807,8 +872,9 @@ all of them in turn. Every step's duration is appended to
 and nothing extra is printed, so a slow run can be traced to the step that was slow. Publishing a
 relay version (Publishing a relay release) is the step `settle`, and each of its parts a step of
 its own: `settle listing`, `settle trust`, `settle manifest`, `settle signatures`,
-`settle release-edit`, `settle channel` (with `settle channel sync` and `settle channel push`) and
-`settle announce`.
+`settle upload`, `settle release-edit` and `settle announce`. Publishing the signer set before
+anything is signed is `publish-signer-sets`, its clone, commit and push to both addresses of the
+channel `publish-signer-sets push`.
 
 The key command runs only once you answer `s` (Signing a release), so a leave or a drop never runs
 it: a key command that prompts, such as `op read` asking 1Password to unlock or the Keychain asking
@@ -906,7 +972,9 @@ job the signing job replaces, with the `launchctl bootout` line that stops it.
 
 No automatic update replaces the pinned copy: a new binary is a new code identity, which the
 Keychain does not trust. Upgrading the job is running `signer install` again from the newer
-`digestif-update`, which pins the new copy, moves both items to it with one Keychain prompt, and
+`digestif-update`; each signer runs it again once their node runs the first version that reads
+`release/` on main, so the job's take-backs reach both of the channel's addresses (The channel
+branch, for nodes older than the move). It pins the new copy, moves both items to it with one Keychain prompt, and
 deletes the older copies. `digestif-update signer run --once` reads the open decisions once, acts
 on them and stops, which shows what the job would do.
 
@@ -928,15 +996,23 @@ the version, which runs one `test node <platform>` job per platform, each limite
 and each running `ci/test-node.sh`:
 
 1. Install the last published version with its own `digestif service install`, so the service manager
-   runs its supervisor. The first version has nothing to update from, and neither does a platform
-   newer than the last published version: the version's archive is checked against the manifest
-   and installs directly, `candidate` having verified the signatures.
-2. Run `digestif update apply --feed <candidate>`, so nothing waits on the node's daily read. It verifies
-   the signatures, stages, self-tests and switches.
+   runs its supervisor: the newest version `release/index.json` on main lists, or the `channel`
+   branch's while main's list names none, so the first version that reads main is tested making the
+   move from the branch every member's node makes. The first version has nothing to update from,
+   and neither does a platform newer than the last published version: the version's archive is
+   checked against the manifest and installs directly, `candidate` having verified the signatures.
+2. Run `digestif update apply --feed <feed>`, so nothing waits on the node's daily read. The feed is
+   a directory `ci/release.sh feed --version <version> --dir <feed>` lays out on the runner: the
+   channel's take-backs as `channel_read` reads them (main's `release/` with every one the branch
+   holds that main lacks), so a node built before a signer-set change follows the chain to the set
+   that signed the version, and one release entry naming the prerelease's `manifest.json` and
+   `manifest.sig.json`. The pass verifies the signatures, stages, self-tests and switches.
 3. Restart the service. The old supervisor runs the version on trial, ten minutes of awake time at most.
 4. Restart the service again, so the version's own supervisor runs.
-5. Run one more update pass with the version's own code, which must read the channel and switch to
-   nothing. A later fix or recall depends on that pass and that supervisor.
+5. Run one more update pass with the version's own code against the feed, which must switch to
+   nothing, and a last one against the channel the version reads by default, `release/` on main,
+   which must read it and switch to nothing. A later fix or recall depends on those passes and that
+   supervisor.
 
 A test node has no circle, no keys and no keystore, so nothing on the runner holds a secret. Its first
 pass logs that it cannot sync (`no device key` on macOS, no `secret-tool` on Linux), as a node nobody
@@ -960,14 +1036,16 @@ what a test node depends on runs it (`.github/workflows/test-node-rehearsal.yml`
 
 ### Reading the channel, and dropping a version
 
-`ci/release.sh channel` is the rollout's last read, the channel as a member's node reads it: with
-no version it prints the newest version `index.json` lists; with `--version` it prints `listed`
-only when `index.json` names the version, its manifest and signatures verify with the newest other
-published release's `digestif-update`, and every archive fetches at its manifest's size and sha256.
-It exits 75 when the channel or an archive could not be read, which says nothing about the version.
+`ci/release.sh channel` is the rollout's last read, the channel as a member's node reads it,
+`release/` on main: with no version it prints the newest version `index.json` lists; with
+`--version` it prints `listed` only when `index.json` names the version, its manifest and
+signatures (read from the version's GitHub release, as a node reads them) verify with the
+`digestif-update` of the newest other listed version, and every archive fetches at its manifest's
+size and sha256. It exits 75 when the channel or an archive could not be read, which says nothing
+about the version.
 
 `ci/release.sh drop --version <version>` deletes the release while it is a draft or a prerelease,
-keeping the tag, and clears `candidate/` when it holds the version. A rollout runs it for a version
+keeping the tag. A rollout runs it for a version
 a newer one superseded or a person canceled, and for a version a test node said no to. A published
 version is never dropped: only a recall takes one back.
 
@@ -983,9 +1061,12 @@ after the test nodes passed it, so the bad version a recall is for is one a pers
 The key is read from the command `~/.config/digestif/signer.json` names (Where the key comes
 from), into the memory of the one process that signs; `"repo"` there names the
 repository holding the channel. A password manager with no command line pipes the key in instead,
-`pbpaste | digestif-update recall 0.1.7 --reason "..." --key /dev/stdin`. The command clones the
-channel's `channel` branch with the signer's own `gh` login (`gh auth git-credential`), writes the
-recall, commits and pushes it in one commit, so it needs nothing of the fleet. It refuses a version the channel does not publish. On a
+`pbpaste | digestif-update recall 0.1.7 --reason "..." --key /dev/stdin`. The command writes the
+recall through `digestif-update`'s one channel writer, with the signer's own `gh` login (`gh auth
+git-credential`), so it needs nothing of the fleet: it clones `release/` of main (shallow and
+sparse) and the `channel` branch, writes the recall into each whose list names the version, and
+pushes one commit to each, starting again from new clones when a push loses a race (The channel).
+It refuses a version neither list names. On a
 machine running a node it then writes the same recall to the circle as a `release_recall` message
 ([protocol.md](protocol.md)) for the node's next sync to carry; elsewhere it prints the one line that
 posts it from a machine that runs one. `--channel DIR` writes into a checkout on disk and commits
@@ -1086,8 +1167,8 @@ read-only token while every dependency's install scripts run:
    version for the first);
 6. in a second job, `publish`, that installs nothing and runs no code from the tree, attests the
    bundle and the manifest and leaves a **draft** GitHub release `relay-v<version>` holding them,
-   created and edited with `--latest=false`. It is never Latest: Latest is the node line, which the hosted
-   install script and `gh release download` with no tag read. Running it again on the same tag
+   created and edited with `--latest=false`. No release is ever Latest: the release list on main is
+   the one record of what is published (The channel). Running it again on the same tag
    replaces the draft's files and drops any signature beside them.
 
 **The bundle**, `digestif-relay-<version>.tar.gz`: `worker/index.js` and `worker/index.js.map`
@@ -1184,8 +1265,8 @@ did not publish is said with the line to run.
 
 `ci/release.sh relay-publish --version <version>` publishes a relay version every signer signed.
 Anyone with write access may run it, and running it again finishes what an earlier run left. It
-runs `digestif-update relay-publish <version>` from the `digestif-update` the newest published node release
-holds for the machine (`DIGESTIF_UPDATE` names another), so the version under review never vouches
+runs `digestif-update relay-publish <version>` from the `digestif-update` the newest listed node
+version no recall takes out holds for the machine (`DIGESTIF_UPDATE` names another), so the version under review never vouches
 for itself; `sign --next` runs the same steps in its own process
 (`node/update/lib/relay_publish.ml`). Three steps:
 
@@ -1197,16 +1278,10 @@ for itself; `sign --next` runs the same steps in its own process
    channel's trust are read at once, then the manifest and every signature downloaded at once;
    `sign --next` hands over the manifest bytes it already downloaded, used while GitHub's digest of
    the draft's `manifest.json` is still theirs.
-2. Publish the GitHub release, never as Latest (Latest is the node line to the install script and
-   to the signing line), and write `relay/<version>/manifest.json`, its exact bytes,
-   `relay/<version>/manifest.sig.json`, one signature per signer, and `relay/index.json` on the
-   channel in one commit, with the signer's own `gh` login. `relay/index.json` has the node index's
-   shape, format `digestif-relay-feed-v0`, every published relay version in version order and the
-   channel's revocations named from `relay/`. A different manifest already under the version is
-   refused. The commit is made in the tool's own shallow checkout of the channel branch,
-   `~/.digestif/update/<owner>-<name>-channel.checkout`, fetched and reset to the branch's tip on
-   every publish rather than cloned again (cloned once, and again when it cannot be brought to the
-   tip); `sign --next`'s signer-set commit uses the same checkout.
+2. Upload the signatures kept, one per signer, to the release as its combined `manifest.sig.json`,
+   beside the per-signer files, and publish the GitHub release, never as Latest, with the signer's
+   own `gh` login. The release is the relay version's one record: the break-glass deploy reads its
+   `manifest.json` and `manifest.sig.json` from there, and nothing is written to the channel.
 3. Write the `relay_release` announcement through this machine's node for its next sync to carry,
    as a recall posts a `release_recall`; with no node here it prints the
    `digestif post --kind relay_release` line that posts it from a machine running one. An

@@ -16,8 +16,10 @@ type fetch = limit:int -> string -> (string, string) result
    read until memory runs out. An archive is bounded by the size its signed manifest states. *)
 let document_limit = 1_048_576
 
+(* The channel every node reads unless told another: release/ on main (docs/releases.md, The
+   channel). *)
 let default_url =
-  "https://raw.githubusercontent.com/digestif-ai/digestif/channel/"
+  "https://raw.githubusercontent.com/digestif-ai/digestif/main/release/"
 
 let is_https u = String.length u > 8 && String.sub u 0 8 = "https://"
 let is_http u = String.length u > 7 && String.sub u 0 7 = "http://"

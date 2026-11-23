@@ -188,9 +188,9 @@ let sign_next ~timer ~relay ~auto =
       | Ok () -> 0
       | Error e -> exit_err e)
 
-(* A recall: one signer's signed statement that a published version is bad (docs/releases.md, A
-   recall). It needs nothing of the fleet: the signer's key, their own `gh` login to commit it to
-   the channel branch, and, on a machine running a node, that node to post it on the circle. *)
+(* A take-back (a recall, a revocation, a signer-set change) is a signer's own act and needs nothing
+   of the fleet: the signer's key, their own `gh` login to commit it to the channel, and, on a
+   machine running a node, that node to post it on the circle. *)
 
 let git ?cwd args =
   let argv =
@@ -206,35 +206,93 @@ let git ?cwd args =
            (String.trim stderr))
   | Error e -> Error e
 
-(* Commit what [write] puts into a fresh clone of [branch] and push it, so the recall is on the
-   channel in one commit. *)
-let commit_to_channel ~repo ~branch ~message write =
+(* The channel's two addresses (docs/releases.md, The channel): release/ on main, which every node
+   from the first main-reading version reads, and the root of the `channel` branch, which an older
+   node reads until it updates. *)
+let channel_dir = "release"
+let channel_branch = "channel"
+
+(* Clone [repo]'s [branch] shallow into [checkout]; for main, sparse and without blobs outside
+   release/, so the clone costs the channel and not the code. *)
+let clone_address ~repo ~branch checkout =
+  let url = "https://github.com/" ^ repo ^ ".git" in
+  if branch = "main" then
+    let ( let* ) = Result.bind in
+    let* () =
+      git
+        [
+          "clone";
+          "--quiet";
+          "--depth";
+          "1";
+          "--filter=blob:none";
+          "--sparse";
+          "--branch";
+          branch;
+          url;
+          checkout;
+        ]
+    in
+    git ~cwd:checkout [ "sparse-checkout"; "set"; channel_dir ]
+  else
+    git
+      [ "clone"; "--quiet"; "--depth"; "1"; "--branch"; branch; url; checkout ]
+
+(* Commit and push what the checkout at [checkout] holds changed, as one commit on [branch]. Answers
+   whether it pushed a commit; Error when the push lost a race or failed. *)
+let push_if_changed ~branch ~message checkout =
   let ( let* ) = Result.bind in
-  let dir = Filename.temp_dir "digestif-recall" "" in
-  let checkout = Filename.concat dir "channel" in
-  Fun.protect
-    ~finally:(fun () -> try Stage.remove_tree dir with _ -> ())
-    (fun () ->
-      let* () =
-        git
-          [
-            "clone";
-            "--quiet";
-            "--depth";
-            "1";
-            "--branch";
-            branch;
-            "https://github.com/" ^ repo ^ ".git";
-            checkout;
-          ]
-      in
-      let* written = write checkout in
-      let* () = git ~cwd:checkout [ "add"; "--all"; "." ] in
+  let* () = git ~cwd:checkout [ "add"; "--all"; "." ] in
+  match
+    Proc.run ~timeout:60.
+      [| "git"; "-C"; checkout; "diff"; "--cached"; "--quiet" |]
+  with
+  | Ok { code = 0; _ } -> Ok false
+  | Ok { code = 1; _ } ->
       let* () = git ~cwd:checkout [ "commit"; "--quiet"; "-m"; message ] in
       let* () =
         git ~cwd:checkout [ "push"; "--quiet"; "origin"; "HEAD:" ^ branch ]
       in
-      Ok written)
+      Ok true
+  | Ok { code; stderr; _ } ->
+      Error (Printf.sprintf "git diff exited %d: %s" code (String.trim stderr))
+  | Error e -> Error e
+
+(* THE ONE CHANNEL WRITER: [write] is handed the channel directory of a fresh clone of each address,
+   release/ of main and the branch's root, and what it writes is pushed as one commit to each that
+   it changed. A push that loses a race (main or the branch moved since the clone) starts again from
+   new clones, where the address already pushed takes no second commit since the write finds it
+   done. Answers what [write] answered and whether any address took a commit. *)
+let commit_to_channel ~repo ~message write =
+  let ( let* ) = Result.bind in
+  let rec attempt n =
+    let dir = Filename.temp_dir "digestif-channel" "" in
+    let result =
+      Fun.protect
+        ~finally:(fun () -> try Stage.remove_tree dir with _ -> ())
+        (fun () ->
+          let main = Filename.concat dir "main" in
+          let branch = Filename.concat dir channel_branch in
+          let* () = clone_address ~repo ~branch:"main" main in
+          let* () = clone_address ~repo ~branch:channel_branch branch in
+          let release = Filename.concat main channel_dir in
+          let* written = write ~main:release ~branch in
+          let on_main = push_if_changed ~branch:"main" ~message main in
+          let on_branch =
+            push_if_changed ~branch:channel_branch ~message branch
+          in
+          match (on_main, on_branch) with
+          | Ok a, Ok b -> Ok (`Done (written, a || b))
+          | Error e, _ | _, Error e -> Ok (`Again e))
+    in
+    match result with
+    | Error e -> Error e
+    | Ok (`Done d) -> Ok d
+    | Ok (`Again e) when n >= 3 ->
+        Error ("could not push to the channel after 3 attempts: " ^ e)
+    | Ok (`Again _) -> attempt (n + 1)
+  in
+  attempt 1
 
 (* Post the recall on the circle from the node at [data_dir], or say how to from one that runs. *)
 let post_to_circle ~data_dir (r : Release.recall Release.signed) =
@@ -265,101 +323,11 @@ let post_to_circle ~data_dir (r : Release.recall Release.signed) =
       (Yojson.Safe.to_string body)
       Circle_recall.kind)
 
-(* THE TOOL'S CHANNEL CHECKOUT: a shallow checkout of [repo]'s [branch] at
-   ~/.digestif/update/<owner>-<name>-<branch>.checkout, cloned on first use and on every later one
-   fetched and reset to the branch's tip, with every file the branch does not hold removed, so a
-   publish moves only what changed since the last one rather than cloning the branch again. A
-   checkout that cannot be brought to the tip (a fetch refused, a tree some other git left
-   half-written) is cloned again. A lock file beside it keeps two runs on this machine from writing
-   it at once. It is never a checkout anyone works in. *)
-let channel_checkout_path ~repo ~branch =
-  Filename.concat (Sign_next.state_dir ())
-    (String.map (fun c -> if c = '/' then '-' else c) repo
-    ^ "-" ^ branch ^ ".checkout")
-
-let clone_channel ~repo ~branch checkout =
-  (try Stage.remove_tree checkout with _ -> ());
-  git
-    [
-      "clone";
-      "--quiet";
-      "--depth";
-      "1";
-      "--branch";
-      branch;
-      "https://github.com/" ^ repo ^ ".git";
-      checkout;
-    ]
-
-let sync_channel ~repo ~branch checkout =
-  let ( let* ) = Result.bind in
-  let fetched () =
-    let* () =
-      git ~cwd:checkout [ "fetch"; "--quiet"; "--depth"; "1"; "origin"; branch ]
-    in
-    let* () =
-      git ~cwd:checkout [ "reset"; "--quiet"; "--hard"; "FETCH_HEAD" ]
-    in
-    git ~cwd:checkout [ "clean"; "--quiet"; "-fdx" ]
-  in
-  if Sys.file_exists (Filename.concat checkout ".git") then
-    match fetched () with
-    | Ok () -> Ok ()
-    | Error _ -> clone_channel ~repo ~branch checkout
-  else clone_channel ~repo ~branch checkout
-
-(* Run [f] holding the lock beside [checkout]. *)
-let with_checkout_lock checkout f =
-  Sign_next.mkdir_p (Filename.dirname checkout);
-  let fd =
-    Unix.openfile (checkout ^ ".lock") [ Unix.O_RDWR; Unix.O_CREAT ] 0o644
-  in
-  Fun.protect
-    ~finally:(fun () -> Unix.close fd)
-    (fun () ->
-      Unix.lockf fd Unix.F_LOCK 0;
-      f ())
-
-(* Commit what [write] puts into the tool's channel checkout, brought to the tip of the channel
-   branch, and push it as one commit; a write that changes nothing commits nothing, and answers
-   false. The sync and the commit-and-push are timed into [timer] as "<step> sync" and
-   "<step> push". A push that fails
-   leaves the local commit behind, and the next run's reset drops it. *)
-let commit_if_changed ?(timer = Timing.none) ~step ~repo ~branch ~message write
-    =
-  let ( let* ) = Result.bind in
-  let time s f = Timing.time timer (step ^ " " ^ s) f in
-  let checkout = channel_checkout_path ~repo ~branch in
-  with_checkout_lock checkout (fun () ->
-      let* () = time "sync" (fun () -> sync_channel ~repo ~branch checkout) in
-      let* () = write checkout in
-      time "push" (fun () ->
-          let* () = git ~cwd:checkout [ "add"; "--all"; "." ] in
-          match
-            Proc.run ~timeout:60.
-              [| "git"; "-C"; checkout; "diff"; "--cached"; "--quiet" |]
-          with
-          | Ok { code = 0; _ } -> Ok false
-          | Ok { code = 1; _ } ->
-              let* () =
-                git ~cwd:checkout [ "commit"; "--quiet"; "-m"; message ]
-              in
-              let* () =
-                git ~cwd:checkout
-                  [ "push"; "--quiet"; "origin"; "HEAD:" ^ branch ]
-              in
-              Ok true
-          | Ok { code; stderr; _ } ->
-              Error
-                (Printf.sprintf "git diff exited %d: %s" code
-                   (String.trim stderr))
-          | Error e -> Error e))
-
 (* sign --next's first write (docs/releases.md, The channel): every signer-set change this machine's
-   node holds and the channel lacks, committed under signers/ with the signer's own gh login before
-   any version is signed, so the channel and ci/release.sh hold the set the next release is signed
-   by. A failure is said and signing goes on: a version signed by the new set still waits in the
-   draft until the channel holds it. *)
+   node holds and the channel lacks, committed under signers/ to both of the channel's addresses with
+   the signer's own gh login before any version is signed, so the channel and ci/release.sh hold the
+   set the next release is signed by. A failure is said and signing goes on: a version signed by the
+   new set still waits in the draft until the channel holds it. *)
 let publish_signer_sets ~timer () =
   match held_signer_sets () with
   | [] -> ()
@@ -369,22 +337,33 @@ let publish_signer_sets ~timer () =
         | Ok c -> c.repo
         | Error _ -> Sign_next.default_repo
       in
-      let written = ref [] in
       match
-        commit_if_changed ~timer ~step:"publish-signer-sets" ~repo
-          ~branch:"channel" ~message:"Publish the signer set" (fun dir ->
-            Result.map
-              (fun w -> written := w)
-              (Signers_channel.write_sets ~dir held))
+        Timing.time timer "publish-signer-sets push" (fun () ->
+            commit_to_channel ~repo ~message:"Publish the signer set"
+              (fun ~main ~branch ->
+                let ( let* ) = Result.bind in
+                let* on_main = Signers_channel.write_sets ~dir:main held in
+                let* on_branch = Signers_channel.write_sets ~dir:branch held in
+                Ok
+                  (on_main
+                  @ List.filter
+                      (fun s ->
+                        not
+                          (List.exists
+                             (fun m ->
+                               Signers_channel.document_path m
+                               = Signers_channel.document_path s)
+                             on_main))
+                      on_branch)))
       with
-      | Ok true ->
+      | Ok (written, true) ->
           List.iter
             (fun s ->
               Printf.printf "published the signer set %s on %s's channel\n"
                 (Signers_channel.document_path s)
                 repo)
-            !written
-      | Ok false -> ()
+            written
+      | Ok (_, false) -> ()
       | Error e ->
           Printf.printf
             "the signer set this node holds was not published to the channel: %s\n"
@@ -424,37 +403,36 @@ let relay_announce ~data_dir signed =
         (Relay_publish.No_node
            (Relay_publish.post_line (Circle_relay_release.to_body signed)))
 
-(* The channel on [repo]'s [branch], as a node reads it. *)
-let channel_url ~repo ~branch =
-  Printf.sprintf "https://raw.githubusercontent.com/%s/%s/" repo branch
+(* The channel on [repo], as a node reads it: release/ on main. *)
+let channel_url ~repo =
+  Printf.sprintf "https://raw.githubusercontent.com/%s/main/%s/" repo
+    channel_dir
 
 (* What relay-publish checks a relay release against: the trust a node reading the channel holds,
    the build's set advanced by the channel's signers/ and this machine's node with the channel's
    revocations applied (Signers_channel.trust), the set sign --next signs under. *)
-let relay_publish_trust ~repo ~branch () =
+let relay_publish_trust ~repo () =
   Result.map
     (fun feed ->
       Signers_channel.trust ~build:(Trust_root.signers ()) ~channel:(Some feed)
         ~held:(held_signer_sets ()))
-    (Feed.read Feed.default_fetch
-       ~base:(channel_url ~repo ~branch)
+    (Feed.read Feed.default_fetch ~base:(channel_url ~repo)
        ~installed:(Trust_root.version ()))
 
-let relay_publish_env ?(timer = Timing.none) ~repo ~branch ~data_dir () :
+let relay_publish_env ?(timer = Timing.none) ~repo ~data_dir () :
     Relay_publish.env =
   {
     gh;
     repo;
-    trust = relay_publish_trust ~repo ~branch;
-    channel = commit_if_changed ~timer ~step:"settle channel" ~repo ~branch;
+    trust = relay_publish_trust ~repo;
     announce = relay_announce ~data_dir;
     say = print_endline;
     timer;
   }
 
-(* sign --next's relay line: the node at the default data directory, and relay-publish on the
-   channel branch when a signature completes the signer set. A held announcement is said and is
-   not a failure of the signing. *)
+(* sign --next's relay line: the node at the default data directory, and relay-publish when a
+   signature completes the signer set. A held announcement is said and is not a failure of the
+   signing. *)
 let sign_next_relay ~timer (config : Sign_next.config) : Sign_next.relay =
   let data_dir = Node.default_dir () in
   {
@@ -464,8 +442,7 @@ let sign_next_relay ~timer (config : Sign_next.config) : Sign_next.relay =
         Result.map_error Relay_publish.error_to_string
           (Result.map ignore
              (Relay_publish.run ~manifest
-                (relay_publish_env ~timer ~repo:config.repo ~branch:"channel"
-                   ~data_dir ())
+                (relay_publish_env ~timer ~repo:config.repo ~data_dir ())
                 ~version)));
   }
 
@@ -517,6 +494,64 @@ let sign_cmd =
     (Cmd.info "sign" ~doc:"Add your signature beside a manifest or revocation.")
     Term.(const go $ key $ doc $ revocation $ next $ auto)
 
+(* The release key a recall or a revocation is signed with, and the channel's repository: --key's
+   file, else the command signer.json names, which runs only once the arguments parse. *)
+let takeback_signer key repo =
+  let ( let* ) = Result.bind in
+  match key with
+  | Some path ->
+      let* secret = Keys.decode_secret (read path) in
+      Ok (secret, Option.value repo ~default:Sign_next.default_repo)
+  | None ->
+      let* config = Sign_next.load_config (Sign_next.config_path ()) in
+      let* secret = Sign_next.secret config in
+      Ok (secret, Option.value repo ~default:config.repo)
+
+let takeback_key_arg =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "key" ] ~docv:"SECRET_FILE"
+        ~doc:
+          "Your release key, as for sign: /dev/stdin to pipe it in. Without it \
+           the key is read from the command ~/.config/digestif/signer.json \
+           names, as sign --next reads it.")
+
+let takeback_channel_arg =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "channel" ] ~docv:"DIR"
+        ~doc:
+          "Write into this checkout of the channel and commit nothing, instead \
+           of committing to release/ on main and to the channel branch.")
+
+let takeback_repo_arg =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "repo" ] ~docv:"OWNER/NAME"
+        ~doc:
+          "The repository holding the channel: signer.json's \"repo\" when the \
+           key is read from it, else digestif-ai/digestif.")
+
+(* Write a take-back with [write], into --channel's checkout or to both of the channel's addresses
+   in one commit each. *)
+let write_takeback ~channel ~repo ~message write =
+  match channel with
+  | Some dir -> write [ dir ]
+  | None ->
+      Result.map fst
+        (commit_to_channel ~repo ~message (fun ~main ~branch ->
+             write [ main; branch ]))
+
+let where ~channel ~repo =
+  match channel with
+  | Some d -> d
+  | None ->
+      Printf.sprintf "%s's channel (release/ on main and the %s branch)" repo
+        channel_branch
+
 let recall_cmd =
   let version =
     Arg.(required & pos 0 (some string) None & info [] ~docv:"VERSION")
@@ -527,39 +562,6 @@ let recall_cmd =
       & opt (some string) None
       & info [ "reason" ] ~docv:"TEXT" ~doc:"Why the version is recalled.")
   in
-  let key =
-    Arg.(
-      value
-      & opt (some string) None
-      & info [ "key" ] ~docv:"SECRET_FILE"
-          ~doc:
-            "Your release key, as for sign: /dev/stdin to pipe it in. Without \
-             it the key is read from the command \
-             ~/.config/digestif/signer.json names, as sign --next reads it.")
-  in
-  let channel =
-    Arg.(
-      value
-      & opt (some string) None
-      & info [ "channel" ] ~docv:"DIR"
-          ~doc:
-            "Write into this checkout of the channel and commit nothing, \
-             instead of committing to the channel branch.")
-  in
-  let repo =
-    Arg.(
-      value
-      & opt (some string) None
-      & info [ "repo" ] ~docv:"OWNER/NAME"
-          ~doc:
-            "The repository holding the channel: signer.json's \"repo\" when \
-             the key is read from it, else digestif-ai/digestif.")
-  in
-  let branch =
-    Arg.(
-      value & opt string "channel"
-      & info [ "branch" ] ~docv:"BRANCH" ~doc:"The channel's branch.")
-  in
   let data_dir =
     Arg.(
       value
@@ -567,52 +569,29 @@ let recall_cmd =
       & info [ "data-dir" ] ~docv:"DIR"
           ~doc:"The node that posts the recall on the circle.")
   in
-  (* The key and the channel's repository: --key's file, else the command signer.json names, which
-     runs only once the version parses. *)
-  let signer key repo =
-    let ( let* ) = Result.bind in
-    match key with
-    | Some path ->
-        let* secret = Keys.decode_secret (read path) in
-        Ok (secret, Option.value repo ~default:Sign_next.default_repo)
-    | None ->
-        let* config = Sign_next.load_config (Sign_next.config_path ()) in
-        let* secret = Sign_next.secret config in
-        Ok (secret, Option.value repo ~default:config.repo)
-  in
-  let go version reason key channel repo branch data_dir =
+  let go version reason key channel repo data_dir =
     match
       Result.bind (Version.of_string version) (fun version ->
-          Result.map (fun s -> (version, s)) (signer key repo))
+          Result.map (fun s -> (version, s)) (takeback_signer key repo))
     with
     | Error e -> exit_err e
     | Ok (version, (secret, repo)) -> (
-        let write dir =
-          Recall_channel.write_recall ~dir ~secret ~version ~reason
-            ~recalled_at:(Time_fmt.now ())
-        in
         let message =
           Printf.sprintf "Recall %s: %s" (Version.to_string version) reason
         in
-        let written =
-          match channel with
-          | Some dir -> write dir
-          | None -> commit_to_channel ~repo ~branch ~message write
-        in
-        match written with
+        match
+          write_takeback ~channel ~repo ~message (fun dirs ->
+              Recall_channel.write_recalls ~dirs ~secret ~version ~reason
+                ~recalled_at:(Time_fmt.now ()))
+        with
         | Error e -> exit_err e
         | Ok w ->
             let v = Version.to_string version in
-            (match (w.first, channel) with
-            | true, None ->
-                Printf.printf "recalled %s on %s's %s branch\n" v repo branch
-            | false, None ->
-                Printf.printf
-                  "signed the recall of %s already on %s's %s branch\n" v repo
-                  branch
-            | true, Some d -> Printf.printf "recalled %s in %s\n" v d
-            | false, Some d ->
-                Printf.printf "signed the recall of %s already in %s\n" v d);
+            if w.first then
+              Printf.printf "recalled %s in %s\n" v (where ~channel ~repo)
+            else
+              Printf.printf "signed the recall of %s already in %s\n" v
+                (where ~channel ~repo);
             if (not w.first) && w.recall.doc.reason <> reason then
               Printf.printf "the recall's reason stays the first signer's: %s\n"
                 w.recall.doc.reason;
@@ -622,7 +601,55 @@ let recall_cmd =
   Cmd.v
     (Cmd.info "recall" ~doc:"Recall a published version with your key alone.")
     Term.(
-      const go $ version $ reason $ key $ channel $ repo $ branch $ data_dir)
+      const go $ version $ reason $ takeback_key_arg $ takeback_channel_arg
+      $ takeback_repo_arg $ data_dir)
+
+(* A revocation of a release key (docs/releases.md, Revoking a release key): any one signer's
+   signed statement, written to the channel's two addresses by their own gh login as a recall is,
+   and printed as the release_revocation body that carries it on the circle (circle-body's). *)
+let revoke_cmd =
+  let revoked =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"KEY" ~doc:"The release key revoked, ed25519:...")
+  in
+  let reason =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "reason" ] ~docv:"TEXT" ~doc:"Why the key is revoked.")
+  in
+  let go revoked reason key channel repo =
+    match takeback_signer key repo with
+    | Error e -> exit_err e
+    | Ok (secret, repo) -> (
+        let message = Printf.sprintf "Revoke %s: %s" revoked reason in
+        match
+          write_takeback ~channel ~repo ~message (fun dirs ->
+              Revocation_channel.write_revocations ~dirs ~secret ~key:revoked
+                ~reason ~revoked_at:(Time_fmt.now ()))
+        with
+        | Error e -> exit_err e
+        | Ok w ->
+            if w.first then
+              Printf.printf "revoked %s in %s\n" revoked (where ~channel ~repo)
+            else
+              Printf.printf "signed the revocation of %s already in %s\n"
+                revoked (where ~channel ~repo);
+            print_endline "post it on the circle from a machine running a node:";
+            Printf.printf
+              "  printf '%%s' '%s' | digestif post --kind %s --body -\n"
+              (Yojson.Safe.to_string (Circle_revocation.to_body w.revocation))
+              Circle_revocation.kind;
+            0)
+  in
+  Cmd.v
+    (Cmd.info "revoke"
+       ~doc:"Revoke a release key with your key alone, in the channel.")
+    Term.(
+      const go $ revoked $ reason $ takeback_key_arg $ takeback_channel_arg
+      $ takeback_repo_arg)
 
 (* Whether a manifest carries every signature a node needs, checked with a node's own Policy.check
    against the signer set this binary was built with (docs/releases.md, The channel). It is what
@@ -770,8 +797,8 @@ let verify_cmd =
       & opt (some string) None
       & info [ "channel" ] ~docv:"BASE"
           ~doc:
-            "A release channel (a URL or a checkout of the channel branch) \
-             whose signers/ changes the set is advanced by, each checked \
+            "A release channel (a URL or a directory laid out as release/ on \
+             main) whose signers/ changes the set is advanced by, each checked \
              against the set before it.")
   in
   let version =
@@ -1012,11 +1039,6 @@ let relay_publish_cmd =
       & info [ "repo" ] ~docv:"OWNER/NAME"
           ~doc:"The repository holding the draft and the channel.")
   in
-  let branch =
-    Arg.(
-      value & opt string "channel"
-      & info [ "branch" ] ~docv:"BRANCH" ~doc:"The channel's branch.")
-  in
   let data_dir =
     Arg.(
       value
@@ -1024,7 +1046,7 @@ let relay_publish_cmd =
       & info [ "data-dir" ] ~docv:"DIR"
           ~doc:"The node that posts the announcement on the circle.")
   in
-  let go version repo branch data_dir =
+  let go version repo data_dir =
     let version =
       if String.starts_with ~prefix:Sign_next.relay_tag_prefix version then
         String.sub version
@@ -1036,9 +1058,7 @@ let relay_publish_cmd =
     | Error e -> exit_err e
     | Ok version -> (
         match
-          Relay_publish.run
-            (relay_publish_env ~repo ~branch ~data_dir ())
-            ~version
+          Relay_publish.run (relay_publish_env ~repo ~data_dir ()) ~version
         with
         | Ok (Relay_publish.Held _) -> 75
         | Ok _ -> 0
@@ -1052,7 +1072,7 @@ let relay_publish_cmd =
        ~doc:
          "Publish a relay release every signer signed and announce it on the \
           circle.")
-    Term.(const go $ version $ repo $ branch $ data_dir)
+    Term.(const go $ version $ repo $ data_dir)
 
 (* The checks a node runs on a release it stages (Stage.from_archive), run on a release archive
    before it is published: unpack it, find bin/digestif, find the Node.js its behaviors need, and
@@ -1635,6 +1655,7 @@ let () =
              keygen_cmd;
              sign_cmd;
              recall_cmd;
+             revoke_cmd;
              verify_cmd;
              hash_cmd;
              bundle_cmd;

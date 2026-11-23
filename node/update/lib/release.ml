@@ -203,6 +203,18 @@ let recall_to_string r =
        ])
   ^ "\n"
 
+(* A revocation document's bytes, as `digestif-update revoke` writes it; nobody edits it after. *)
+let revocation_to_string r =
+  Yojson.Safe.pretty_to_string
+    (`Assoc
+       [
+         ("format", `String revocation_format);
+         ("key", `String r.revoked_key);
+         ("reason", `String r.reason);
+         ("revoked_at", `String r.revoked_at);
+       ])
+  ^ "\n"
+
 (* A migration's file name: NNNN_<lowercase words>.sql, as relay/migrations names them, so the
    name alone orders them and none names a path. *)
 let is_migration_name name =

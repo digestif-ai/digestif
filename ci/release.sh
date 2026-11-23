@@ -4,10 +4,13 @@
 # order, against origin as fetched now, never this working tree. A version is a tag of main,
 # v<MAJOR.MINOR.PATCH>, and pushing it starts the Release workflow (.github/workflows/release.yml).
 #
-#   ci/release.sh build [--version X.Y.Z] [--sha COMMIT]
+#   ci/release.sh build [--version X.Y.Z] [--sha COMMIT] [--changelog FILE]
 #       Without --version: tag origin/main with the next patch of the newest release tag (0.1.0
 #       when there is none) and push the tag; a tip already tagged is that version. With
-#       --version: the tag v<X.Y.Z>, which a person pushed, and which this never mints. Then wait
+#       --changelog, the tag it mints is annotated and its message is FILE, kept verbatim: the
+#       version's What's new ledger (a JSON array of releases, ci/changelog.sh), which the Release
+#       run on the tag reads. With --version: the tag v<X.Y.Z>, which a person pushed, and which
+#       this never mints. Then wait
 #       for the Release run on the tag and succeed once the draft release holds every platform's
 #       archive and digestif-update and the manifest, each archive having passed stage-test. A
 #       version already built is success with nothing to do. --sha names the commit the caller
@@ -30,42 +33,50 @@
 #       is published; every node checks them again with the code it runs.
 #   ci/release.sh candidate --version X.Y.Z
 #       Verify both signatures again with that same digestif-update (DIGESTIF_UPDATE names
-#       another), publish the GitHub release as a prerelease that
-#       is not Latest, write the manifest and its signatures under candidate/ on the channel
-#       branch, and dispatch main's Release workflow with the version as its candidate, which
-#       starts the test nodes. Run again, it dispatches again. Exits 75, writing nothing, while a
-#       signer has not signed.
+#       another), upload the combined manifest.sig.json (every signer's signature that verified)
+#       to the release beside the per-signer files, publish the GitHub release as a prerelease
+#       that is not Latest, and dispatch main's Release workflow with the version as its
+#       candidate, which starts the test nodes. Run again, it dispatches again. Exits 75, writing
+#       nothing, while a signer has not signed.
+#   ci/release.sh feed --version X.Y.Z --dir DIR
+#       Read-only. Lay out in DIR the one-entry feed a test node takes the version from: the
+#       channel as channel_read leaves it (main's release/ with every take-back the branch holds
+#       that main lacks), its release list replaced by the version alone, named by the https urls
+#       of its release's manifest.json and manifest.sig.json.
 #   ci/release.sh test-nodes --version X.Y.Z
 #       Read-only. What the newest test-node run of the version says (docs/releases.md, Test nodes):
 #       prints `passed` when every platform's node took it and exits 0, `failed` when one says the
 #       version is bad and exits 1, and `running` or `silent` and exits 75 otherwise. `silent` says
 #       nothing about the version; running candidate again restarts the nodes.
 #   ci/release.sh publish --version X.Y.Z
-#       Once every test node passed: one commit on the channel branch moves the version out of
-#       candidate/ and adds it to index.json, then the GitHub release becomes Latest.
+#       Once every test node passed: one commit on main lists the version in release/index.json,
+#       trims the list to the seven newest plus the newest unrecalled, and copies in every
+#       take-back the branch holds that main lacks. The channel branch lists it too while main's
+#       list held fewer than two versions before the publish, or while no version the branch names
+#       that reads main is unrecalled. Then the GitHub release stops being a prerelease; no release
+#       is marked Latest, since the release list is the one record of what is published.
 #   ci/release.sh channel [--version X.Y.Z]
-#       Read-only, what a member's node reads off the channel branch as origin holds it now.
-#       Without --version: prints the newest version index.json lists, and nothing before the
-#       first. With --version: prints `listed` and exits 0 when index.json lists it, its manifest
-#       and signatures verify with the newest other published release's digestif-update, and every
+#       Read-only, what a member's node reads off release/ on main as origin holds it now.
+#       Without --version: prints the newest version the list names, and nothing before the
+#       first. With --version: prints `listed` and exits 0 when the list names it, its manifest
+#       and signatures verify with the digestif-update of the newest other listed version, and every
 #       archive fetches over https at its manifest's size and sha256; prints `absent` and exits 1
 #       when it does not; exits 75 when the channel or an archive could not be read.
 #   ci/release.sh relay-publish --version X.Y.Z
 #       Publish the relay release relay-v<X.Y.Z> once every signer signed it (docs/releases.md,
 #       Publishing a relay release), with the digestif-update the newest published node release
 #       holds for this machine (DIGESTIF_UPDATE names another): check the signatures as a node
-#       does, publish the GitHub release (never Latest), write relay/<X.Y.Z>/ and relay/index.json
-#       on the channel branch in one commit, and announce it on the circle through this machine's
+#       does, upload the combined manifest.sig.json to the release, publish it (never Latest), and
+#       announce it on the circle through this machine's
 #       node, or print the line that does from a machine running one. `sign --next` runs the same
 #       steps itself when its signature completes the signer set. Runs on a signer's machine, never
 #       in CI: the announcement needs a device key. Exits 75, having published nothing, while a
 #       signer has not signed, and 75 when the announcement is held because a relay does not know
 #       relay_release yet (the one line it prints says what to run again).
 #   ci/release.sh drop --version X.Y.Z
-#       Delete the release while it is a draft or a prerelease (the tag stays), and clear
-#       candidate/ on the channel branch when it holds the version: what a superseded or canceled
-#       rollout, and a test node's no, leave behind. A published version, which only a recall
-#       undoes, and an absent one are left as they are, and both succeed.
+#       Delete the release while it is a draft or a prerelease (the tag stays): what a superseded or
+#       canceled rollout, and a test node's no, leave behind. A published version, which only a
+#       recall undoes, and an absent one are left as they are, and both succeed.
 #
 # The relay line (docs/releases.md, Relay releases) is tagged relay-v<MAJOR.MINOR.PATCH> and never
 # names a node version; pushing a relay tag starts the Relay release workflow
@@ -99,7 +110,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '2,89p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,100p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -254,14 +265,20 @@ wait_for_run() {
 }
 
 cmd_build() {
-  local version="" sha="" target tag existing
+  local version="" sha="" changelog="" target tag existing
   while [ $# -gt 0 ]; do
     case "$1" in
       --version) [ $# -ge 2 ] || usage; version="${2#v}"; shift 2 ;;
       --sha) [ $# -ge 2 ] || usage; sha="$2"; shift 2 ;;
+      --changelog) [ $# -ge 2 ] || usage; changelog="$2"; shift 2 ;;
       *) usage ;;
     esac
   done
+  if [ -n "$changelog" ]; then
+    [ -f "$changelog" ] || die "no file $changelog"
+    jq -e 'type == "array"' "$changelog" >/dev/null 2>&1 ||
+      die "$changelog is not a JSON array of releases"
+  fi
   fetch
   if [ -n "$version" ]; then
     valid_version "$version" || die "$version is not MAJOR.MINOR.PATCH"
@@ -270,6 +287,7 @@ cmd_build() {
       die "there is no tag $tag; push it first, since --version builds a tag and mints none"
     git -C "$root" merge-base --is-ancestor "refs/tags/$tag" refs/remotes/origin/main ||
       die "$tag is not a commit of main"
+    [ -z "$changelog" ] || echo "release.sh: $tag was pushed by a person, so --changelog is not written" >&2
   else
     target="$(target_commit "$sha")"
     existing="$(newest_release_tag_at "$target")"
@@ -278,7 +296,13 @@ cmd_build() {
       echo "release.sh: origin/main $target is already $tag" >&2
     else
       tag="v$(next_patch)"
-      git -C "$root" tag "$tag" "$target"
+      if [ -n "$changelog" ]; then
+        # The ledger rides in the tag it describes, written in the push that starts the run.
+        git "${release_identity[@]}" -C "$root" tag --annotate --cleanup=verbatim \
+          --file "$changelog" "$tag" "$target"
+      else
+        git -C "$root" tag "$tag" "$target"
+      fi
       git -C "$root" push --quiet origin "refs/tags/$tag" || {
         git -C "$root" tag -d "$tag" >/dev/null
         die "could not push $tag"
@@ -358,9 +382,15 @@ cmd_signatures() {
   fi
 }
 
-# The channel (docs/releases.md, The channel): the branch every node reads, written only by
-# candidate, publish and a recall. It holds no workflow, so a push to it starts nothing.
+# The channel (docs/releases.md, The channel): release/ on main, which every node reads from the
+# first main-reading version, and the root of the `channel` branch, which an older node reads until
+# it updates. Here only publish writes it; a recall, a revocation and a signer-set change are a
+# signer's own, written to both addresses by `digestif-update`. The branch holds no workflow, so a
+# push to it starts nothing.
 channel_branch=channel
+channel_dir=release
+# How many of the newest published versions the release list keeps (docs/releases.md, The channel).
+list_keep=7
 scratch=()
 cleanup() {
   local d
@@ -418,7 +448,7 @@ channel_head() {
     '  "revocations": []' '}' | git -C "$root" hash-object -w --stdin)"
   readme="$(printf '%s\n' '# The Digestif release channel' '' \
     'What every node reads to decide what to install: `index.json` and the signed documents it' \
-    'names. Written only by `ci/release.sh candidate` and `publish` and by a recall; see' \
+    'names, for nodes older than the first that reads release/ on main; see' \
     '`docs/releases.md` on main, The channel.' | git -C "$root" hash-object -w --stdin)"
   tree="$(printf '100644 blob %s\tREADME.md\n100644 blob %s\tindex.json\n' "$readme" "$index" |
     git -C "$root" mktree)"
@@ -459,6 +489,36 @@ channel_commit() {
     echo "release.sh: $channel_branch moved during attempt $attempt; trying again" >&2
   done
   die "could not push to $channel_branch"
+}
+
+# Runs `$@ <worktree>` on a worktree of origin/main and pushes what it changed under release/ as one
+# commit on main titled $message; a push that lost a race starts again from main's new head, as
+# Land pushes main. A commit touching only release/ is no new code: ci/release-paths and
+# ci/relay-release-paths name none of it, so its rollout tags nothing.
+main_commit() {
+  local message="$1" attempt wt head
+  shift
+  for attempt in 1 2 3; do
+    git -C "$root" fetch --quiet --force origin main:refs/remotes/origin/main ||
+      die "could not fetch main"
+    head="$(git -C "$root" rev-parse refs/remotes/origin/main)"
+    scratch_dir
+    wt="$scratch_path"
+    git -C "$root" worktree add --quiet --detach "$wt" "$head"
+    "$@" "$wt"
+    git -C "$wt" add --all -- "$channel_dir"
+    if git -C "$wt" diff --cached --quiet; then
+      echo "release.sh: main's $channel_dir/ already holds it" >&2
+      return
+    fi
+    git "${release_identity[@]}" -C "$wt" commit --quiet -m "$message"
+    if git -C "$wt" push --quiet origin "HEAD:refs/heads/main"; then
+      echo "release.sh: $message on main at $(git -C "$wt" rev-parse HEAD)" >&2
+      return
+    fi
+    echo "release.sh: main moved during attempt $attempt; trying again" >&2
+  done
+  die "could not push to main"
 }
 
 # What's new (docs/releases.md): the ledger a Release run on a tag of the commit builds from.
@@ -502,9 +562,9 @@ this_platform() {
 }
 
 # The digestif-update that checks a version's signatures, downloaded into $2: the one the newest
-# published release holds for this machine, which both signers signed and members already run.
-# The draft's own copy, which nobody has signed yet, only before any version is published, so the
-# version under review never vouches for itself. DIGESTIF_UPDATE names another.
+# listed version no recall takes out holds for this machine, which both signers signed and members
+# already run. The draft's own copy, which nobody has signed yet, only before any version is
+# listed, so the version under review never vouches for itself. DIGESTIF_UPDATE names another.
 update_tool() {
   local tag="$1" dir="$2" platform from
   if [ -n "${DIGESTIF_UPDATE:-}" ]; then
@@ -512,14 +572,14 @@ update_tool() {
     return
   fi
   platform="$(this_platform)"
-  from="$(published_tag "$tag")"
+  from="$(published_tag "$tag" "$dir")"
   if [ -z "$from" ] && [[ "$tag" == relay-v* ]]; then
     die "no node version is published yet, so no digestif-update can check $tag; set DIGESTIF_UPDATE to one"
   elif [ -z "$from" ]; then
     echo "release.sh: no version is published yet, so $tag's own digestif-update checks it" >&2
     from="$tag"
   else
-    echo "release.sh: checking with the digestif-update of $from, the newest published version" >&2
+    echo "release.sh: checking with the digestif-update of $from, the newest listed version" >&2
   fi
   mkdir -p "$dir/tool"
   gh release download "$from" --repo "$(repo)" --dir "$dir/tool" --clobber \
@@ -529,26 +589,46 @@ update_tool() {
   echo "$dir/tool/digestif-update-$platform"
 }
 
-# The newest node release other than $1 that is neither a draft nor a prerelease, or nothing before
-# the first. A relay release (relay-v...) is published too, never as Latest, and is never a node
-# release: it holds no digestif-update.
+# The tag of the newest version other than $1 the release list names that no recall takes out, or
+# nothing before the first: the list on main, with the take-backs channel_read reads, and the
+# branch's list and recalls while main's names no version. No GitHub mark decides it, so a recalled
+# version's digestif-update never vouches for the next one. A relay tag (relay-v...) names no listed
+# version, and a relay release holds no digestif-update.
 published_tag() {
-  gh release list --repo "$(repo)" --exclude-drafts --exclude-pre-releases --limit 30 \
-    --json tagName \
-    --jq "[ .[].tagName | select(startswith(\"v\") and . != \"$1\") ] | first // empty" ||
-    die "could not list the published releases"
+  local exclude="${1#v}" dir="$2/published" v
+  channel_read "$dir/channel"
+  v="$(newest_unrecalled "$dir/channel/index.json" "$exclude")"
+  if [ -z "$v" ] && ! jq -e '.releases | length > 0' "$dir/channel/index.json" >/dev/null; then
+    local head
+    head="$(branch_read)"
+    if [ -n "$head" ]; then
+      git -C "$root" show "$head:index.json" >"$dir/branch-index.json" ||
+        unread "could not read the $channel_branch branch's index.json"
+      v="$(newest_unrecalled "$dir/branch-index.json" "$exclude")"
+    fi
+  fi
+  [ -z "$v" ] || echo "v$v"
 }
 
-# Downloads the release's manifest and every signature asset into $3 and verifies them as a node
-# does, writing the signatures every signer gave as $3/manifest.sig.json. Exits 75 while a signer
-# has not signed.
+# The newest version the index at $1 lists, other than $2, that none of its recalls names.
+newest_unrecalled() {
+  jq -r --arg not "$2" '
+    def key: split(".") | map(tonumber);
+    [ (.recalls // [])[].version ] as $recalled
+    | [ .releases[].version | select(. != $not and (. as $v | $recalled | any(. == $v) | not)) ]
+    | sort_by(key) | last // empty' "$1"
+}
+
+# Downloads the release's manifest and every signer's signature asset (manifest.<signer>.sig.json)
+# into $3 and verifies them as a node does, writing the signatures every signer gave as
+# $3/manifest.sig.json. Exits 75 while a signer has not signed.
 verified_signatures() {
   local tag="$1" version="$2" dir="$3" tool sigs=() f
   gh release download "$tag" --repo "$(repo)" --dir "$dir/assets" --clobber \
-    --pattern manifest.json --pattern '*.sig.json' >/dev/null ||
+    --pattern manifest.json --pattern 'manifest.*.sig.json' >/dev/null ||
     die "could not download the manifest of $tag"
   [ -f "$dir/assets/manifest.json" ] || die "the release $tag holds no manifest.json"
-  for f in "$dir"/assets/*.sig.json; do
+  for f in "$dir"/assets/manifest.*.sig.json; do
     [ -e "$f" ] && sigs+=("$f")
   done
   tool="$(update_tool "$tag" "$dir")"
@@ -566,22 +646,12 @@ verified_signatures() {
   cat "$dir/verify.out" >&2
 }
 
-# candidate/ holds the one version on its way to the test nodes, as a feed of its own: its
-# index.json names that version and the channel's revocations and signer-set changes, so a test
-# node built before a change follows the chain to the set that signed the candidate, and members'
-# nodes never read it.
-write_candidate() {
-  local version="$1" dir="$2" wt="$3"
-  rm -rf "$wt/candidate"
-  mkdir -p "$wt/candidate/$version"
-  cp "$dir/assets/manifest.json" "$wt/candidate/$version/manifest.json"
-  cp "$dir/manifest.sig.json" "$wt/candidate/$version/manifest.sig.json"
-  jq --arg v "$version" '{
-      format,
-      releases: [ { version: $v, manifest: "\($v)/manifest.json", signatures: "\($v)/manifest.sig.json" } ],
-      revocations: [ .revocations[] | { document: "../\(.document)", signatures: "../\(.signatures)" } ],
-      signers: [ (.signers // [])[] | { document: "../\(.document)", signatures: "../\(.signatures)" } ]
-    }' "$wt/index.json" >"$wt/candidate/index.json"
+# Uploads $2/manifest.sig.json, the signatures verified_signatures kept, to the release $1 as its
+# manifest.sig.json: the one signatures file a node reads, which the release list names.
+upload_signatures() {
+  gh release upload "$1" "$2/manifest.sig.json" --repo "$(repo)" --clobber >/dev/null ||
+    die "could not upload manifest.sig.json to $1"
+  echo "release.sh: uploaded manifest.sig.json to $1" >&2
 }
 
 cmd_candidate() {
@@ -602,12 +672,12 @@ cmd_candidate() {
   scratch_dir
   dir="$scratch_path"
   verified_signatures "$tag" "$version" "$dir"
+  upload_signatures "$tag" "$dir"
   if [ "$state" = draft ]; then
     # Its archives must be fetchable by a test node, and the front page must not offer it yet.
     gh release edit "$tag" --repo "$(repo)" --draft=false --prerelease --latest=false >/dev/null
     echo "release.sh: published $tag as a prerelease" >&2
   fi
-  channel_commit "Candidate $version" write_candidate "$version" "$dir"
   gh workflow run release.yml --repo "$(repo)" --ref main -f candidate="$version" >/dev/null ||
     die "could not dispatch the Release workflow for the candidate $version"
   echo "release.sh: dispatched the Release workflow on main with candidate $version" >&2
@@ -649,42 +719,117 @@ cmd_test_nodes() {
   esac
 }
 
-# Moves candidate/<version> to <version> and lists it in index.json, in version order.
-publish_candidate() {
-  local version="$1" wt="$2"
+# The https url of a release asset.
+asset_url() {
+  echo "https://github.com/$(repo)/releases/download/$1/$2"
+}
+
+# Lists $1 in $2/index.json, in version order, named by its release's manifest.json and
+# manifest.sig.json, then trims the list to the $list_keep newest plus the newest no recall takes out
+# when it is older; a recall goes with its version's entry. Every take-back the branch holds that
+# main lacks is copied in first, so the list never names a version before the set that signed it.
+publish_main() {
+  local version="$1" wt="$2" dir tag
+  dir="$wt/$channel_dir"
+  tag="v$version"
+  [ -f "$dir/index.json" ] || die "main has no $channel_dir/index.json"
+  fold_branch_takebacks "$dir"
+  jq --arg v "$version" --arg m "$(asset_url "$tag" manifest.json)" \
+    --arg s "$(asset_url "$tag" manifest.sig.json)" --argjson keep "$list_keep" '
+    def key: split(".") | map(tonumber);
+    ([ (.recalls // [])[].version ]) as $recalled
+    | (.releases | map(select(.version != $v)) + [ { version: $v, manifest: $m, signatures: $s } ]
+       | sort_by(.version | key)) as $all
+    | ($all | .[(if length > $keep then length - $keep else 0 end):]) as $newest
+    | ([ $all[] | select(.version as $x | $recalled | any(. == $x) | not) ] | last) as $unrecalled
+    | .releases = (if $unrecalled == null or any($newest[]; .version == $unrecalled.version)
+        then $newest else [ $unrecalled ] + $newest end)
+    | ([ .releases[].version ]) as $listed
+    | if has("recalls")
+      then .recalls = [ .recalls[] | select(.version as $x | $listed | any(. == $x)) ]
+      else . end' "$dir/index.json" >"$dir/index.json.next"
+  mv "$dir/index.json.next" "$dir/index.json"
+  # The files of a recall whose version left the list.
+  local f r
+  for f in "$dir"/recalls/*.json; do
+    [ -e "$f" ] || continue
+    r="${f#"$dir/"}"
+    r="${r%.sig.json}"
+    r="${r%.json}"
+    jq -e --arg d "$r.json" 'any((.recalls // [])[]; .document == $d)' "$dir/index.json" >/dev/null ||
+      rm -f "$f"
+  done
+}
+
+# Lists $1 on the branch checked out at $2, its manifest and signatures copied from $3, as the
+# branch has always listed a version.
+publish_branch() {
+  local version="$1" from="$2" wt="$3"
+  rm -rf "$wt/candidate"
   if jq -e --arg v "$version" 'any(.releases[]; .version == $v)' "$wt/index.json" >/dev/null; then
     return
   fi
-  [ -f "$wt/candidate/$version/manifest.json" ] ||
-    die "$version is not the candidate on $channel_branch; run candidate first"
   [ ! -e "$wt/$version" ] || die "$channel_branch already has $version/"
-  mv "$wt/candidate/$version" "$wt/$version"
-  rm -rf "$wt/candidate"
+  mkdir -p "$wt/$version"
+  cp "$from/manifest.json" "$from/manifest.sig.json" "$wt/$version/"
   jq --arg v "$version" '.releases = (.releases
       + [ { version: $v, manifest: "\($v)/manifest.json", signatures: "\($v)/manifest.sig.json" } ]
       | sort_by(.version | split(".") | map(tonumber)))' "$wt/index.json" >"$wt/index.json.next"
   mv "$wt/index.json.next" "$wt/index.json"
 }
 
+# Whether a publish also lists the version on the branch (docs/releases.md, How installed nodes
+# move): while main's list held fewer than two versions before it, and whenever no version the
+# branch names that reads main (its tag holds release/index.json) is unrecalled on the branch, so a
+# node still reading the branch always finds a version that takes it to main.
+branch_wants() {
+  local listed head v
+  listed="$(git -C "$root" show "refs/remotes/origin/main:$channel_dir/index.json" 2>/dev/null |
+    jq '.releases | length')" || listed=0
+  if [ "${listed:-0}" -lt 2 ]; then
+    echo "release.sh: main's list held $listed versions, so the $channel_branch branch lists this one too" >&2
+    return 0
+  fi
+  head="$(branch_read)"
+  [ -n "$head" ] || return 1
+  while IFS= read -r v; do
+    if git -C "$root" cat-file -e "refs/tags/v$v:$channel_dir/index.json" 2>/dev/null; then
+      echo "release.sh: the $channel_branch branch names $v, which reads main" >&2
+      return 1
+    fi
+  done < <(git -C "$root" show "$head:index.json" | jq -r '
+    [ (.recalls // [])[].version ] as $recalled
+    | .releases[].version | select(. as $v | $recalled | any(. == $v) | not)')
+  echo "release.sh: no unrecalled version the $channel_branch branch names reads main, so it lists this one" >&2
+  return 0
+}
+
 cmd_publish() {
-  local version tag
+  local version tag dir have
   version="$(version_option "$@")"
   tag="v$version"
   fetch
   [ "$(release_state "$tag")" != absent ] || die "the release $tag is gone"
-  channel_commit "Publish $version" publish_candidate "$version"
-  gh release edit "$tag" --repo "$(repo)" --draft=false --prerelease=false --latest >/dev/null
-  echo "release.sh: $tag is published and Latest" >&2
-  echo "$tag"
-}
-
-# Clears candidate/ when it holds the version.
-clear_candidate() {
-  local version="$1" wt="$2"
-  if [ -f "$wt/candidate/index.json" ] &&
-    jq -e --arg v "$version" 'any(.releases[]; .version == $v)' "$wt/candidate/index.json" >/dev/null; then
-    rm -rf "$wt/candidate"
+  scratch_dir
+  dir="$scratch_path"
+  # The combined signatures the list names: candidate uploads them; a version sent to the test
+  # nodes before candidate did gets them now.
+  have="$(gh release view "$tag" --repo "$(repo)" --json assets --jq '.assets[].name')" ||
+    die "could not read the release $tag"
+  if ! grep -qxF manifest.sig.json <<<"$have"; then
+    verified_signatures "$tag" "$version" "$dir"
+    upload_signatures "$tag" "$dir"
   fi
+  gh release download "$tag" --repo "$(repo)" --dir "$dir/listed" --clobber \
+    --pattern manifest.json --pattern manifest.sig.json >/dev/null ||
+    die "could not download the manifest and signatures of $tag"
+  local both=false
+  if branch_wants; then both=true; fi
+  main_commit "Publish $version" publish_main "$version"
+  [ "$both" = false ] || channel_commit "Publish $version" publish_branch "$version" "$dir/listed"
+  gh release edit "$tag" --repo "$(repo)" --draft=false --prerelease=false --latest=false >/dev/null
+  echo "release.sh: $tag is published, and listed in release/index.json on main" >&2
+  echo "$tag"
 }
 
 cmd_drop() {
@@ -715,13 +860,6 @@ cmd_drop() {
       gh release delete "$tag" --repo "$(repo)" --yes >/dev/null || die "could not delete the release $tag"
       echo "release.sh: deleted the $state release $tag; the tag stays" >&2
       ;;
-  esac
-  local code=0
-  git -C "$root" ls-remote --exit-code --heads origin "$channel_branch" >/dev/null 2>&1 || code=$?
-  case "$code" in
-    0) channel_commit "Drop the candidate $version" clear_candidate "$version" ;;
-    2) ;;
-    *) die "could not read the $channel_branch branch" ;;
   esac
 }
 
@@ -874,8 +1012,8 @@ not_offered() {
   exit 1
 }
 
-# The channel's commit as origin holds it now, never made; nothing when there is no channel yet.
-channel_read() {
+# The channel branch's commit as origin holds it now, never made; nothing when there is no branch.
+branch_read() {
   local code=0
   git -C "$root" ls-remote --exit-code --heads origin "$channel_branch" >/dev/null 2>&1 || code=$?
   case "$code" in
@@ -889,21 +1027,89 @@ channel_read() {
   git -C "$root" rev-parse "refs/remotes/origin/$channel_branch"
 }
 
+# Copies into the channel directory $1 every take-back the branch holds that $1/index.json lacks: a
+# revocation and a signer-set change always, a recall only while $1 lists its version, so a recall
+# trimmed with its version is not brought back. A document both hold with the same bytes takes the
+# signatures of both. An older digestif-update writes a take-back to the branch alone, so this is
+# how main's readers meet it from the first check of a version (docs/releases.md, How installed
+# nodes move). The files are signed and every reader checks them against its own set, so copying
+# them vouches for nothing.
+fold_branch_takebacks() {
+  local dir="$1" head list entry doc sigs version
+  head="$(branch_read)"
+  [ -n "$head" ] || return 0
+  git -C "$root" show "$head:index.json" >"$dir/.branch-index.json" ||
+    unread "could not read the $channel_branch branch's index.json"
+  for list in revocations signers recalls; do
+    while IFS= read -r entry; do
+      doc="$(jq -r .document <<<"$entry")"
+      sigs="$(jq -r .signatures <<<"$entry")"
+      case "$doc$sigs" in
+        /* | *..* | http*) continue ;;
+      esac
+      if [ "$list" = recalls ]; then
+        version="$(jq -r '.version // empty' <<<"$entry")"
+        jq -e --arg v "$version" 'any(.releases[]; .version == $v)' "$dir/index.json" >/dev/null ||
+          continue
+      fi
+      if jq -e --arg l "$list" --arg d "$doc" 'any((.[$l] // [])[]; .document == $d)' \
+        "$dir/index.json" >/dev/null; then
+        # Both hold it: the same bytes take every signature either holds.
+        if [ -f "$dir/$doc" ] && git -C "$root" show "$head:$doc" | cmp -s - "$dir/$doc" &&
+          [ -f "$dir/$sigs" ]; then
+          git -C "$root" show "$head:$sigs" 2>/dev/null |
+            jq -s '{ signatures: ([ .[].signatures[] ] | unique_by(.key)) }' - "$dir/$sigs" \
+              >"$dir/$sigs.next" || unread "could not read $sigs on the $channel_branch branch"
+          if [ "$(jq -c '[ .signatures[].key ] | sort' "$dir/$sigs.next")" = \
+            "$(jq -c '[ .signatures[].key ] | sort' "$dir/$sigs")" ]; then
+            rm -f "$dir/$sigs.next"
+          else
+            mv "$dir/$sigs.next" "$dir/$sigs"
+            echo "release.sh: took the $channel_branch branch's signatures of $doc" >&2
+          fi
+        fi
+        continue
+      fi
+      mkdir -p "$(dirname "$dir/$doc")" "$(dirname "$dir/$sigs")"
+      git -C "$root" show "$head:$doc" >"$dir/$doc" &&
+        git -C "$root" show "$head:$sigs" >"$dir/$sigs" ||
+        unread "could not read $doc on the $channel_branch branch"
+      jq --arg l "$list" --argjson e "$entry" '.[$l] = ((.[$l] // []) + [ $e ])' "$dir/index.json" \
+        >"$dir/index.json.next"
+      mv "$dir/index.json.next" "$dir/index.json"
+      echo "release.sh: $doc is on the $channel_branch branch and not on main; read with main's" >&2
+    done < <(jq -c --arg l "$list" '(.[$l] // [])[]' "$dir/.branch-index.json")
+  done
+  rm -f "$dir/.branch-index.json"
+}
+
+# The channel as every check here reads it, laid out in the directory $1: release/ of origin/main as
+# fetched now (a feed with no releases where main holds none), with every take-back the branch holds
+# that main lacks (fold_branch_takebacks).
+channel_read() {
+  local dir="$1"
+  mkdir -p "$dir"
+  git -C "$root" fetch --quiet --force origin main:refs/remotes/origin/main ||
+    unread "could not fetch main"
+  if git -C "$root" cat-file -e "refs/remotes/origin/main:$channel_dir/index.json" 2>/dev/null; then
+    git -C "$root" archive "refs/remotes/origin/main" "$channel_dir" | tar -x -C "$dir" --strip-components 1 ||
+      unread "could not export main's $channel_dir/"
+  else
+    printf '%s\n' '{ "format": "digestif-feed-v0", "releases": [], "revocations": [] }' >"$dir/index.json"
+  fi
+  fold_branch_takebacks "$dir"
+}
+
 # The signer set every `digestif-update verify` here checks against (docs/releases.md, The channel):
 # once the channel lists a signer-set change under signers/, the set its chain leaves from the
-# build's own, read with --channel from the channel's head exported into $1/channel; the build's
+# build's own, read with --channel from the channel channel_read lays out in $1/channel; the build's
 # own set while it lists none. Sets channel_args.
 channel_args=()
 signer_set_args() {
-  local dir="$1" head
+  local dir="$1"
   channel_args=()
-  head="$(channel_read)" || exit 75
-  [ -n "$head" ] || return 0
-  git -C "$root" show "$head:index.json" | jq -e '(.signers // []) | length > 0' >/dev/null ||
-    return 0
-  mkdir -p "$dir/channel"
-  git -C "$root" archive "$head" | tar -x -C "$dir/channel" ||
-    unread "could not export the $channel_branch branch"
+  channel_read "$dir/channel"
+  jq -e '(.signers // []) | length > 0' "$dir/channel/index.json" >/dev/null || return 0
   channel_args=(--channel "$dir/channel/")
 }
 
@@ -911,7 +1117,7 @@ signer_set_args() {
 # node fetches it, with the digestif-update $2.
 artifacts_match() {
   local dir="$1" tool="$2" base url sum size got
-  base="https://raw.githubusercontent.com/$(repo)/$channel_branch/"
+  base="https://raw.githubusercontent.com/$(repo)/main/$channel_dir/"
   while IFS=$'\t' read -r url sum size; do
     case "$url" in
       http://* | https://*) ;;
@@ -925,8 +1131,19 @@ artifacts_match() {
   done < <(jq -r '.artifacts[] | [.url, .sha256, (.size | tostring)] | @tsv' "$dir/manifest.json")
 }
 
+# Copies the channel document $2, as release/index.json names it, to the file $3, from the channel
+# laid out in $1: an https url as a node fetches it, a relative path from the directory.
+channel_document() {
+  local channel="$1" rel="$2" out="$3"
+  case "$rel" in
+    https://*) curl -fsSL --retry 2 -o "$out" "$rel" ;;
+    /* | *..* | http://*) return 1 ;;
+    *) cp "$channel/$rel" "$out" ;;
+  esac
+}
+
 cmd_channel() {
-  local version="" head entry dir tool out
+  local version="" entry dir tool out
   while [ $# -gt 0 ]; do
     case "$1" in
       --version) [ $# -ge 2 ] || usage; version="${2#v}"; shift 2 ;;
@@ -934,42 +1151,61 @@ cmd_channel() {
     esac
   done
   fetch
-  head="$(channel_read)"
+  scratch_dir
+  dir="$scratch_path"
+  channel_read "$dir/channel"
   if [ -z "$version" ]; then
-    [ -n "$head" ] || {
-      echo "release.sh: there is no $channel_branch branch yet" >&2
-      return
-    }
-    git -C "$root" show "$head:index.json" |
-      jq -r '[ .releases[].version ] | sort_by(split(".") | map(tonumber)) | last // empty'
+    jq -r '[ .releases[].version ] | sort_by(split(".") | map(tonumber)) | last // empty' \
+      "$dir/channel/index.json"
     return
   fi
   valid_version "$version" || die "$version is not MAJOR.MINOR.PATCH"
-  [ -n "$head" ] || not_offered "there is no $channel_branch branch, so no node can take $version"
-  entry="$(git -C "$root" show "$head:index.json" |
-    jq -r --arg v "$version" 'first(.releases[] | select(.version == $v) | [.manifest, .signatures] | @tsv) // empty')"
-  [ -n "$entry" ] || not_offered "the $channel_branch index.json does not list $version"
-  scratch_dir
-  dir="$scratch_path"
-  git -C "$root" show "$head:${entry%%$'\t'*}" >"$dir/manifest.json" ||
-    not_offered "the $channel_branch branch lacks ${entry%%$'\t'*}"
-  git -C "$root" show "$head:${entry#*$'\t'}" >"$dir/manifest.sig.json" ||
-    not_offered "the $channel_branch branch lacks ${entry#*$'\t'}"
+  entry="$(jq -r --arg v "$version" \
+    'first(.releases[] | select(.version == $v) | [.manifest, .signatures] | @tsv) // empty' \
+    "$dir/channel/index.json")"
+  [ -n "$entry" ] || not_offered "main's $channel_dir/index.json does not list $version"
+  channel_document "$dir/channel" "${entry%%$'\t'*}" "$dir/manifest.json" ||
+    unread "could not read ${entry%%$'\t'*}"
+  channel_document "$dir/channel" "${entry#*$'\t'}" "$dir/manifest.sig.json" ||
+    unread "could not read ${entry#*$'\t'}"
   tool="$(update_tool "v$version" "$dir")" || unread "could not fetch a digestif-update to check $version with"
   signer_set_args "$dir"
   if ! out="$("$tool" verify "$dir/manifest.json" "$dir/manifest.sig.json" \
     ${channel_args[@]+"${channel_args[@]}"} --expect-version "$version" 2>&1)"; then
     printf '%s\n' "$out" >&2
-    not_offered "the signatures of $version on $channel_branch do not verify"
+    not_offered "the signatures of $version on main's $channel_dir/ do not verify"
   fi
   printf '%s\n' "$out" >&2
   artifacts_match "$dir" "$tool"
-  echo "release.sh: $channel_branch offers $version, signed, every archive matching" >&2
+  echo "release.sh: main's $channel_dir/ offers $version, signed, every archive matching" >&2
   echo listed
 }
 
+# The one-entry feed a test node takes the version from (docs/releases.md, Test nodes).
+cmd_feed() {
+  local version="" out="" tag
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --version) [ $# -ge 2 ] || usage; version="${2#v}"; shift 2 ;;
+      --dir) [ $# -ge 2 ] || usage; out="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  [ -n "$version" ] && [ -n "$out" ] || usage
+  valid_version "$version" || die "$version is not MAJOR.MINOR.PATCH"
+  tag="v$version"
+  channel_read "$out"
+  jq --arg v "$version" --arg m "$(asset_url "$tag" manifest.json)" \
+    --arg s "$(asset_url "$tag" manifest.sig.json)" \
+    '.releases = [ { version: $v, manifest: $m, signatures: $s } ]' "$out/index.json" \
+    >"$out/index.json.next"
+  mv "$out/index.json.next" "$out/index.json"
+  echo "release.sh: the feed of $version in $out" >&2
+}
+
 # Publishing a relay release: the three steps are digestif-update's own (relay-publish), run with
-# the newest published node release's copy, so a version under review never checks itself.
+# the digestif-update of the newest listed node version, so a version under review never checks
+# itself.
 cmd_relay_publish() {
   local version tag tool code=0
   version="$(version_option "$@")"
@@ -978,7 +1214,7 @@ cmd_relay_publish() {
   git -C "$root" rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || die "there is no tag $tag"
   scratch_dir
   tool="$(update_tool "$tag" "$scratch_path")"
-  "$tool" relay-publish "$version" --repo "$(repo)" --branch "$channel_branch" || code=$?
+  "$tool" relay-publish "$version" --repo "$(repo)" || code=$?
   case "$code" in
     0) echo "$tag" ;;
     75) exit 75 ;;
@@ -998,6 +1234,7 @@ case "$verb" in
   test-nodes) cmd_test_nodes "$@" ;;
   publish) cmd_publish "$@" ;;
   channel) cmd_channel "$@" ;;
+  feed) cmd_feed "$@" ;;
   drop) cmd_drop "$@" ;;
   relay) cmd_relay "$@" ;;
   relay-publish) cmd_relay_publish "$@" ;;

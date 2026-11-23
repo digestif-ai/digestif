@@ -3143,6 +3143,95 @@ let test_recall_channel_write () =
           Alcotest.(check bool) "both signers, read back" true r.every_signer
       | None -> Alcotest.fail "the channel's recall did not count")
 
+(* A recall goes to every address of the channel that lists the version, as the one document: an
+   address that already holds it (an older digestif-update wrote it to the branch alone) gives its
+   bytes and signatures to the other, and an address whose list does not name the version takes
+   none. *)
+let test_recall_two_addresses () =
+  let main = Filename.concat (temp_dir ()) "release/" in
+  let branch = Filename.concat (temp_dir ()) "channel/" in
+  channel main
+    [ release ~by:[ mike; roman ] "0.2.0"; release ~by:[ mike; roman ] "0.3.0" ]
+    ~tamper:false;
+  channel branch [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let recall ~secret ~reason ~dirs version =
+    match
+      Recall_channel.write_recalls ~dirs ~secret ~version:(v version) ~reason
+        ~recalled_at:"2026-11-01T00:00:00.000Z"
+    with
+    | Ok w -> w
+    | Error e -> Alcotest.fail e
+  in
+  let w = recall ~secret:roman ~reason:"new" ~dirs:[ main; branch ] "0.3.0" in
+  Alcotest.(check bool) "wrote it" true w.first;
+  let recalls dir =
+    match Feed.read Feed.default_fetch ~base:dir ~installed:(v "0.1.0") with
+    | Ok f -> f.recalls
+    | Error e -> Alcotest.fail e
+  in
+  Alcotest.(check int) "on main" 1 (List.length (recalls main));
+  Alcotest.(check int)
+    "not on a branch that never listed it" 0
+    (List.length (recalls branch));
+  ignore (recall ~secret:roman ~reason:"old" ~dirs:[ branch ] "0.2.0");
+  let w = recall ~secret:mike ~reason:"mine" ~dirs:[ main; branch ] "0.2.0" in
+  Alcotest.(check bool) "signed the branch's document" false w.first;
+  Alcotest.(check string) "the branch's reason stands" "old" w.recall.doc.reason;
+  List.iter
+    (fun dir ->
+      match Policy.recall_of (trust founders) (recalls dir) (v "0.2.0") with
+      | Some r ->
+          Alcotest.(check bool) (dir ^ ": both signers") true r.every_signer
+      | None -> Alcotest.fail (dir ^ ": the recall did not count"))
+    [ main; branch ];
+  match
+    Recall_channel.write_recalls ~dirs:[ main; branch ] ~secret:mike
+      ~version:(v "0.9.0") ~reason:"typo"
+      ~recalled_at:"2026-11-01T00:00:00.000Z"
+  with
+  | Ok _ -> Alcotest.fail "recalled a version neither address lists"
+  | Error e ->
+      Alcotest.(check bool)
+        ("refused: " ^ e) true
+        (contains ~sub:"publishes no release 0.9.0" e)
+
+(* `digestif-update revoke` writes a revocation every node folds, to each address, and a second
+   signer's revocation of the same key signs the first's document. *)
+let test_revocation_two_addresses () =
+  let main = Filename.concat (temp_dir ()) "release/" in
+  let branch = Filename.concat (temp_dir ()) "channel/" in
+  channel main [] ~tamper:false;
+  channel branch [] ~tamper:false;
+  let revoke ~secret ~reason =
+    match
+      Revocation_channel.write_revocations ~dirs:[ main; branch ] ~secret
+        ~key:(Keys.public roman) ~reason ~revoked_at:"2026-11-01T00:00:00.000Z"
+    with
+    | Ok w -> w
+    | Error e -> Alcotest.fail e
+  in
+  let w = revoke ~secret:mike ~reason:"laptop stolen" in
+  Alcotest.(check bool) "wrote it" true w.first;
+  let w = revoke ~secret:roman ~reason:"it was mine" in
+  Alcotest.(check bool) "signed the same document" false w.first;
+  Alcotest.(check string)
+    "the first reason stands" "laptop stolen" w.revocation.doc.reason;
+  List.iter
+    (fun dir ->
+      match Feed.read Feed.default_fetch ~base:dir ~installed:(v "0.1.0") with
+      | Error e -> Alcotest.fail e
+      | Ok f ->
+          Alcotest.(check (list string)) "no problems" [] f.problems;
+          Alcotest.(check int)
+            (dir ^ ": listed once") 1
+            (List.length f.revocations);
+          let t = Policy.apply_revocations (trust founders) f.revocations in
+          Alcotest.(check bool)
+            (dir ^ ": Roman's key revoked")
+            true
+            (Policy.is_revoked t (Keys.public roman)))
+    [ main; branch ]
+
 let feed_with releases =
   let dir = temp_dir () in
   let feed = Filename.concat dir "feed/" in
@@ -3788,6 +3877,8 @@ let relay_listing ?(node_draft = false) ?(draft = true) ?(extra = [])
 type relay_fake = {
   r_calls : string list list ref;
   r_uploaded : string option ref;
+  r_upload_bytes : string list ref;
+      (** What each upload's file held as it was uploaded, in order. *)
   r_git : string list list ref;
 }
 
@@ -3816,6 +3907,9 @@ let relay_answer f ?node_draft ?draft ?extra ?manifest_digest
       Ok (relay_sig_asset roman)
   | [ "release"; "upload"; _; path; "--repo"; "o/r"; "--clobber" ] ->
       f.r_uploaded := Some path;
+      f.r_upload_bytes :=
+        !(f.r_upload_bytes)
+        @ [ In_channel.with_open_bin path In_channel.input_all ];
       Ok ""
   | [
    "release";
@@ -3831,7 +3925,14 @@ let relay_answer f ?node_draft ?draft ?extra ?manifest_digest
 
 let relay_gh ?node_draft ?draft ?extra ?manifest_digest ?relay_bytes ~signed_by
     () =
-  let f = { r_calls = ref []; r_uploaded = ref None; r_git = ref [] } in
+  let f =
+    {
+      r_calls = ref [];
+      r_uploaded = ref None;
+      r_upload_bytes = ref [];
+      r_git = ref [];
+    }
+  in
   let m = Mutex.create () in
   let gh args =
     Mutex.protect m (fun () -> f.r_calls := !(f.r_calls) @ [ args ]);
@@ -4116,7 +4217,7 @@ let test_sign_unread_draft () =
 let publish_env ?(signed_by = [ (53, mike); (54, roman) ]) ?(draft = true)
     ?extra ?manifest_digest
     ?(trust : Policy.trust = { signers = founders; revoked = [] })
-    ?(timer = Timing.none) ~dir ~announced () =
+    ?(timer = Timing.none) ~announced () =
   let f, gh = relay_gh ~draft ?extra ?manifest_digest ~signed_by () in
   let said = Buffer.create 256 in
   let env : Relay_publish.env =
@@ -4124,12 +4225,6 @@ let publish_env ?(signed_by = [ (53, mike); (54, roman) ]) ?(draft = true)
       gh;
       repo = "o/r";
       trust = (fun () -> Ok trust);
-      channel =
-        (fun ~message:_ write ->
-          let before =
-            Sys.file_exists (Filename.concat dir "relay/0.3.0/manifest.json")
-          in
-          Result.map (fun () -> not before) (write dir));
       announce = (fun _ -> Ok announced);
       say = (fun l -> Buffer.add_string said (l ^ "\n"));
       timer;
@@ -4158,7 +4253,7 @@ let test_relay_publish_reuses_the_manifest () =
   let f, env, _ =
     publish_env
       ~manifest_digest:(Keys.hash_of_bytes bytes_030)
-      ~timer ~dir:(temp_dir ()) ~announced:(Relay_publish.Posted "h") ()
+      ~timer ~announced:(Relay_publish.Posted "h") ()
   in
   (match Relay_publish.run ~manifest:bytes_030 env ~version:(v "0.3.0") with
   | Ok (Relay_publish.Posted "h") -> ()
@@ -4178,18 +4273,18 @@ let test_relay_publish_reuses_the_manifest () =
     "each step timed"
     [
       "settle announce";
-      "settle channel";
       "settle listing";
       "settle manifest";
       "settle release-edit";
       "settle signatures";
       "settle trust";
+      "settle upload";
     ]
     steps;
   let f, env, _ =
     publish_env
       ~manifest_digest:(Keys.hash_of_bytes bytes_030)
-      ~dir:(temp_dir ()) ~announced:(Relay_publish.Posted "h") ()
+      ~announced:(Relay_publish.Posted "h") ()
   in
   (match Relay_publish.run ~manifest:"other bytes" env ~version:(v "0.3.0") with
   | Ok (Relay_publish.Posted "h") -> ()
@@ -4198,13 +4293,19 @@ let test_relay_publish_reuses_the_manifest () =
   Alcotest.(check bool)
     "downloaded when the digest differs" true (manifest_downloaded f)
 
+(* The signatures uploaded as manifest.sig.json, every one that verified, one per signer. *)
+let uploaded_signatures (f : relay_fake) =
+  match !(f.r_uploaded) with
+  | Some path when Filename.basename path = "manifest.sig.json" -> (
+      match List.rev !(f.r_upload_bytes) with
+      | bytes :: _ -> Release.signatures_of_string bytes
+      | [] -> Error "nothing uploaded")
+  | Some path -> Error ("uploaded " ^ path)
+  | None -> Error "nothing uploaded"
+
 let test_relay_publish () =
-  let dir = temp_dir () in
-  Out_channel.with_open_bin (Filename.concat dir "index.json") (fun oc ->
-      output_string oc
-        {|{"format":"digestif-feed-v0","releases":[],"revocations":[{"document":"revocations/a.json","signatures":"revocations/a.sig.json"}]}|});
   let held = Relay_publish.Held "Not announced: one line." in
-  let f, env, said = publish_env ~dir ~announced:held () in
+  let f, env, said = publish_env ~announced:held () in
   (match Relay_publish.run env ~version:(v "0.3.0") with
   | Ok (Relay_publish.Held _) -> ()
   | Ok _ -> Alcotest.fail "the stub's answer was not returned"
@@ -4222,15 +4323,16 @@ let test_relay_publish () =
          "--latest=false";
        ]
        !(f.r_calls));
-  let read p =
-    In_channel.with_open_bin (Filename.concat dir p) In_channel.input_all
-  in
-  Alcotest.(check string)
-    "the manifest's exact bytes" bytes_030
-    (read "relay/0.3.0/manifest.json");
-  (match
-     Release.signatures_of_string (read "relay/0.3.0/manifest.sig.json")
-   with
+  Alcotest.(check bool)
+    "the signatures are uploaded before the release is published" true
+    (let rec before = function
+       | ("release" :: "upload" :: "relay-v0.3.0" :: _) :: _ -> true
+       | ("release" :: "edit" :: _) :: _ -> false
+       | _ :: rest -> before rest
+       | [] -> false
+     in
+     before !(f.r_calls));
+  (match uploaded_signatures f with
   | Ok sigs ->
       Alcotest.(check int)
         "both signatures" 2
@@ -4238,33 +4340,29 @@ let test_relay_publish () =
            (Release.valid_signers ~domain:Release.relay_release_domain bytes_030
               sigs))
   | Error e -> Alcotest.fail e);
-  let index = Yojson.Safe.from_string (read "relay/index.json") in
-  Alcotest.(check string)
-    "the relay feed"
-    {|{"format":"digestif-relay-feed-v0","releases":[{"version":"0.3.0","manifest":"0.3.0/manifest.json","signatures":"0.3.0/manifest.sig.json"}],"revocations":[{"document":"../revocations/a.json","signatures":"../revocations/a.sig.json"}]}|}
-    (Yojson.Safe.to_string index);
   Alcotest.(check bool)
     ("says the held line: " ^ Buffer.contents said)
     true
     (contains ~sub:"Not announced: one line." (Buffer.contents said));
-  (* Run again: nothing changes on the channel, and it still answers. *)
-  let _, env, said =
-    publish_env ~draft:false ~dir ~announced:(Relay_publish.Posted "h") ()
+  (* Run again: the upload is made again, and it still answers. *)
+  let f, env, said =
+    publish_env ~draft:false ~announced:(Relay_publish.Posted "h") ()
   in
   (match Relay_publish.run env ~version:(v "0.3.0") with
   | Ok (Relay_publish.Posted "h") -> ()
   | _ -> Alcotest.fail "a second run did not finish");
   Alcotest.(check bool)
-    "says the channel holds it" true
-    (contains ~sub:"The channel already holds relay/0.3.0/"
-       (Buffer.contents said))
+    "uploaded again" true
+    (Result.is_ok (uploaded_signatures f));
+  Alcotest.(check bool)
+    "says the release is published" true
+    (contains ~sub:"is already published" (Buffer.contents said))
 
 let test_relay_publish_waits () =
-  let dir = temp_dir () in
   let f, env, _ =
     publish_env
       ~signed_by:[ (53, mike) ]
-      ~dir ~announced:(Relay_publish.Posted "h") ()
+      ~announced:(Relay_publish.Posted "h") ()
   in
   (match Relay_publish.run env ~version:(v "0.3.0") with
   | Error (Relay_publish.Waiting e) ->
@@ -4273,41 +4371,21 @@ let test_relay_publish_waits () =
   Alcotest.(check bool)
     "the release is not edited" false
     (List.exists (fun c -> List.mem "edit" c) !(f.r_calls));
-  Alcotest.(check bool)
-    "nothing on the channel" false
-    (Sys.file_exists (Filename.concat dir "relay"))
-
-let test_relay_publish_other_manifest () =
-  let dir = temp_dir () in
-  Sys.mkdir (Filename.concat dir "relay") 0o755;
-  Sys.mkdir (Filename.concat dir "relay/0.3.0") 0o755;
-  Out_channel.with_open_bin (Filename.concat dir "relay/0.3.0/manifest.json")
-    (fun oc -> output_string oc "{}");
-  let _, env, _ = publish_env ~dir ~announced:(Relay_publish.Posted "h") () in
-  match Relay_publish.run env ~version:(v "0.3.0") with
-  | Error (Relay_publish.Failed e) ->
-      Alcotest.(check bool) e true (contains ~sub:"a different manifest" e)
-  | _ -> Alcotest.fail "overwrote another manifest"
+  Alcotest.(check bool) "nothing uploaded" true (!(f.r_uploaded) = None)
 
 (* A signature asset carrying an invalid signature by a signer's key, listed before the real one,
    never shadows it: the signature kept is the one that verified. *)
 let test_relay_publish_keeps_verified_signature () =
-  let dir = temp_dir () in
-  let _, env, _ =
+  let f, env, _ =
     publish_env
       ~extra:[ (50, "manifest.forged.sig.json") ]
-      ~dir ~announced:(Relay_publish.Posted "h") ()
+      ~announced:(Relay_publish.Posted "h") ()
   in
   (match Relay_publish.run env ~version:(v "0.3.0") with
   | Ok (Relay_publish.Posted "h") -> ()
   | Ok _ -> Alcotest.fail "the stub's answer was not returned"
   | Error e -> Alcotest.fail (Relay_publish.error_to_string e));
-  match
-    Release.signatures_of_string
-      (In_channel.with_open_bin
-         (Filename.concat dir "relay/0.3.0/manifest.sig.json")
-         In_channel.input_all)
-  with
+  match uploaded_signatures f with
   | Error e -> Alcotest.fail e
   | Ok sigs ->
       Alcotest.(check int)
@@ -4320,12 +4398,11 @@ let test_relay_publish_keeps_verified_signature () =
 (* The set relay-publish checks against is the channel's: after Roman's key is replaced, the old
    key's signature does not count, and a revoked key in the set halts the release. *)
 let test_relay_publish_checks_the_channel_trust () =
-  let dir = temp_dir () in
   let replaced : Policy.trust =
     { signers = [ signer "Mike" mike; signer "Roman" roman2 ]; revoked = [] }
   in
   let f, env, _ =
-    publish_env ~trust:replaced ~dir ~announced:(Relay_publish.Posted "h") ()
+    publish_env ~trust:replaced ~announced:(Relay_publish.Posted "h") ()
   in
   (match Relay_publish.run env ~version:(v "0.3.0") with
   | Error (Relay_publish.Waiting e) ->
@@ -4340,7 +4417,7 @@ let test_relay_publish_checks_the_channel_trust () =
     { signers = founders; revoked = [ Keys.public roman ] }
   in
   let f, env, _ =
-    publish_env ~trust:revoked ~dir ~announced:(Relay_publish.Posted "h") ()
+    publish_env ~trust:revoked ~announced:(Relay_publish.Posted "h") ()
   in
   (match Relay_publish.run env ~version:(v "0.3.0") with
   | Error (Relay_publish.Failed e) ->
@@ -4352,9 +4429,7 @@ let test_relay_publish_checks_the_channel_trust () =
   Alcotest.(check bool)
     "nothing published under a revocation" false
     (List.exists (fun c -> List.mem "edit" c) !(f.r_calls));
-  Alcotest.(check bool)
-    "nothing on the channel" false
-    (Sys.file_exists (Filename.concat dir "relay"))
+  Alcotest.(check bool) "nothing uploaded" true (!(f.r_uploaded) = None)
 
 let test_relay_held_line () =
   let one l = not (String.contains l '\n') in
@@ -7335,6 +7410,8 @@ let () =
           t "nothing older" test_recall_nothing_older;
           t "a failed self-test stays" test_recall_failed_self_test;
           t "the channel write" test_recall_channel_write;
+          t "both addresses" test_recall_two_addresses;
+          t "a revocation, both addresses" test_revocation_two_addresses;
           t "with no --key, the key signer.json names"
             test_recall_reads_signer_json;
           t "the update pass obeys it" test_update_pass_obeys_recall;
@@ -7483,7 +7560,6 @@ let () =
           t "a draft on an unknown line" test_sign_unread_draft;
           t "relay-publish" test_relay_publish;
           t "relay-publish waits" test_relay_publish_waits;
-          t "relay-publish other manifest" test_relay_publish_other_manifest;
           t "relay-publish reuses the manifest"
             test_relay_publish_reuses_the_manifest;
           t "relay-publish keeps the verified signature"

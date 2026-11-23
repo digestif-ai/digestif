@@ -7,15 +7,16 @@
       (Policy.check_relay against the trust the channel leaves: the build's signer set advanced by
       the channel's signers/ and every revocation it lists, the set sign --next signs under), so
       nothing is published that a node would not count.
-   2. Publish the GitHub release, never as Latest (Latest is the node line to the install script
-      and to the signing line), and write the manifest and the combined manifest.sig.json under
-      relay/ on the channel branch, with relay/index.json listing it, in one commit.
+   2. Upload the combined manifest.sig.json, every signer's signature that verified, to the release
+      beside the per-signer files, and publish the GitHub release, never as Latest. The release is
+      the relay version's one record: the break-glass deploy reads its manifest and
+      manifest.sig.json from there, and nothing is written to the channel.
    3. Write the announcement, a relay_release circle message, through this machine's node for its
       next sync to carry, exactly as a recall posts a release_recall; on a machine running no node,
       print the line that posts it from one that does.
 
-   Everything on GitHub goes through the signer's own gh login and the channel commit through
-   their own git, passed in, so the flow is tested without the network. *)
+   Everything on GitHub goes through the signer's own gh login, passed in, so the flow is tested
+   without the network. *)
 
 let ( let* ) = Result.bind
 
@@ -40,10 +41,6 @@ type env = {
   trust : unit -> (Policy.trust, string) result;
       (** The trust a node reading the channel holds (Signers_channel.trust):
           the set every signature is checked against, and its revocations. *)
-  channel :
-    message:string -> (string -> (unit, string) result) -> (bool, string) result;
-      (** Commit what the function writes into a checkout of the channel branch,
-          as one commit titled [message]; true when it changed anything. *)
   announce :
     Release.relay_manifest Release.signed -> (announced, string) result;
   say : string -> unit;
@@ -145,101 +142,23 @@ let verified env ?manifest ~version () =
            (Printf.sprintf "%s does not count: %s; nothing was published" tag
               (Policy.refusal_to_string r)))
 
-(* relay/ on the channel (docs/releases.md, The channel): relay/<version>/manifest.json, its exact
-   bytes, relay/<version>/manifest.sig.json, every signer's signature, and relay/index.json, the
-   node index's shape with format digestif-relay-feed-v0, listing every published relay version in
-   version order and the channel's revocations. The channel is the record a person reads; nodes act
-   on the announcement and never read relay/. *)
-let relay_feed_format = "digestif-relay-feed-v0"
-let read path = In_channel.with_open_bin path In_channel.input_all
-
-let write path bytes =
-  Out_channel.with_open_bin path (fun oc -> Out_channel.output_string oc bytes)
-
-let rec mkdir_p d =
-  if not (Sys.file_exists d) then (
-    mkdir_p (Filename.dirname d);
-    Sys.mkdir d 0o755)
-
-let entry v =
-  `Assoc
-    [
-      ("version", `String v);
-      ("manifest", `String (v ^ "/manifest.json"));
-      ("signatures", `String (v ^ "/manifest.sig.json"));
-    ]
-
-(* The channel's revocations, named from relay/ as candidate/index.json names them. *)
-let revocations ~dir =
-  let index = Filename.concat dir "index.json" in
-  if not (Sys.file_exists index) then Ok []
-  else
-    let* json = Release.parse_json "index.json" (read index) in
-    match Release.field "revocations" json with
-    | None | Some `Null -> Ok []
-    | Some (`List l) ->
-        Release.all
-          (fun r ->
-            let* d = Release.string_field "document" r in
-            let* s = Release.string_field "signatures" r in
-            Ok
-              (`Assoc
-                 [
-                   ("document", `String ("../" ^ d));
-                   ("signatures", `String ("../" ^ s));
-                 ]))
-          l
-    | Some _ -> Error "index.json: revocations is not a list"
-
-let listed_versions ~relay_dir =
-  let index = Filename.concat relay_dir "index.json" in
-  if not (Sys.file_exists index) then Ok []
-  else
-    let* json = Release.parse_json "relay/index.json" (read index) in
-    let* l = Release.list_field "releases" json in
-    Release.all
-      (fun r ->
-        let* v = Release.string_field "version" r in
-        Version.of_string v)
-      l
-
-let write_channel ~dir (signed : Release.relay_manifest Release.signed) =
-  let v = Version.to_string signed.doc.relay_version in
-  let relay_dir = Filename.concat dir "relay" in
-  let vdir = Filename.concat relay_dir v in
-  let manifest = Filename.concat vdir "manifest.json" in
-  let* () =
-    if Sys.file_exists manifest && read manifest <> signed.bytes then
-      Error
-        (Printf.sprintf
-           "the channel already holds a different manifest for relay %s; \
-            nothing was written"
-           v)
-    else Ok ()
-  in
-  let* listed = listed_versions ~relay_dir in
-  let* revocations = revocations ~dir in
-  mkdir_p vdir;
-  write manifest signed.bytes;
-  write
-    (Filename.concat vdir "manifest.sig.json")
-    (Release.signatures_to_string signed.signatures);
-  let versions =
-    List.sort_uniq Version.compare (signed.doc.relay_version :: listed)
-  in
-  write
-    (Filename.concat relay_dir "index.json")
-    (Yojson.Safe.pretty_to_string
-       (`Assoc
-          [
-            ("format", `String relay_feed_format);
-            ( "releases",
-              `List (List.map (fun v -> entry (Version.to_string v)) versions)
-            );
-            ("revocations", `List revocations);
-          ])
-    ^ "\n");
-  Ok ()
+(* Step 2's file: the signatures kept, as manifest.sig.json, uploaded to the release so a reader
+   of one signatures file (the break-glass deploy) finds every signer's in it. *)
+let upload_signatures env ~tag (signed : Release.relay_manifest Release.signed)
+    =
+  let dir = Filename.temp_dir "digestif-relay-publish" "" in
+  let path = Filename.concat dir "manifest.sig.json" in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Sys.remove path with Sys_error _ -> ());
+      try Sys.rmdir dir with Sys_error _ -> ())
+    (fun () ->
+      Out_channel.with_open_bin path (fun oc ->
+          Out_channel.output_string oc
+            (Release.signatures_to_string signed.signatures));
+      Result.map ignore
+        (env.gh
+           [ "release"; "upload"; tag; path; "--repo"; env.repo; "--clobber" ]))
 
 (* Step 3's rule. A relay deployed before relay releases does not know the relay_release kind and
    answers its append 422 malformed, which a node's sync reads as a permanent refusal: it would
@@ -359,6 +278,10 @@ let run ?manifest env ~version =
        (String.concat ", "
           (List.map (fun (s : Release.signer) -> s.name) trust.signers)));
   let* () =
+    time env "upload" @@ fun () -> failed (upload_signatures env ~tag signed)
+  in
+  env.say (Printf.sprintf "Uploaded manifest.sig.json to %s." tag);
+  let* () =
     if release.draft then (
       let* _ =
         time env "release-edit" @@ fun () ->
@@ -381,21 +304,6 @@ let run ?manifest env ~version =
       env.say (Printf.sprintf "The GitHub release %s is already published." tag);
       Ok ())
   in
-  let* changed =
-    time env "channel" @@ fun () ->
-    failed
-      (env.channel
-         ~message:
-           (Printf.sprintf "Relay release %s" (Version.to_string version))
-         (fun dir -> write_channel ~dir signed))
-  in
-  env.say
-    (if changed then
-       Printf.sprintf "Wrote relay/%s/ and relay/index.json on the channel."
-         (Version.to_string version)
-     else
-       Printf.sprintf "The channel already holds relay/%s/."
-         (Version.to_string version));
   let* announced =
     time env "announce" (fun () -> failed (env.announce signed))
   in

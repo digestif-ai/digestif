@@ -2,7 +2,7 @@
    exact bytes beside its signatures, listed under "signers" in index.json. `digestif-update sign
    --next` writes what this puts into a checkout of the channel before it signs a version, with the
    signer's own `gh` login, so the channel and `ci/release.sh`'s check hold the new set before the
-   next release ships: a version cannot reach candidate/ until every admin, the new one included,
+   next release ships: a version cannot reach the test nodes until every admin, the new one included,
    has signed it.
 
    signers/<name>.json is written once and never edited, since a signature is over its exact bytes;
