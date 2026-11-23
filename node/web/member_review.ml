@@ -21,13 +21,15 @@ let silent_days = 3
 
 (* The moment the review opens: the start of the fourth silent UTC day after [anchor]'s. A note on
    Friday, then Saturday and Sunday, is two days; a note on Monday ends nothing, since none began. *)
-let opens_at ~anchor =
-  Float.of_int (day_of anchor + silent_days + 1) *. day
+let opens_at ~anchor = Float.of_int (day_of anchor + silent_days + 1) *. day
 
 (* The latest of the newest note, the newest honoured Keep and the join: what the count runs from. *)
 let anchor ~note ~keep ~join =
   List.fold_left
-    (fun acc t -> match (acc, t) with Some a, Some b -> Some (Float.max a b) | None, x | x, None -> x)
+    (fun acc t ->
+      match (acc, t) with
+      | Some a, Some b -> Some (Float.max a b)
+      | None, x | x, None -> x)
     None [ note; keep; join ]
 
 let in_review ~now ~anchor = now >= opens_at ~anchor
@@ -76,7 +78,10 @@ let make ~(device : Crypto.signing_key) ~member ~created_at =
 let verifies k =
   match (Keys.decode_ed25519 k.by, B64url.decode k.signature) with
   | Ok pub, Ok signature -> (
-      match Jcs.encode_result (signed_part ~member:k.member ~created_at:k.created_at ~by:k.by) with
+      match
+        Jcs.encode_result
+          (signed_part ~member:k.member ~created_at:k.created_at ~by:k.by)
+      with
       | Ok msg -> Crypto.verify ~pub ~signature msg
       | Error _ -> false)
   | _ -> false
@@ -87,7 +92,9 @@ let of_json (j : Yojson.Safe.t) =
   let field name =
     match j with
     | `Assoc f -> (
-        match List.assoc_opt name f with Some (`String s) -> Some s | _ -> None)
+        match List.assoc_opt name f with
+        | Some (`String s) -> Some s
+        | _ -> None)
     | _ -> None
   in
   match (field "member", field "created_at", field "by", field "signature") with
