@@ -1160,7 +1160,11 @@ a deployment record for that url, which only the operator could have put there
 token for a relay the circle does not name as its own deploys nothing, and its next digest says so
 once. An operator who has not set up deploys is reached by the lag lines.
 
-**`digestif relay operate <url>`** sets it up, once, on the operator's own node. It asks for the
+**`digestif relay operate <url>`** sets it up, once, on the operator's own node, and `digestif
+circle found --relay <url>` does the same for a person founding their first circle on a relay with
+no home: the same checks, then the new root written into the Worker's `HOME_ROOT` through
+Cloudflare's settings API (every other binding inherited), and the token and record stored in the
+new circle's folder once the relay took the root. It asks for the
 Cloudflare account id, the Worker's name and the D1 database's id (or takes them from
 `--account-id`, `--worker` and `--database-id`), and reads the deploy token at a hidden prompt into
 memory. Before it stores anything it:
@@ -1169,8 +1173,9 @@ memory. Before it stores anything it:
   `GET /accounts/<id>/tokens/verify`), lists the account's Workers and refuses a token that cannot
   see the named Worker or can see a second one, and reads the database;
 - reads the Worker version serving now, the first rollback target;
-- reads the relay's `relay_version` on a signed `GET /v0/circle` at the home circle's address,
-  `<url>/c/<root hex>` (protocol.md, Hosted circles), so the record starts from what is running.
+- reads the relay's `relay_version` on the unsigned `GET /v0/relay` (a Worker built before relays
+  hosted many circles answers it on a signed `GET /v0/circle` at the home circle's address,
+  `<url>/c/<root hex>`; protocol.md, Hosted circles), so the record starts from what is running.
 
 It then stores the token in the keystore as `relay-deploy-token` (service `digestif`, account
 `relay-deploy-token@<data dir>`) and the rest in `relay-deploy.json` in the data directory: url,

@@ -156,6 +156,38 @@ let keys =
 
 (* relays *)
 
+(* A relay that hosts many circles is asked to host this circle (docs/protocol.md, Hosted circles):
+   the root's bootstrap append at the circle's address, carrying a fresh voucher from the member's
+   other circle on that relay, since the relay does not host it yet; one that already does answers
+   the append as a duplicate. Once it hosts the circle, the node reads the address and the circle's
+   relay message names it. A relay the root does not list is asked the same way. *)
+let relay_add_hosted n ~base ~root =
+  let others = Digestif_invite.Founding.others ~except:n.Node.dir () in
+  let signed =
+    match Log.find n.log root with
+    | Some r -> r.signed
+    | None -> die "this node does not hold its root %s" root
+  in
+  let voucher =
+    match Digestif_invite.Founding.voucher others ~base ~root with
+    | Ok v -> v
+    | Error e -> die "no voucher for %s: %s" base e
+  in
+  let answer = Digestif_invite.Founding.ask ?voucher ~base ~root signed in
+  print_endline (Digestif_invite.Founding.answer_line ~base ~root answer);
+  match answer with
+  | Digestif_invite.Founding.Hosted address -> (
+      Log.add_relay n.log address;
+      Log.remove_relay n.log base;
+      match
+        if Hashtbl.mem (Node.fold n).relays address then Ok None
+        else Digestif_invite.Founding.relay_message n ~address
+      with
+      | Ok (Some hash) -> Printf.printf "published\t%s\n" hash
+      | Ok None -> ()
+      | Error e -> die "the relay message was not written: %s" e)
+  | _ -> exit 1
+
 let relay_add =
   let url = Arg.(required & pos 0 (some string) None & info [] ~docv:"URL") in
   let mine =
@@ -166,15 +198,32 @@ let relay_add =
             "You run this relay: publish a relay message naming it, so every \
              node in the circle adds it at its next sync.")
   in
-  cmd "add" "Add a relay."
+  cmd "add"
+    "Add a relay. A relay that hosts many circles, named by its base url, is \
+     asked to host this circle (--circle ID picks it): the root with a fresh \
+     voucher from your other circle there, then the circle's relay message \
+     naming its address there."
     Term.(
       const (fun dir url mine ->
           with_node dir (fun n ->
-              if not mine then Log.add_relay n.log url
-              else
-                match ok_or_die (Node.add_own_relay n url) with
-                | Some hash -> Printf.printf "published\t%s\n" hash
-                | None -> Printf.printf "already in the circle\t%s\n" url))
+              let hosted_base =
+                match (Node.root n, Relay_url.split_address url) with
+                | Some root, None -> (
+                    match
+                      Relay_client.relay_info Relay_client.curl ~base:url
+                    with
+                    | Ok _ -> Some (Relay_url.base_of url, root)
+                    | Error _ -> None)
+                | _ -> None
+              in
+              match hosted_base with
+              | Some (base, root) -> relay_add_hosted n ~base ~root
+              | None -> (
+                  if not mine then Log.add_relay n.log url
+                  else
+                    match ok_or_die (Node.add_own_relay n url) with
+                    | Some hash -> Printf.printf "published\t%s\n" hash
+                    | None -> Printf.printf "already in the circle\t%s\n" url)))
       $ data_dir $ url $ mine)
 
 let relay_remove =
@@ -283,6 +332,45 @@ let relay_status =
                   List.iter print_endline
                     (Digestif_relay_deploy.Operate.status n ~releases)))
       $ data_dir)
+
+let relay_circles =
+  cmd "circles"
+    "List the circles the relay this node operates hosts, one per line: the \
+     root's short form, when it opened, its size, its last append, which \
+     circle vouched for it, and its state. Read from the relay's D1 with the \
+     deploy token; nothing a circle holds is read."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n ->
+              let module O = Digestif_relay_deploy.Operate in
+              List.iter
+                (fun h -> print_endline (O.circle_line h))
+                (ok_or_die (O.hosted_circles n))))
+      $ data_dir)
+
+let relay_state name ~to_ doc =
+  let root = Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOT") in
+  cmd name doc
+    Term.(
+      const (fun dir root ->
+          with_node dir (fun n ->
+              print_endline
+                (ok_or_die
+                   (Digestif_relay_deploy.Operate.set_circle_state n
+                      ~prefix:root ~to_))))
+      $ data_dir $ root)
+
+let relay_suspend =
+  relay_state "suspend" ~to_:"suspended"
+    "Suspend a circle the relay this node operates hosts: every route under \
+     its address answers 410 circle_suspended, and its nodes show that as a \
+     fault naming the relay. ROOT is the root's full 64 hex digits or any \
+     prefix of at least 8 that names one circle (the short form relay circles \
+     prints). Its log is untouched; relay resume restores it."
+
+let relay_resume =
+  relay_state "resume" ~to_:"open"
+    "Resume a circle relay suspend stopped. ROOT as for relay suspend."
 
 (* the log *)
 
@@ -404,7 +492,25 @@ let report_signer_sets = function
   | Error e ->
       Printf.printf "update\tthe circle's signer sets were not applied: %s\n" e
 
+(* Every relay url this node stored before its relays hosted many circles, read at the circle's
+   address from the first sync that finds the relay hosting many (Relay_addresses), and the relay
+   this node operates known by that address (Operate.readdress). Printed, never fatal: the next sync
+   asks again. *)
+let readdress_relays ?(say = print_endline) n =
+  match Relay_addresses.rewrite n with
+  | [] -> ()
+  | moved -> (
+      List.iter
+        (fun (from, to_) ->
+          say (Printf.sprintf "relay\t%s is now read at %s" from to_))
+        moved;
+      match Digestif_relay_deploy.Operate.readdress n ~moved with
+      | Ok lines -> List.iter (fun l -> say ("relay\t" ^ l)) lines
+      | Error e -> say ("relay\tthe operated relay's record was not moved: " ^ e)
+      )
+
 let sync_node n =
+  readdress_relays n;
   match watch_joins n with
   | Ok r ->
       report_sync r;
@@ -1885,26 +1991,6 @@ let print_email (e : Inv.Invite_email.t) =
   Printf.printf "To: %s\nSubject: %s\n\n%s\n\n%s\n\n" e.to_ e.subject e.text
     (Inv.Invite_email.mailto e)
 
-(* The name the email is signed with: --from, else this member's own card. *)
-let has_card n =
-  match Log.get_config n.Node.log Node.k_identity with
-  | Some id -> Hashtbl.mem (Node.fold n).cards id
-  | None -> false
-
-let host_name n from =
-  match from with
-  | Some f -> f
-  | None -> (
-      let f = Node.fold n in
-      match Log.get_config n.Node.log Node.k_identity with
-      | Some id -> (
-          match Hashtbl.find_opt f.cards id with
-          | Some ((c : Bodies.card), _) -> c.card_name
-          | None ->
-              die "this member has no card yet; sign the email with --from NAME"
-          )
-      | None -> die "this node has no identity; run digestif init")
-
 (* The admins as this node holds the signer set (DES-85466): the circle's own when its root names
    them (Circle_admins, DIG-265), else the set in its update state, which every adopted signer-set
    change advances (Circle_signer_set), and whether this machine's
@@ -1920,11 +2006,18 @@ let release_admins n =
     | Ok trust -> trust.signers
     | Error e -> die "the update state could not be read: %s" e
   in
+  (* The circle's own admin key, which circle found made for it and keeps in the keystore beside its
+     device key, or this machine's signer.json key. *)
+  let own =
+    (match Keystore.get_signing_key n.Node.keystore "admin" with
+      | Ok (Some k) -> [ Keys.public k ]
+      | _ -> [])
+    @ Option.to_list (Digestif_update.Signer_halt.own_key ())
+  in
   let mine =
-    match Digestif_update.Signer_halt.own_key () with
-    | Some k ->
-        List.exists (fun (s : Digestif_update.Release.signer) -> s.key = k) set
-    | None -> false
+    List.exists
+      (fun (s : Digestif_update.Release.signer) -> List.mem s.key own)
+      set
   in
   (mine, List.map (fun (s : Digestif_update.Release.signer) -> s.name) set)
 
@@ -1955,8 +2048,9 @@ let invite_by_approval n ~guests ~message ~role =
   if not admin then
     die
       "only an admin can invite someone to this circle, since every admin \
-       signs each invite; ask %s to invite %s. (An admin's signer.json names \
-       their release key as public_key.)"
+       signs each invite; ask %s to invite %s. (An admin holds the circle's \
+       admin key in its folder's keystore, or names it in signer.json as \
+       public_key.)"
       (names_list admins)
       (names_list (List.map (fun (g : Inv.Dinner.guest) -> g.name) guests))
   else
@@ -1965,11 +2059,17 @@ let invite_by_approval n ~guests ~message ~role =
         (Log.get_config n.Node.log Digestif_web.Api.k_ui_url)
         ~default:"http://127.0.0.1:7420"
     in
-    print_endline
+    let approve =
+      match Circles.id_of_dir n.Node.dir with
+      | Some id -> "digestif-update approve --circle " ^ id
+      | None -> "digestif-update approve"
+    in
+    Printf.printf
       "Every admin signs an invite before it is sent. Open each page, read the \
-       email, and press Ask the admins; then sign it with digestif-update \
-       approve like every other admin. The node writes the dinner and the \
-       email's install command and expiry after the last signature.";
+       email, and press Ask the admins; then sign it with %s like every other \
+       admin. The node writes the dinner and the email's install command and \
+       expiry after the last signature.\n"
+      approve;
     List.iter
       (fun (g : Inv.Dinner.guest) ->
         Printf.printf "\n%s\t%s\n" g.name
@@ -2020,32 +2120,354 @@ let invite_create =
             else invite_by_approval n ~guests ~message ~role))
     $ data_dir $ guests $ invite_message $ role)
 
-(* The founder as the circle's first admin (docs/protocol.md, circle): the key --admin-key names, or
-   this machine's signer.json public_key. A circle founded on its own is judged by its own admins and
-   never by the release signers, so a founder with no admin key is told how to make one. DIG-265 *)
-let founder_admin ~name admin_key : Approval.signer =
-  let key =
+(* FOUNDING A CIRCLE (docs/design.md, Circles; docs/protocol.md, Hosted circles). One command sets up
+   the circle's folder, phrase, keys and admin key, signs the root naming every relay it asks, and
+   asks each relay to host it: vouched by the founder's circle there, or, with --relay, as the home
+   circle of a relay the founder operates and that has none yet. When no relay hosts it, everything
+   it made is removed, so no circle exists that no relay holds. *)
+
+module Founding = Inv.Founding
+module Operate = Digestif_relay_deploy.Operate
+
+let admin_key_name = "admin"
+
+(* The folder a founding sets up: --data-dir, else ~/digestif/<--circle, else the name's slug>.
+   A folder already holding a circle is refused. *)
+let founding_dir ~data_dir ~circle ~name =
+  let id () =
+    match circle with
+    | Some id -> id
+    | None -> (
+        match Circles.id_of_name name with
+        | "" ->
+            die
+              "the name %S makes no circle id; give one with --circle ID \
+               (lower-case letters, digits and hyphens)"
+              name
+        | id -> id)
+  in
+  let dir =
+    match (data_dir, circle) with
+    | Some _, Some _ -> die "give --data-dir or --circle, not both"
+    | Some d, None -> d
+    | None, _ -> ok_or_die (Circles.dir ~create:true (id ()))
+  in
+  (match Circles.summary dir with
+  | Some { root = Some root; _ } ->
+      die
+        "%s already holds the circle %s; pick another id with --circle ID \
+         (digestif circle list names each)"
+        dir
+        (Relay_url.short_root root)
+  | _ -> ());
+  dir
+
+(* The founder's name: --from, else their card in this node, else their card in another circle of
+   theirs on this machine. *)
+let card_name_in dir =
+  if not (Sys.file_exists (Node.log_path dir)) then None
+  else
+    with_node (Some dir) (fun n ->
+        match Log.get_config n.Node.log Node.k_identity with
+        | None -> None
+        | Some id ->
+            Option.map
+              (fun ((c : Bodies.card), _) -> c.card_name)
+              (Hashtbl.find_opt (Node.fold n).cards id))
+
+let founder_name ~from ~dir (others : Founding.other list) =
+  match from with
+  | Some f -> f
+  | None -> (
+      match
+        List.find_map card_name_in
+          (dir :: List.map (fun (o : Founding.other) -> o.dir) others)
+      with
+      | Some f -> f
+      | None ->
+          die
+            "name yourself with --from NAME: the card the circle reads you by \
+             and the name the invite emails are signed with")
+
+(* What a founding made, so a founding no relay took removes exactly that. *)
+type made = {
+  folder : bool;  (** the folder did not hold a node before *)
+  phrase : string option;
+      (** the recovery phrase this run made, shown once the circle is founded *)
+  keys : string list;  (** keystore entries this run created *)
+  root : string option;  (** the root it signed *)
+  ledger : Inv.Host_watch.ledger option;
+      (** the invite ledger before the root, when the folder held a node *)
+}
+
+let rec remove_tree p =
+  match (Unix.lstat p).st_kind with
+  | Unix.S_DIR ->
+      Array.iter (fun e -> remove_tree (Filename.concat p e)) (Sys.readdir p);
+      Unix.rmdir p
+  | _ -> Sys.remove p
+  | exception Unix.Unix_error _ -> ()
+
+let unmake (n : Node.t) (m : made) =
+  List.iter (fun k -> ignore (n.keystore.delete k)) m.keys;
+  if m.folder then begin
+    Node.close n;
+    remove_tree n.dir
+  end
+  else begin
+    Option.iter
+      (fun root ->
+        Log.delete n.log root;
+        Log.exec n.log "DELETE FROM config WHERE key = ?" [ Log.s Node.k_root ])
+      m.root;
+    Option.iter (fun l -> ignore (Inv.Host_watch.save n.dir l)) m.ledger
+  end
+
+(* Set up the folder's node: a new recovery phrase, the device and mail keys, and the circle's own
+   admin key unless [admin_key] names one the founder holds. A folder already set up (digestif init)
+   keeps its keys. The phrase is shown once the circle is founded, never for one no relay took. *)
+let set_up (n : Node.t) ~admin_key =
+  let folder = Log.get_config n.Node.log Node.k_identity = None in
+  let phrase, keys =
+    if not folder then (None, [])
+    else begin
+      let phrase = Phrase.generate () in
+      let d = ok_or_die (Node.init n ~phrase) in
+      ok_or_die (Mail_key.prepare n ~identity:d.identity);
+      (Some phrase, [ "device"; "mail"; "encryption" ])
+    end
+  in
+  let admin, keys =
     match admin_key with
     | Some k -> (
         match Keys.parse_ed25519 (String.trim k) with
-        | Ok k -> k
+        | Ok k -> (k, keys)
         | Error e -> die "--admin-key: %s" e)
     | None -> (
-        match Digestif_update.Signer_halt.own_key () with
-        | Some k -> k
-        | None ->
-            die
-              "a circle founded on its own is judged by its founder's admin \
-               key, which signs every invite after the root: make one with \
-               digestif-update keygen FILE, name its command and public_key in \
-               signer.json (docs/releases.md, Where the key comes from), and \
-               run this again, or pass --admin-key ed25519:...")
+        match Keystore.get_signing_key n.keystore admin_key_name with
+        | Ok (Some k) -> (Keys.public k, keys)
+        | Ok None ->
+            let k = Crypto.generate_signing_key () in
+            ok_or_die (Keystore.put_signing_key n.keystore admin_key_name k);
+            (Keys.public k, keys @ [ admin_key_name ])
+        | Error e -> die "the keystore: %s" e)
   in
-  { Approval.name; key }
+  (folder, phrase, keys, admin)
 
-(* Found a circle on its own (docs/design.md, Circles): no dinner, no date. The root names the
-   circle and its founder and lists the first guests, who need no admins' signatures, since the
-   root is admitted by the message itself (docs/protocol.md, The admission fold). *)
+let show_phrase ~name = function
+  | None -> ()
+  | Some phrase ->
+      Printf.printf
+        "\n\
+         The recovery phrase of %s, shown this once. Write it down: it is this \
+         circle's identity, and nothing else restores it.\n\n\
+         %s\n\n"
+        name phrase
+
+(* Each guest's code names a relay that hosts the circle, the first one: the guest's app reads the
+   root there. A code is not signed into the root, so it is chosen once the relays answered. *)
+let codes_on (d : Inv.Dinner.t) relay =
+  {
+    d with
+    invites =
+      List.map
+        (fun (i : Inv.Dinner.invite) -> { i with code = { i.code with relay } })
+        d.invites;
+  }
+
+(* A relay that answered for the circle, as the founding prints it. *)
+let report_answers ~root answers =
+  List.iter
+    (fun (base, a) -> print_endline (Founding.answer_line ~base ~root a))
+    answers
+
+(* The rest of a founding once at least one relay hosts the circle: the node reads each address,
+   the relay messages, the founder's card, the lines to run for each refused relay, and the guests'
+   emails. *)
+let finish_founding (n : Node.t) ~id ~from ~carded ~relay_messages ~phrase
+    (inv : Inv.Invite_node.invited) answers =
+  let hosted = Founding.hosted answers in
+  List.iter (fun (_, addr) -> Log.add_relay n.log addr) hosted;
+  if relay_messages then
+    List.iter
+      (fun (_, address) ->
+        match Founding.relay_message n ~address with
+        | Ok _ -> ()
+        | Error e ->
+            Printf.eprintf
+              "digestif: the relay message for %s was not written: %s\n" address
+              e)
+      hosted;
+  if not carded then
+    ignore
+      (ok_or_die
+         (Inv.Invite_node.write_card n ~name:from
+            ~agent_name:(Inv.Invite_node.default_agent_name from)));
+  Printf.printf "\nHosted on %d of %d relays.\n" (List.length hosted)
+    (List.length answers);
+  List.iter
+    (fun (base, a) ->
+      match a with
+      | Founding.Hosted _ -> ()
+      | _ ->
+          Printf.printf "Once it clears: digestif relay add %s --circle %s\n"
+            base id)
+    answers;
+  show_phrase ~name:inv.dinner.label phrase;
+  Printf.printf "\ncircle %s\nid %s\nroot %s\nfolder %s\n\n" inv.dinner.label id
+    (Relay_url.short_root inv.dinner_hash)
+    n.dir;
+  let dinner =
+    match hosted with
+    | (base, _) :: _ -> codes_on inv.dinner base
+    | [] -> inv.dinner
+  in
+  List.iter
+    (fun i ->
+      print_email
+        (Inv.Invite_email.render ~host_name:from ~message:inv.message ~dinner i))
+    dinner.invites;
+  match sync_node n with
+  | Ok _ -> ()
+  | Error e ->
+      Printf.eprintf
+        "digestif: the circle is founded; its node sends the rest at its next \
+         sync: %s\n"
+        e
+
+let nothing_founded () =
+  prerr_endline "digestif: No relay hosts this circle; nothing was founded";
+  exit 1
+
+(* The relay's Cloudflare details and deploy token, asked for when no flag names them; the token at
+   a hidden prompt, never from an argv or a file. *)
+let ask given prompt =
+  match given with
+  | Some v when String.trim v <> "" -> String.trim v
+  | _ -> (
+      prerr_string prompt;
+      flush stderr;
+      match In_channel.input_line stdin with
+      | Some l when String.trim l <> "" -> String.trim l
+      | _ -> die "%s" ("no answer to: " ^ String.trim prompt))
+
+let ask_setup ~account_id ~worker ~database_id : Operate.setup =
+  let account_id = ask account_id "Cloudflare account id: " in
+  let worker = ask worker "Worker name: " in
+  let database_id = ask database_id "D1 database id: " in
+  let token =
+    ok_or_die
+      (Digestif_update.Sign_next.read_hidden
+         ~prompt:"Paste the relay's deploy token (it is not shown): " ())
+  in
+  { account_id; worker; database_id; token = String.trim token }
+
+(* Sign the root in the folder's node: the founder's admin key as the circle's admins, [relays] as
+   the relays it lists. Answers the invited root, its signed envelope, and what was made so far. *)
+let sign_root (n : Node.t) ~admin_key ~name ~from ~relays ~message ~ttl guests =
+  let ledger =
+    if Log.get_config n.Node.log Node.k_identity = None then None
+    else Result.to_option (Inv.Host_watch.load n.dir)
+  in
+  let folder, phrase, keys, admin = set_up n ~admin_key in
+  let made = { folder; phrase; keys; root = None; ledger } in
+  let admins = [ { Approval.name = from; key = admin } ] in
+  match
+    Inv.Invite_node.found n ~add_relays:false ~admins ~name ~relays ~message
+      ~ttl guests
+  with
+  | Error e ->
+      unmake n made;
+      die "%s" e
+  | Ok inv -> (
+      let made = { made with root = Some inv.dinner_hash } in
+      match Log.find n.log inv.dinner_hash with
+      | Some row -> (inv, row.signed, made)
+      | None ->
+          unmake n made;
+          die "the root %s is not in the log it was written to" inv.dinner_hash)
+
+(* Found against the relays the founder's other circles use: each asked with a voucher from the
+   founder's circle there. *)
+let found_hosted ~dir ~id ~name ~guests ~from ~message ~ttl ~admin_key ~others
+    ~relays =
+  with_node (Some dir) (fun n ->
+      let inv, signed, made =
+        sign_root n ~admin_key ~name ~from ~relays ~message ~ttl guests
+      in
+      let answers =
+        Founding.ask_all others ~root:inv.dinner_hash signed relays
+      in
+      report_answers ~root:inv.dinner_hash answers;
+      if Founding.hosted answers = [] then begin
+        unmake n made;
+        nothing_founded ()
+      end
+      else
+        finish_founding n ~id ~from ~carded:false ~relay_messages:true
+          ~phrase:made.phrase inv answers)
+
+(* Found a first circle on the relay the founder operates (docs/design.md, Who may found a circle on
+   a relay): the relay must have no home; its Cloudflare details and token are checked before
+   anything is stored; the new root becomes its HOME_ROOT and is appended with no voucher; then the
+   token and relay-deploy.json are stored in the new folder, and the circle's relay message makes
+   this node its operator. A failure removes what was made and clears a HOME_ROOT it wrote. *)
+let found_home ~dir ~id ~name ~guests ~from ~message ~ttl ~admin_key ~url
+    ~account_id ~worker ~database_id =
+  let base = Relay_url.base_of url in
+  let info = ok_or_die (Operate.homeless ~url:base ()) in
+  let setup = ask_setup ~account_id ~worker ~database_id in
+  let checked =
+    ok_or_die (Operate.check_token Digestif_relay_deploy.Cloudflare.curl setup)
+  in
+  with_node (Some dir) (fun n ->
+      let inv, signed, made =
+        sign_root n ~admin_key ~name ~from ~relays:[ base ] ~message ~ttl guests
+      in
+      let root = inv.dinner_hash in
+      let fail ~home why =
+        (if home then
+           match Operate.write_home ~url:base setup None with
+           | Ok () -> ()
+           | Error e ->
+               Printf.eprintf
+                 "digestif: HOME_ROOT on %s was not cleared (%s); clear it in \
+                  the Worker's settings\n"
+                 base e);
+        unmake n made;
+        prerr_endline ("digestif: " ^ why);
+        nothing_founded ()
+      in
+      (match Operate.write_home ~url:base setup (Some root) with
+      | Ok () -> ()
+      | Error e -> fail ~home:true ("HOME_ROOT was not written: " ^ e));
+      let answer = Founding.ask ~base ~root signed in
+      report_answers ~root [ (base, answer) ];
+      match answer with
+      | Founding.Hosted address ->
+          (* Writing HOME_ROOT served a new Worker version: that one is the first rollback target. *)
+          let serving =
+            match
+              Digestif_relay_deploy.Cloudflare.serving_version
+                Digestif_relay_deploy.Cloudflare.curl ~token:setup.token
+                ~account_id:setup.account_id ~worker:setup.worker
+            with
+            | Ok v -> v
+            | Error _ -> checked
+          in
+          (match
+             Operate.store n ~url:address ~existing:None ~serving
+               ~reported:info.relay_version setup
+           with
+          | Ok () -> ()
+          | Error e -> fail ~home:true ("the deploy token was not stored: " ^ e));
+          finish_founding n ~id ~from ~carded:false ~relay_messages:true
+            ~phrase:made.phrase inv
+            [ (base, answer) ];
+          Printf.printf "This node deploys %s from each signed relay release.\n"
+            address
+      | _ -> fail ~home:true "the relay did not take the root")
+
 let circle_found =
   let name =
     Arg.(
@@ -2065,10 +2487,21 @@ let circle_found =
   let relays =
     Arg.(
       value & opt_all string []
+      & info [ "ask" ] ~docv:"URL"
+          ~doc:
+            "A relay to ask to host the circle, by its base url; repeatable. \
+             Defaults to every relay your other circles on this machine use.")
+  in
+  let relay =
+    Arg.(
+      value
+      & opt (some string) None
       & info [ "relay" ] ~docv:"URL"
           ~doc:
-            "A relay the circle lists; repeatable. Defaults to this node's \
-             relays. The first is the one each invite code names.")
+            "Found your first circle on the relay you operate at URL, which \
+             has no home circle yet: take its Cloudflare details and deploy \
+             token, make the new circle its home (HOME_ROOT), and set this \
+             node up to deploy it.")
   in
   let from =
     Arg.(
@@ -2077,7 +2510,8 @@ let circle_found =
       & info [ "from" ] ~docv:"NAME"
           ~doc:
             "The founder's name: the card the circle reads them by, and the \
-             name the emails are signed with. Defaults to your card.")
+             name the emails are signed with. Defaults to your card in another \
+             circle of yours.")
   in
   let hours =
     Arg.(
@@ -2091,83 +2525,115 @@ let circle_found =
       & opt (some string) None
       & info [ "admin-key" ] ~docv:"ED25519_KEY"
           ~doc:
-            "The founder's admin key, the ed25519:... public half \
-             digestif-update keygen prints: the circle's first admin, who \
-             signs every invite after the root. Defaults to the public_key \
-             this machine's signer.json names.")
+            "An admin key you already hold, the ed25519:... public half, to \
+             name as the circle's first admin. Defaults to an admin key made \
+             for this circle and kept in the keystore beside its device key.")
+  in
+  let opt name doc =
+    Arg.(value & opt (some string) None & info [ name ] ~docv:"VALUE" ~doc)
+  in
+  let account_id =
+    opt "account-id" "With --relay: the Cloudflare account the relay lives in."
+  in
+  let worker = opt "worker" "With --relay: the relay Worker's name." in
+  let database_id =
+    opt "database-id" "With --relay: the relay's D1 database id."
   in
   cmd "found"
-    "Found a circle with this node's identity as its founder: sign the root, a \
-     circle envelope naming it and listing any first guests, with this \
-     device's key, make it this node's circle, append it to every relay, keep \
-     a record per invite, and print each guest's email with its mailto: link. \
-     No dinner is involved. A node holds one circle: a second circle is \
-     founded from its own node, digestif --circle ID init then digestif \
-     --circle ID circle found, with its own phrase and relays. Each relay \
-     serving the circle is configured with the root's hash, which this prints. \
-     The root names the founder's admin key as the circle's own admins, who \
-     sign every later invite; the release signers never do."
+    "Found a circle in one command: set up its folder under ~/digestif (its id \
+     is --circle, else the name's slug), a recovery phrase shown once, its \
+     keys and an admin key of its own; sign the root, naming you as founder \
+     and admin, any first guests, and every relay it asks; and ask each relay \
+     to host it at the circle's address there, vouched by your other circle on \
+     that relay. Each refusal is printed with what it means, and digestif \
+     relay add URL --circle ID asks a refused relay again once it clears. When \
+     no relay hosts the circle, everything this made is removed. The machine's \
+     Digestif service starts the new circle's node. With --relay URL, a person \
+     in no circle founds their first on the relay they operate."
     Term.(
-      const (fun dir name guests relays from message hours admin_key ->
+      const
+        (fun
+          data_dir
+          circle
+          name
+          guests
+          relays
+          relay
+          from
+          message
+          hours
+          admin_key
+          account_id
+          worker
+          database_id
+        ->
           let message = read_message message in
-          with_node dir (fun n ->
-              let carded = has_card n in
-              let from = host_name n from in
-              let admins = [ founder_admin ~name:from admin_key ] in
-              let inv =
-                ok_or_die
-                  (Inv.Invite_node.found n ~admins ~name ~relays ~message
-                     ~ttl:(Ptime.Span.of_int_s (hours * 3600))
-                     guests)
+          (* The message is checked before anything is made. *)
+          let _ =
+            if guests = [] then ()
+            else ignore (ok_or_die (Inv.Invite_email.message_of_string message))
+          in
+          let dir = founding_dir ~data_dir ~circle ~name in
+          let id =
+            Option.value (Circles.id_of_dir dir)
+              ~default:
+                (match circle with
+                | Some c -> c
+                | None -> Circles.id_of_name name)
+          in
+          let others = Founding.others ~except:dir () in
+          let from = founder_name ~from ~dir others in
+          let ttl = Ptime.Span.of_int_s (hours * 3600) in
+          match relay with
+          | Some url ->
+              found_home ~dir ~id ~name ~guests ~from ~message ~ttl ~admin_key
+                ~url ~account_id ~worker ~database_id
+          | None ->
+              let relays =
+                match relays with
+                | [] -> Founding.default_relays others
+                | rs -> List.map Relay_url.base_of rs
               in
-              (* A founder with no card is read as a key; the name the emails are signed with
-                 becomes it. After the root, which every envelope of the circle follows. *)
-              if not carded then
-                ignore
-                  (ok_or_die
-                     (Inv.Invite_node.write_card n ~name:from
-                        ~agent_name:(Inv.Invite_node.default_agent_name from)));
-              Printf.printf "circle %s\nroot %s\n\n" inv.dinner.label
-                inv.dinner_hash;
-              List.iter
-                (fun i ->
-                  print_email
-                    (Inv.Invite_email.render ~host_name:from
-                       ~message:inv.message ~dinner:inv.dinner i))
-                inv.dinner.invites;
-              match sync_node n with
-              | Ok r ->
-                  if
-                    List.exists
-                      (fun (rr : Sync.relay_report) -> rr.error <> None)
-                      r.relays
-                  then
-                    prerr_endline
-                      "digestif: a relay did not take the root yet (each relay \
-                       must be configured with the root hash above); the next \
-                       sync retries it"
-              | Error e -> die "the root is in the log but was not sent: %s" e))
-      $ data_dir $ name $ guests $ relays $ from $ invite_message $ hours
-      $ admin_key)
+              if relays = [] then
+                die
+                  "no relay to ask: none of your circles on this machine uses \
+                   one. Found your first circle on a relay you operate with \
+                   digestif circle found --relay URL, or be invited into a \
+                   circle and found from it";
+              found_hosted ~dir ~id ~name ~guests ~from ~message ~ttl ~admin_key
+                ~others ~relays)
+      $ data_dir_arg $ circle_arg $ name $ guests $ relays $ relay $ from
+      $ invite_message $ hours $ admin_key $ account_id $ worker $ database_id)
 
 (* Every circle's node on this machine (docs/design.md, Circles): each id under ~/digestif, and the
    default node when no id names it. *)
 let circle_list =
   cmd "list"
     "List every circle's node on this machine, one per line: its id (the name \
-     --circle takes), the circle's name, its root, and its data directory. The \
-     default node (\\$DIGESTIF_HOME, else the platform's application data \
-     directory) is listed as default until an id links it. Anything under \
-     ~/digestif that is not a node or a link is left out, and named on stderr."
+     --circle takes), the circle's name, its root's short form (its first 12 \
+     hex digits; digestif circle --circle ID prints it whole), its web UI's \
+     address, its last sync, and its data directory. The default node \
+     (\\$DIGESTIF_HOME, else the platform's application data directory) is \
+     listed as default until an id links it. Anything under ~/digestif that is \
+     not a node or a link is left out, and named on stderr."
     Term.(
       const (fun () ->
           let line id dir =
             match Circles.summary dir with
-            | None -> Printf.printf "%s\t\t\t%s (no node set up)\n" id dir
+            | None -> Printf.printf "%s\t\t\t\t\t%s (no node set up)\n" id dir
             | Some s ->
-                Printf.printf "%s\t%s\t%s\t%s\n" id
+                let ui =
+                  match s.ui_url with
+                  | Some u -> u
+                  | None ->
+                      Printf.sprintf "http://127.0.0.1:%d"
+                        (ui_port_of (Some dir) None)
+                in
+                Printf.printf "%s\t%s\t%s\t%s\t%s\t%s\n" id
                   (if s.name = "" then "-" else s.name)
-                  (Option.value s.root ~default:"-")
+                  (Option.fold ~none:"-" ~some:Relay_url.short_root s.root)
+                  ui
+                  (Option.value s.last_sync ~default:"never")
                   dir
           in
           (match Circles.check_parent () with
@@ -2628,6 +3094,9 @@ let run =
             U.Cli_links.link_default ~last:cli_links_failure ~dir:machine ();
             let stored = ref 0 in
             let sync n =
+              readdress_relays
+                ~say:(fun l -> Printf.printf "%s %s\n%!" (Time_fmt.now ()) l)
+                n;
               let r = watch_joins n in
               Result.iter
                 (fun (r : Sync.report) ->
@@ -3807,7 +4276,16 @@ let main =
       keys;
       Cmd.group
         (Cmd.info "relay" ~doc:"The relays this node reads and writes.")
-        [ relay_add; relay_remove; relay_list; relay_operate; relay_status ];
+        [
+          relay_add;
+          relay_remove;
+          relay_list;
+          relay_operate;
+          relay_status;
+          relay_circles;
+          relay_suspend;
+          relay_resume;
+        ];
       sync_cmd;
       invite;
       join;

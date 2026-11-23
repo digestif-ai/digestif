@@ -63,37 +63,15 @@ let curl : transport =
 
 (* A circle's address on a relay (docs/protocol.md, Hosted circles): the relay's base url, then
    /c/ and the 64 hex digits of the circle's root hash. Every circle route lives under it, and an
-   unprefixed route is the home circle's legacy address, which the relay counts as still in use. *)
-let circle_prefix = "/c/"
+   unprefixed route is the home circle's legacy address, which the relay counts as still in use.
+   Relay_url holds the arithmetic; these are the names the deploy pass reads them by. *)
 
 (* The relay's base url: [url] without a trailing slash or a circle's address at its end. *)
-let relay_base url =
-  let url =
-    if String.ends_with ~suffix:"/" url then
-      String.sub url 0 (String.length url - 1)
-    else url
-  in
-  let tail = String.length circle_prefix + 64 in
-  let n = String.length url in
-  let is_hex = function '0' .. '9' | 'a' .. 'f' -> true | _ -> false in
-  if
-    n > tail
-    && String.sub url (n - tail) (String.length circle_prefix) = circle_prefix
-    && String.for_all is_hex (String.sub url (n - 64) 64)
-  then String.sub url 0 (n - tail)
-  else url
+let relay_base = Relay_url.base_of
 
 (* The address of the circle whose root hash is [root] on the relay at [url]. A url that already
    names a circle's address is taken from its base, so the answer never nests two. *)
-let circle_address url ~root =
-  let hex =
-    if String.starts_with ~prefix:Keys.sha256_prefix root then
-      String.sub root
-        (String.length Keys.sha256_prefix)
-        (String.length root - String.length Keys.sha256_prefix)
-    else root
-  in
-  relay_base url ^ circle_prefix ^ hex
+let circle_address url ~root = Relay_url.address ~base:url ~root
 
 type error =
   | Transport of string
@@ -130,12 +108,13 @@ let split_base base =
   | Some i -> (base, String.sub base i (String.length base - i))
   | None -> (base, "")
 
-let request (transport : transport) ~base ~key ~meth ~path ?body () =
+let request (transport : transport) ~base ~key ~meth ~path ?(extra = []) ?body
+    () =
   let base, prefix = split_base base in
   let signed_path = prefix ^ path in
   let raw = Option.value body ~default:"" in
   let headers =
-    Request_sign.headers ?key ~meth ~path:signed_path ~body:raw ()
+    Request_sign.headers ?key ~meth ~path:signed_path ~body:raw () @ extra
   in
   match transport ~meth ~url:(base ^ path) ~headers ~body with
   | Error e -> Error (Transport e)
@@ -175,11 +154,23 @@ let to_int = function
 
 let to_str = function Some (`String s) -> Some s | _ -> None
 
-(* POST /v0/envelopes. [key = None] is a bootstrap append. *)
-let append transport ~base ~key (sg : Envelope.signed) =
+(* The statuses a relay answers with a relay_error a founding or an append names by its code: the
+   admission refusals, and the hosting ones (docs/protocol.md, Hosted circles): 403 not_hosting or
+   not_vouched, 404 circle_unknown, 410 circle_suspended, 429 too_many_circles or a rate limit,
+   503 moving, 507 relay_full or circle_full. *)
+let refusal_status status =
+  List.mem status [ 401; 403; 404; 410; 422; 429; 503; 507 ]
+
+(* POST /v0/envelopes. [key = None] is a bootstrap append. [voucher] is the Digestif-Voucher header
+   of a root's founding append to a relay that does not host its circle yet (Voucher). *)
+let append ?voucher transport ~base ~key (sg : Envelope.signed) =
   let body = Yojson.Safe.to_string (Envelope.signed_to_json sg) in
+  let extra =
+    match voucher with Some v -> [ (Voucher.header, v) ] | None -> []
+  in
   match
-    request transport ~base ~key ~meth:"POST" ~path:"/v0/envelopes" ~body ()
+    request transport ~base ~key ~meth:"POST" ~path:"/v0/envelopes" ~extra ~body
+      ()
   with
   | Error e -> Error e
   | Ok { status = (200 | 201) as status; body } ->
@@ -188,7 +179,7 @@ let append transport ~base ~key (sg : Envelope.signed) =
           | Some relay_id, Some hash ->
               Some { duplicate = status = 200; relay_id; hash }
           | _ -> None)
-  | Ok { status; body } when status = 401 || status = 422 || status = 429 ->
+  | Ok { status; body } when refusal_status status ->
       Error (Refused (status, parse_errors body))
   | Ok { status; body } -> Error (Unexpected (status, body))
 
@@ -261,7 +252,8 @@ let fetch transport ~base ~key ~after ~limit =
               in
               Some { envelopes; malformed; next = to_int (field "next" j) }
           | _ -> None)
-  | Ok { status = 401; body } -> Error (Refused (401, parse_errors body))
+  | Ok { status; body } when refusal_status status ->
+      Error (Refused (status, parse_errors body))
   | Ok { status; body } -> Error (Unexpected (status, body))
 
 (* GET /v0/circle, returned as JSON: the node trusts its own fold, and reads this to compare. *)
@@ -297,11 +289,63 @@ let mail transport ~base ~key mail_request =
 
 (* GET /v0/invites/<invite key>, the bootstrap read: signed by the invite key itself, it answers the
    dinner envelope, with its body, that lists that key while the invite is open, and 404 otherwise. *)
-let invite transport ~base ~(key : Crypto.signing_key) =
+let rec invite transport ~base ~(key : Crypto.signing_key) =
+  Result.map fst (invite_at transport ~base ~key)
+
+(* The bootstrap read, with the circle's address the relay answers beside the envelope (docs/protocol.md,
+   Hosted circles): a relay that hosts many circles names it, and a guest reads and appends there.
+   None from a relay that serves one circle. *)
+and invite_at transport ~base ~(key : Crypto.signing_key) =
   let path = "/v0/invites/" ^ Keys.public key in
   match request transport ~base ~key:(Some key) ~meth:"GET" ~path () with
   | Error e -> Error e
-  | Ok { status = 200; body } -> json_or 200 body parse_stored
+  | Ok { status = 200; body } ->
+      json_or 200 body (fun j ->
+          Option.map (fun s -> (s, to_str (field "circle" j))) (parse_stored j))
   | Ok { status = (401 | 404) as status; body } ->
       Error (Refused (status, parse_errors body))
   | Ok { status; body } -> Error (Unexpected (status, body))
+
+type relay_info = {
+  relay_version : string option;
+  mailer : bool;
+  encryption_key : string option;
+  hosting : bool;
+  home : string option;
+  last_unprefixed_at : string option;
+}
+
+(* GET /v0/relay, unsigned (docs/protocol.md, Hosted circles): what anyone may read of a relay. A
+   relay that serves one circle has no such route, and answers 404. [base] may be a circle's address
+   there; the relay answers the route at either. *)
+let relay_info transport ~base =
+  match request transport ~base ~key:None ~meth:"GET" ~path:"/v0/relay" () with
+  | Error e -> Error e
+  | Ok { status = 200; body } ->
+      json_or 200 body (fun j ->
+          match field "hosting" j with
+          | Some (`Bool hosting) ->
+              Some
+                {
+                  relay_version = to_str (field "relay_version" j);
+                  mailer = field "mailer" j = Some (`Bool true);
+                  encryption_key = to_str (field "encryption_key" j);
+                  hosting;
+                  home = to_str (field "home" j);
+                  last_unprefixed_at = to_str (field "last_unprefixed_at" j);
+                }
+          | _ -> None)
+  | Ok { status; body } when status = 404 ->
+      Error (Refused (status, parse_errors body))
+  | Ok { status; body } -> Error (Unexpected (status, body))
+
+(* A circle's address a relay does not host yet (docs/protocol.md, Hosted circles): a relay the root
+   lists that refused the founding, until digestif relay add sends it the root. Never a fault. *)
+let not_hosted = function
+  | Refused (404, errs) -> List.mem_assoc "circle_unknown" errs
+  | _ -> false
+
+(* A circle its relay's operator suspended: a fault naming the relay. *)
+let suspended = function
+  | Refused (410, errs) -> List.mem_assoc "circle_suspended" errs
+  | _ -> false

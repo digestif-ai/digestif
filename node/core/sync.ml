@@ -456,31 +456,66 @@ let replicate_relay ?(now = Unix.gettimeofday ()) (node : Node.t) transport ~key
 
 (* Read, then push, then read again a relay the push admitted this node to. The second value says
    whether the relay read clean, so admits this node and may be replicated to (sync_relays). *)
+let not_hosted_note =
+  "circle_unknown: this relay does not host the circle yet; digestif relay add \
+   <its url> --circle <id> asks it"
+
 let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
   let fetched, stored, error = fetch_relay ?on_stored node transport ~key r in
-  (* A relay that refused the read (this node not admitted there yet) still takes our appends:
+  match error with
+  | Some e when Relay_client.not_hosted e ->
+      (* A relay the root lists that does not host the circle: nothing to push or read there. *)
+      Log.record_sync node.log r.url (Some not_hosted_note);
+      ( {
+          relay = r.url;
+          fetched;
+          stored;
+          pushed = 0;
+          dropped = 0;
+          replicated = 0;
+          error = Some not_hosted_note;
+        },
+        false )
+  | _ ->
+      (match error with
+      | Some e when Relay_client.suspended e ->
+          Log.add_fault node.log ~kind:"relay_suspended" ~author:"" ~seq:0
+            ~detail:
+              (r.url
+             ^ " answers 410 circle_suspended: the relay's operator suspended \
+                this circle there")
+      | _ -> ());
+      (* A relay that refused the read (this node not admitted there yet) still takes our appends:
      a circle root, or a replacement laptop's device message, reaches it unsigned this way. *)
-  let { pushed; dropped; error = push_error } =
-    match error with
-    | Some (Relay_client.Transport _) ->
-        { pushed = 0; dropped = 0; error = None }
-    | _ -> push_relay ~may_drop:(error = None) node transport r
-  in
-  let fetched, stored, error =
-    if bootstrapped error pushed push_error then
-      let f, s, e = fetch_relay ?on_stored node transport ~key r in
-      (fetched + f, stored + s, e)
-    else (fetched, stored, error)
-  in
-  let read_clean = error = None in
-  let error =
-    match (error, push_error) with
-    | Some e, _ -> Some (Relay_client.error_to_string e)
-    | None, e -> e
-  in
-  Log.record_sync node.log r.url error;
-  ( { relay = r.url; fetched; stored; pushed; dropped; replicated = 0; error },
-    read_clean )
+      let { pushed; dropped; error = push_error } =
+        match error with
+        | Some (Relay_client.Transport _) ->
+            { pushed = 0; dropped = 0; error = None }
+        | _ -> push_relay ~may_drop:(error = None) node transport r
+      in
+      let fetched, stored, error =
+        if bootstrapped error pushed push_error then
+          let f, s, e = fetch_relay ?on_stored node transport ~key r in
+          (fetched + f, stored + s, e)
+        else (fetched, stored, error)
+      in
+      let read_clean = error = None in
+      let error =
+        match (error, push_error) with
+        | Some e, _ -> Some (Relay_client.error_to_string e)
+        | None, e -> e
+      in
+      Log.record_sync node.log r.url error;
+      ( {
+          relay = r.url;
+          fetched;
+          stored;
+          pushed;
+          dropped;
+          replicated = 0;
+          error;
+        },
+        read_clean )
 
 (* [f transport x] for every [x] at once, a thread each, so a relay that accepts the connection and
    never answers costs a sync its own call's max-time once, not once per relay behind it. The node's

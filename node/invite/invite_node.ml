@@ -21,7 +21,8 @@ type invited = {
    node's device key, make it the node's root, and record an invite per guest in the ledger with the
    founder's [message], the lines its email opens with. A blank message is refused before anything
    is written when there is a guest to send it to. [relays] defaults to the node's own; any given
-   are added to the node, so the next sync appends the root to every one of them. No dinner is
+   are added to the node unless [add_relays] is false, so the next sync appends the root to every
+   one of them. No dinner is
    involved: a dinner is an event inside a circle, never its root.
    [admins], the founder's admin key, are the circle's own signer set: they, and not the release
    signers, sign every later invite (protocol.md, circle). A circle with none is refused before
@@ -29,8 +30,8 @@ type invited = {
 
    A node holds one circle. A node that already has a root is refused: a second circle is a second
    node, with its own data directory, keys, identity and relays (docs/design.md, Circles). *)
-let found ?(now = ptime_now ()) ?ttl ~admins (node : Node.t) ~name ?relays
-    ?(message = "") guests =
+let found ?(now = ptime_now ()) ?ttl ?(add_relays = true) ~admins
+    (node : Node.t) ~name ?relays ?(message = "") guests =
   let* () =
     if admins = [] then
       Error "a circle names its admins: the founder's admin key at least"
@@ -65,7 +66,9 @@ let found ?(now = ptime_now ()) ?ttl ~admins (node : Node.t) ~name ?relays
   in
   let* ledger = Host_watch.load node.dir in
   let* root = Dinner.create_circle ~host ~name ~relays ~now ?ttl guests in
-  List.iter (Log.add_relay node.log) relays;
+  (* A founding against relays that host many circles stores each circle address once a relay hosts
+     it (Founding), never the base urls the root lists. *)
+  if add_relays then List.iter (Log.add_relay node.log) relays;
   let* root_hash, _ =
     Node.write node ~kind:"circle" (Dinner.circle_body ~admins root)
   in
@@ -406,7 +409,7 @@ let prepare ?(transport = Relay_client.curl) ?(now = ptime_now ())
       [ Log.s Node.k_identity ];
   let* derived = Node.init node ~phrase in
   let* device = Node.device_key node in
-  let* sg =
+  let* sg, circle =
     Result.map_error Join.error_message (Join.read_dinner ~transport code)
   in
   let* dinner_hash, dinner, _ =
@@ -420,7 +423,7 @@ let prepare ?(transport = Relay_client.curl) ?(now = ptime_now ())
     {
       Join_store.invite_key = Invite_code.invite_public_key code;
       dinner_hash;
-      relays = dinner.parsed_relays;
+      relays = Join.relays_at ~circle dinner.parsed_relays;
       guest_name = own_guest_name dinner code;
       join;
       posted = false;
