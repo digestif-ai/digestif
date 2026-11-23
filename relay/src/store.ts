@@ -1,8 +1,8 @@
-// One circle's store: a SQLite-backed Durable Object (CircleStore), reached through an adapter that
-// presents the D1Database handle the relay's query sites already use, so src/ runs unchanged
-// against it (docs/releases.md, Relay releases; DIG-319 measured it with the whole suite). No route
-// reads it yet: the release that creates the class carries nothing else, since a rollback cannot
-// cross the Durable Object migration that creates it.
+// One circle's store: a SQLite-backed Durable Object (CircleStore), named by the circle's root and
+// reached through an adapter that presents the D1Database handle the relay's query sites already
+// use, so src/ runs unchanged against it (docs/releases.md, Relay releases; DIG-319 measured it with
+// the whole suite). Every hosted circle's routes answer from its store (src/circles.ts); the home
+// circle's store also runs the move of its log out of the relay's D1 (src/move.ts) on its alarm.
 //
 // The adapter sends each prepared statement, or each batch, to the object as one RPC. The object
 // runs a batch inside transactionSync, so a statement that throws rolls back every statement before
@@ -10,6 +10,7 @@
 // call runs, so each RPC is atomic against every other request on the object; between two RPCs
 // another request may commit, as between two D1 round trips.
 import { DurableObject } from "cloudflare:workers";
+import { beginMove, MOVE_BATCH, moveState, moveStep, type MoveState } from "./move.ts";
 import { SCHEMA, type SchemaMigration } from "./schema.ts";
 
 /** One statement as it crosses the RPC: the SQL and its bind values, already normalised. */
@@ -73,7 +74,7 @@ export function applySchema(storage: DurableObjectStorage, schema: readonly Sche
   return added;
 }
 
-export class CircleStore extends DurableObject {
+export class CircleStore extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // The schema, on first use: every relay migration the object lacks, before any statement runs.
@@ -90,6 +91,21 @@ export class CircleStore extends DurableObject {
   /** Statements in order, all or none, as D1's batch(). */
   batch(statements: Statement[]): Outcome<Answer[]> {
     return attempt(() => this.ctx.storage.transactionSync(() => statements.map((statement) => this.execute(statement))));
+  }
+
+  /** Begins (or re-paces) the move of the home circle [root]'s log from the relay's D1 into this store (src/move.ts). */
+  async startMove(root: string, rowsPerDay: number, batch: number = MOVE_BATCH): Promise<void> {
+    await beginMove(this.ctx.storage, root, rowsPerDay, batch, new Date());
+  }
+
+  /** The move's progress, for the tests and the operator. */
+  move(): MoveState | undefined {
+    return moveState(this.ctx.storage);
+  }
+
+  /** One step of the move per alarm; each step sets the next alarm itself. */
+  override async alarm(): Promise<void> {
+    await moveStep(this.ctx.storage, this.env.DB, new Date());
   }
 
   /** D1's exec(): the text split on newlines, each line one statement, no bindings. */

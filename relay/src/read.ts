@@ -56,8 +56,9 @@ export async function circle(relay: Relay, request: Request, url: URL): Promise<
 }
 
 /**
- * The bootstrap read: the dinner listing an open invite, to the invite key alone. An unknown, spent
- * or expired invite is 404 with no body, one answer for all three; another signer is 401.
+ * The bootstrap read: the dinner listing an open invite, to the invite key alone, with the address
+ * of its circle on this relay. An unknown, spent or expired invite is 404 with no body, one answer
+ * for all three; another signer is 401.
  */
 export async function invite(relay: Relay, request: Request, url: URL, inviteKey: string): Promise<Response> {
   if (request.headers.get(HEADER_KEY) !== inviteKey) throw new Refusal(401, "not_admitted", "the bootstrap read is signed by the invite key it names");
@@ -68,5 +69,6 @@ export async function invite(relay: Relay, request: Request, url: URL, inviteKey
   const [found] = await spendNonce(relay, verified, [relay.db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE hash = ?`).bind(row.dinner)]);
   const dinner = found?.results[0] as EnvelopeRow | undefined;
   if (dinner === undefined) return empty(404);
-  return json(200, storedOf(dinner));
+  // The circle's address on this relay: a guest's app reads the circle there, whichever address it asked.
+  return json(200, { ...storedOf(dinner), circle: relay.address });
 }

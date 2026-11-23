@@ -5,6 +5,7 @@
 // point: the loser lands after the winner with the next relay_id, a signed loser is not refused as
 // its own replay, two joins take consecutive epochs, a fork is refused, and two copies of one
 // request pass once.
+import { relayExtras, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { summaryBody } from "../../conformance/src/bodies.ts";
@@ -86,7 +87,7 @@ function interleaving(real: D1Database, at: RegExp, ...competitors: (() => Promi
 }
 
 function relayOn(db: D1Database, now = new Date()): Relay {
-  return { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now, mailer: undefined, releaseSigners: releaseSignersOf(env) };
+  return { ...relayExtras(), db, root: TEST_ROOT, limits: DEFAULT_LIMITS, now, mailer: undefined, releaseSigners: releaseSignersOf(env) };
 }
 
 interface Posted {
@@ -131,7 +132,7 @@ function relayIdOf(posted: Posted): number {
 }
 
 async function expectRefold(): Promise<void> {
-  const fold = await foldLog(env.DB, env.CIRCLE_ROOT, { all: true });
+  const fold = await foldLog(env.DB, TEST_ROOT, { all: true });
   expect((await loadKeys(env.DB)).map(keyJson)).toEqual(fold.admittedKeys().map(keyJson));
   expect(await circleEpoch(env.DB)).toBe(fold.epoch);
 }

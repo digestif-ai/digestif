@@ -25,12 +25,14 @@ export function parseJsonc(text: string): unknown {
   return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1")) as unknown;
 }
 
-// CLI: node scripts/jsonc.ts <file> <dot.path>   prints the value (strings raw, others as JSON).
+// CLI: node scripts/jsonc.ts <file> <dot.path> [--keys]   prints the value (strings raw, others as
+// JSON), or with --keys the names of the object there, space-separated.
 if (typeof process !== "undefined" && process.argv[1]?.endsWith("jsonc.ts") === true) {
   const { readFileSync } = await import("node:fs");
-  const [file, path] = process.argv.slice(2);
-  if (file === undefined || path === undefined) throw new Error("usage: jsonc.ts <file> <dot.path>");
+  const [file, path, flag] = process.argv.slice(2);
+  if (file === undefined || path === undefined) throw new Error("usage: jsonc.ts <file> <dot.path> [--keys]");
   let v: unknown = parseJsonc(readFileSync(file, "utf8"));
   for (const k of path.split(".")) v = (v as Record<string, unknown> | undefined)?.[k];
-  if (v !== undefined) console.log(typeof v === "string" ? v : JSON.stringify(v));
+  if (flag === "--keys") console.log(typeof v === "object" && v !== null ? Object.keys(v).join(" ") : "");
+  else if (v !== undefined) console.log(typeof v === "string" ? v : JSON.stringify(v));
 }

@@ -118,7 +118,7 @@ export function checkedRoot(db: D1Database, root: string, held: string | undefin
     return;
   }
   circleChecked.delete(db);
-  throw new ConfigError(`this database serves circle ${held ?? "(none)"}, not CIRCLE_ROOT ${root}`);
+  throw new ConfigError(`this database serves circle ${held ?? "(none)"}, not ${root}`);
 }
 
 export async function circleEpoch(db: D1Database): Promise<number> {
@@ -225,19 +225,30 @@ interface KeptFold {
 }
 
 /**
- * The isolate's last circle-state fold. It is trusted only for a log whose circle-state envelopes
- * begin with exactly its ids, hashes and clocks included, so a database swapped under the isolate,
- * or written by another isolate, is refolded or extended rather than misread.
+ * The isolate's last circle-state fold of each circle, by root. One is trusted only for a log whose
+ * circle-state envelopes begin with exactly its ids, hashes and clocks included, so a database
+ * swapped under the isolate, or written by another isolate, is refolded or extended rather than
+ * misread. An isolate keeps the folds of the circles it served last, a few at a time.
  */
-let foldCache: KeptFold | undefined;
+const foldCache = new Map<string, KeptFold>();
+const KEPT_FOLDS = 8;
 
-/** Drops the kept fold, as a fresh isolate starts: the tests' way to fold from a log another isolate wrote. */
+function keep(root: string, kept: KeptFold): void {
+  foldCache.delete(root);
+  foldCache.set(root, kept);
+  for (const oldest of foldCache.keys()) {
+    if (foldCache.size <= KEPT_FOLDS) break;
+    foldCache.delete(oldest);
+  }
+}
+
+/** Drops every kept fold, as a fresh isolate starts: the tests' way to fold from a log another isolate wrote. */
 export function forgetKeptFold(): void {
-  foldCache = undefined;
+  foldCache.clear();
 }
 
 /** The folds foldLog handed out, with the ids each was built from, so a committed append can keep its fold. */
-const handedOut = new WeakMap<Fold, { config: string; ids: FoldedId[] }>();
+const handedOut = new WeakMap<Fold, { root: string; config: string; ids: FoldedId[] }>();
 
 /** The ids of the circle-state envelopes below a relay_id, through the same pinned index as CIRCLE_STATE_SQL. */
 export const CIRCLE_STATE_IDS_SQL = `SELECT relay_id, hash, received_at, judged_at FROM envelopes INDEXED BY envelopes_kind_relay_id WHERE kind IN (${CIRCLE_STATE_IN}) AND relay_id < ?`;
@@ -248,7 +259,7 @@ async function foldCircleState(db: D1Database, root: string, scope: FoldScope, b
   const results = [...(scope.read?.ids ?? (await db.prepare(CIRCLE_STATE_IDS_SQL).bind(below).all<FoldedIdRow>()).results)];
   results.sort((a, b) => a.relay_id - b.relay_id);
   const ids = results.map(foldedId);
-  const kept = foldCache;
+  const kept = foldCache.get(root);
   const extendsKept = kept !== undefined && kept.config === config && kept.ids.length <= ids.length && kept.ids.every((id, i) => ids[i] === id);
   let fold: Fold;
   if (extendsKept) {
@@ -260,8 +271,8 @@ async function foldCircleState(db: D1Database, root: string, scope: FoldScope, b
   }
   // A fold of a shorter prefix of the same log (an append chose an earlier position) leaves the kept one.
   const shorterPrefix = kept !== undefined && kept.config === config && kept.ids.length > ids.length && ids.every((id, i) => kept.ids[i] === id);
-  if (!shorterPrefix && (!extendsKept || kept.ids.length < ids.length)) foldCache = { config, ids, fold: fold.clone() };
-  handedOut.set(fold, { config, ids });
+  if (!shorterPrefix && (!extendsKept || kept.ids.length < ids.length)) keep(root, { config, ids, fold: fold.clone() });
+  handedOut.set(fold, { root, config, ids });
   return fold;
 }
 
@@ -281,7 +292,7 @@ export function keepFold(fold: Fold, row: EnvelopeRow): void {
   const origin = handedOut.get(fold);
   if (origin === undefined || !isCircleState(row.kind)) return;
   handedOut.delete(fold);
-  foldCache = { config: origin.config, ids: [...origin.ids, foldedId(row)], fold: fold.clone() };
+  keep(origin.root, { config: origin.config, ids: [...origin.ids, foldedId(row)], fold: fold.clone() });
 }
 
 function newFold(root: string, scope: FoldScope, cutover: number): Fold {

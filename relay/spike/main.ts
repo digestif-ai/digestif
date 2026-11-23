@@ -10,10 +10,12 @@ const handles = new Map<string, D1Database>();
 
 /** The circle's store: the object named by CIRCLE_ROOT, one handle per isolate. */
 export function storeOf(env: Env): D1Database {
-  let db = handles.get(env.CIRCLE_ROOT);
+  const root = env.CIRCLE_ROOT;
+  if (root === undefined) throw new Error("the spike runs on wrangler.jsonc's top-level CIRCLE_ROOT");
+  let db = handles.get(root);
   if (db === undefined) {
-    db = circleDatabase(env.CIRCLE_STORE, env.CIRCLE_ROOT);
-    handles.set(env.CIRCLE_ROOT, db);
+    db = circleDatabase(env.CIRCLE_STORE, root);
+    handles.set(root, db);
   }
   return db;
 }

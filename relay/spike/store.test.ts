@@ -17,6 +17,7 @@ import { DEFAULT_LIMITS, type Relay } from "../src/env.ts";
 import { circle, page } from "../src/read.ts";
 import { releaseSignersOf } from "../src/signers.ts";
 import { StoreDatabase } from "../src/store.ts";
+import { relayExtras, TEST_ROOT } from "../test/root.ts";
 
 const RELAY = "http://relay.test";
 const realFetch = globalThis.fetch;
@@ -84,7 +85,7 @@ function metering(real: D1Database): { db: D1Database; log: Metered[] } {
 }
 
 function relayOn(db: D1Database): Relay {
-  return { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) };
+  return { ...relayExtras(), db, root: TEST_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) };
 }
 
 function signedGet(signer: Signer, path: string): { request: Request; url: URL } {
@@ -225,7 +226,7 @@ describe("rows written", () => {
     const signed = member.device.next("summary", summaryBody(`writes ${world.tag}`), await circleEpoch(env.DB));
     const body = jcs(signed);
     for (const [name, store] of STORES) {
-      await ensureCircle(store(), env.CIRCLE_ROOT);
+      await ensureCircle(store(), TEST_ROOT);
       const entry: (typeof report)[string] = {};
       for (const path of ["/v0/circle", "/v0/envelopes?after=0"]) {
         const { db, log } = metering(store());

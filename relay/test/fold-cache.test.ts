@@ -3,6 +3,7 @@
 // keep the fold these tests read), a log that no longer begins with what it folded is
 // refolded whole, and the fold it hands out always equals the full refold. A replay of a stored
 // envelope does not re-verify the key signatures inside it (conformance/src/fold.ts, stored).
+import { relayExtras, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { deviceBody, retractBody } from "../../conformance/src/bodies.ts";
@@ -65,7 +66,7 @@ async function lastRelayId(): Promise<number> {
 
 /** The fold foldLog hands out, against the full refold of the whole log. */
 async function expectFullRefold(fold: Fold): Promise<void> {
-  const full = await foldLog(env.DB, env.CIRCLE_ROOT, { all: true, ...scope() });
+  const full = await foldLog(env.DB, TEST_ROOT, { all: true, ...scope() });
   expect(fold.admittedKeys().map(keyJson)).toEqual(full.admittedKeys().map(keyJson));
   expect(fold.epoch).toBe(full.epoch);
 }
@@ -101,16 +102,16 @@ describe("the isolate's kept fold", () => {
   it("is the full refold when the isolate starts with none", async () => {
     forgetKeptFold();
     const { db, replayed } = counting(env.DB);
-    const fold = await foldLog(db, env.CIRCLE_ROOT, scope());
+    const fold = await foldLog(db, TEST_ROOT, scope());
     expect(replayed()).toBe(await circleStateAfter(0));
     await expectFullRefold(fold);
   });
 
   it("replays nothing when no circle-state envelope was committed since it was built", async () => {
-    await foldLog(env.DB, env.CIRCLE_ROOT, scope());
+    await foldLog(env.DB, TEST_ROOT, scope());
     await world.post(member.device, "content leaves the circle-state fold as it was");
     const { db, replayed } = counting(env.DB);
-    const fold = await foldLog(db, env.CIRCLE_ROOT, scope());
+    const fold = await foldLog(db, TEST_ROOT, scope());
     expect(replayed()).toBe(0);
     await expectFullRefold(fold);
   });
@@ -121,25 +122,25 @@ describe("the isolate's kept fold", () => {
     const added = await circleStateAfter(since);
     expect(added).toBeGreaterThan(0);
     forgetKeptFold();
-    await foldLog(env.DB, env.CIRCLE_ROOT, { ...scope(), before: since + 1 });
+    await foldLog(env.DB, TEST_ROOT, { ...scope(), before: since + 1 });
     const { db, replayed } = counting(env.DB);
-    const fold = await foldLog(db, env.CIRCLE_ROOT, scope());
+    const fold = await foldLog(db, TEST_ROOT, scope());
     expect(replayed()).toBe(added);
     await expectFullRefold(fold);
   });
 
   it("keeps the fold an append committed, so the next append replays nothing", async () => {
-    await foldLog(env.DB, env.CIRCLE_ROOT, scope());
+    await foldLog(env.DB, TEST_ROOT, scope());
     const key = new Author(Signer.random());
     const signed = member.device.next("device", deviceBody(member.identity, key.key, "device"), await world.epoch());
     const body = jcs(signed);
     const url = new URL(`${RELAY}/v0/envelopes`);
     const headers = { "content-type": "application/json", ...signedHeaders(member.device.signer, "POST", url.pathname, body) };
-    const relay = { db: env.DB, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) };
+    const relay = { ...relayExtras(), db: env.DB, root: TEST_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) };
     const response = await append(relay, new Request(url, { method: "POST", headers, body }), url);
     expect(response.status, await response.clone().text()).toBe(201);
     const { db, replayed } = counting(env.DB);
-    const fold = await foldLog(db, env.CIRCLE_ROOT, scope());
+    const fold = await foldLog(db, TEST_ROOT, scope());
     expect(replayed()).toBe(0);
     expect(fold.keys.get(key.key)?.role).toBe("device");
     await expectFullRefold(fold);
@@ -148,8 +149,8 @@ describe("the isolate's kept fold", () => {
   it("folds a retract from the kept fold, replaying no envelope, and still judges it by the target's author", async () => {
     const note = await world.post(member.device, "to be retracted");
     const target = envelopeHash(note.envelope);
-    await foldLog(env.DB, env.CIRCLE_ROOT, scope());
-    const relayOn = (db: D1Database) => ({ db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) });
+    await foldLog(env.DB, TEST_ROOT, scope());
+    const relayOn = (db: D1Database) => ({ ...relayExtras(), db, root: TEST_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) });
     const send = async (db: D1Database, author: Author): Promise<Response> => {
       const signed = author.next("retract", retractBody(target), await world.epoch());
       const body = jcs(signed);
@@ -159,7 +160,7 @@ describe("the isolate's kept fold", () => {
     };
     const [other] = await world.members(["retract interloper"]);
     if (other === undefined) throw new Error("a second member expected");
-    await foldLog(env.DB, env.CIRCLE_ROOT, scope());
+    await foldLog(env.DB, TEST_ROOT, scope());
     const refused = counting(env.DB);
     await expect(send(refused.db, other.device)).rejects.toMatchObject({ status: 422, code: "retract_not_author" });
     expect(refused.replayed()).toBe(0);
@@ -170,11 +171,11 @@ describe("the isolate's kept fold", () => {
   });
 
   it("refolds the whole log when it no longer begins with the envelopes the kept fold read", async () => {
-    await foldLog(env.DB, env.CIRCLE_ROOT, scope());
+    await foldLog(env.DB, TEST_ROOT, scope());
     await env.DB.prepare("UPDATE envelopes SET judged_at = '2000-01-01T00:00:00.000Z' WHERE relay_id = 1").run();
     try {
       const { db, replayed } = counting(env.DB);
-      const fold = await foldLog(db, env.CIRCLE_ROOT, scope());
+      const fold = await foldLog(db, TEST_ROOT, scope());
       expect(replayed()).toBe(await circleStateAfter(0));
       await expectFullRefold(fold);
     } finally {
@@ -183,12 +184,12 @@ describe("the isolate's kept fold", () => {
   });
 
   it("hands out a copy: applying to it leaves the kept fold as it was", async () => {
-    const first = await foldLog(env.DB, env.CIRCLE_ROOT, scope());
+    const first = await foldLog(env.DB, TEST_ROOT, scope());
     const identity = first.keys.get(member.identity.key);
     if (identity === undefined) throw new Error("the member's identity expected");
     identity.revoked_at = 1;
     first.epoch += 100;
-    const again = await foldLog(env.DB, env.CIRCLE_ROOT, scope());
+    const again = await foldLog(env.DB, TEST_ROOT, scope());
     expect(again.keys.get(member.identity.key)?.revoked_at).toBeUndefined();
     await expectFullRefold(again);
   });
@@ -200,7 +201,7 @@ describe("a stored replay", () => {
     const join = results.find((r) => r.kind === "join");
     if (join === undefined) throw new Error("a join expected");
     const replayTo = (stored: boolean): string | null => {
-      const fold = new Fold(env.CIRCLE_ROOT);
+      const fold = new Fold(TEST_ROOT);
       for (const row of results) {
         if (row.relay_id > join.relay_id) break;
         let body = row.body === null ? undefined : (JSON.parse(row.body) as Json);

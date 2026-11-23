@@ -1,5 +1,5 @@
-// The relay's configuration: the circle root, the limits and the mailer, Worker variables and
-// secrets per deployment.
+// The relay's configuration: its home circle, the limits, the hosting limits and the mailer, Worker
+// variables and secrets per deployment.
 import { importEncryptionKey, unb64url } from "../../node/mail/webcrypto/mail.mjs";
 
 export interface RelayLimits {
@@ -35,12 +35,67 @@ export function limitsOf(env: Env): RelayLimits {
   };
 }
 
-const ROOT = /^sha256:[0-9a-f]{64}$/;
+export const ROOT = /^sha256:[0-9a-f]{64}$/;
 
-export function rootOf(env: Env): string {
-  const root = env.CIRCLE_ROOT;
-  if (typeof root !== "string" || !ROOT.test(root)) throw new ConfigError("CIRCLE_ROOT must be the circle root's hash (its circle or founding dinner envelope), sha256:<64 hex>");
-  return root;
+/**
+ * The home circle (docs/protocol.md, Hosted circles): the root HOME_ROOT names, read from
+ * CIRCLE_ROOT while HOME_ROOT is unset, so a deployment configured before relays hosted many
+ * circles keeps its circle as home. Null on a relay with neither set: it has no home and hosts
+ * nothing until its operator founds one.
+ */
+export function homeOf(env: Env): string | null {
+  for (const name of ["HOME_ROOT", "CIRCLE_ROOT"] as const) {
+    const value = env[name];
+    if (value === undefined || value === "") continue;
+    if (!ROOT.test(value)) throw new ConfigError(`${name} must be the home circle root's hash (its circle or founding dinner envelope), sha256:<64 hex>`);
+    return value;
+  }
+  return null;
+}
+
+/** What hosting circles may spend (docs/protocol.md, Hosted circles), each a Worker variable with a default. */
+export interface HostingLimits {
+  /** Whether the relay opens new circles at all: HOSTING "0" or "off" stops it (not_hosting). */
+  hosting: boolean;
+  /** Bytes every hosted circle's reserved share must fit in together (relay_full). */
+  relay_storage: number;
+  /** Bytes one circle's store may hold, and the share each reserves (circle_full). */
+  circle_storage: number;
+  /** Circles one vouching member may open on this relay per 30 days (too_many_circles). */
+  circles_per_member: number;
+  /** Rows the home circle's move copies a day; 0 keeps the home circle on D1. */
+  move_rows_per_day: number;
+}
+
+const GiB = 1024 * 1024 * 1024;
+const MiB = 1024 * 1024;
+
+export const DEFAULT_HOSTING: HostingLimits = {
+  hosting: true,
+  relay_storage: 4 * GiB,
+  circle_storage: 256 * MiB,
+  circles_per_member: 5,
+  move_rows_per_day: 20_000,
+};
+
+/** A non-negative integer variable: 0 is a value (MOVE_ROWS_PER_DAY 0 keeps the home circle on D1). */
+function count(name: string, value: string | undefined, fallback: number): number {
+  if (value === undefined || value === "") return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) throw new ConfigError(`${name} must be a non-negative integer, not ${JSON.stringify(value)}`);
+  return n;
+}
+
+export function hostingOf(env: Env): HostingLimits {
+  const switched = env.HOSTING;
+  if (switched !== undefined && !["", "1", "on", "0", "off"].includes(switched)) throw new ConfigError(`HOSTING must be on or off, not ${JSON.stringify(switched)}`);
+  return {
+    hosting: switched !== "0" && switched !== "off",
+    relay_storage: limit("RELAY_STORAGE", env.RELAY_STORAGE, DEFAULT_HOSTING.relay_storage),
+    circle_storage: limit("CIRCLE_STORAGE", env.CIRCLE_STORAGE, DEFAULT_HOSTING.circle_storage),
+    circles_per_member: limit("CIRCLES_PER_MEMBER", env.CIRCLES_PER_MEMBER, DEFAULT_HOSTING.circles_per_member),
+    move_rows_per_day: count("MOVE_ROWS_PER_DAY", env.MOVE_ROWS_PER_DAY, DEFAULT_HOSTING.move_rows_per_day),
+  };
 }
 
 /** The mailing relay's half of the configuration (docs/protocol.md "Mailer routes"), present on the one relay that mails. */
@@ -92,11 +147,21 @@ export async function mailerOf(env: Env): Promise<Mailer | undefined> {
   };
 }
 
-/** What every handler needs: the database, the configuration and the relay's clock for this request. */
+/**
+ * What every circle route needs: the circle's database (its store, or the relay's D1 for a home
+ * circle not yet moved), its root and address, the configuration and the relay's clock for this
+ * request.
+ */
 export interface Relay {
   db: D1Database;
   root: string;
+  /** The circle's address on this relay, `<base>/c/<root hex>`: what its answer links name. */
+  address: string;
   limits: RelayLimits;
+  /** What hosting circles may spend: a circle's store refuses appends past its share. */
+  hosting: HostingLimits;
+  /** The relay's D1, which holds what spans circles: the registry and the invite index (src/circles.ts). */
+  registry: D1Database;
   now: Date;
   /** Present on the mailing relay. */
   mailer: Mailer | undefined;

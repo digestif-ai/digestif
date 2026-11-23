@@ -4,8 +4,9 @@
 // fake Resend endpoint received. Conformance cases cannot cover these routes black-box (a real
 // relay would email, and the suite cannot hold the relay's sealing key), so this file is their
 // test.
+import { relayExtras, TEST_ROOT } from "./root.ts";
 import { env, SELF } from "cloudflare:test";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { jcs } from "../../conformance/src/encoding.ts";
 import { envelopeHash, type SignedEnvelope, type StoredEnvelope } from "../../conformance/src/envelope.ts";
 import { Signer } from "../../conformance/src/keys.ts";
@@ -58,7 +59,7 @@ async function decisionsHeld(): Promise<StoredEnvelope[]> {
 }
 
 async function checkRefold(): Promise<void> {
-  const fold = await foldLog(env.DB, env.CIRCLE_ROOT, { all: true });
+  const fold = await foldLog(env.DB, TEST_ROOT, { all: true });
   expect((await loadKeys(env.DB)).map(keyJson)).toEqual(fold.admittedKeys().map(keyJson));
   expect(await circleEpoch(env.DB)).toBe(fold.epoch);
 }
@@ -66,8 +67,11 @@ async function checkRefold(): Promise<void> {
 function linkUrlOf(digest: Digest, label: string): string {
   const link = digest.links.find((l) => l.label === label);
   if (link === undefined) throw new Error(`no link ${label}`);
-  return `${RELAY}/v0/links/${link.id}?s=${link.secret}`;
+  return `${ADDRESS}/v0/links/${link.id}?s=${link.secret}`;
 }
+
+/** The test circle's address on the relay under test: what its answer links name. */
+const ADDRESS = `${RELAY}/c/${TEST_ROOT.slice("sha256:".length)}`;
 
 async function confirm(url: string, secret?: string): Promise<string> {
   const target = new URL(url);
@@ -102,6 +106,12 @@ beforeAll(async () => {
   [mike, ada] = (await world.members(["mike", "ada"])) as [Member, Member];
   mailKey = await world.addDevice(mike, "mail");
   node = new Node(world, mike, memberKey, relayKey);
+});
+
+// Every case mails one member, past the two digests a member is mailed a day (src/mail.ts); the
+// cap's own case counts from a clean day. Earlier sends move to a day already over.
+beforeEach(async () => {
+  await env.DB.prepare("UPDATE mailed_digests SET sent_at = '2000-01-01T00:00:00.000Z'").run();
 });
 
 afterAll(() => {
@@ -264,7 +274,7 @@ describe("GET /v0/links/:id", () => {
     expect(second).toBe(first);
     expect(first).toContain("Install the eval-harness behavior?");
     expect(first).toContain("<strong>Install</strong>");
-    expect(first).toContain(`<form method="post" action="/v0/links/${new URL(url).pathname.split("/").pop()!}">`);
+    expect(first).toContain(`<form method="post" action="${new URL(url).pathname}">`);
     expect(first).toContain(`name="s" value="${new URL(url).searchParams.get("s")!}"`);
     expect(first).toContain(">Confirm<");
     expect(await countRows(env.DB, "envelopes")).toBe(before.envelopes);
@@ -469,7 +479,7 @@ describe("POST /v0/links/:id", () => {
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ s: yes.searchParams.get("s")! }).toString(),
     });
-    const relay = { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) };
+    const relay = { ...relayExtras(), db, root: TEST_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) };
     const response = await confirmLink(relay, request, yes, yes.pathname.split("/").pop()!);
     expect(fired).toBe(true);
     expect(await response.text()).toContain("Already answered");

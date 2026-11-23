@@ -7,6 +7,7 @@ import { parseJsonc } from "../scripts/jsonc.ts";
 
 interface Environment {
   name: string;
+  keep_vars?: boolean;
   vars: Record<string, string>;
   routes?: { pattern: string; custom_domain?: boolean }[];
   secrets: { required: string[] };
@@ -14,7 +15,7 @@ interface Environment {
   durable_objects: { bindings: { name: string; class_name: string }[] };
   d1_databases: { binding: string; database_name: string; database_id: string; migrations_dir: string }[];
 }
-const config = parseJsonc(raw) as { env: Record<string, Environment> };
+const config = parseJsonc(raw) as { keep_vars?: boolean; env: Record<string, Environment> };
 const dinners = config.env["dinners"];
 const dinnersRoman = config.env["dinners-roman"];
 
@@ -23,6 +24,16 @@ describe("wrangler environments", () => {
     expect(Object.keys(config.env).sort()).toEqual(["dinners", "dinners-roman"]);
     expect(dinners).toBeDefined();
     expect(dinnersRoman).toBeDefined();
+  });
+
+  it("keeps the variables a deployment holds, HOME_ROOT above all, and moves each home circle into its store", () => {
+    expect(config.keep_vars).toBe(true);
+    for (const [name, e] of Object.entries(config.env)) {
+      expect(e.keep_vars, name).toBe(true);
+      // HOME_ROOT is the operator's, written by `digestif circle found --relay`, never a file's.
+      expect(e.vars["HOME_ROOT"], name).toBeUndefined();
+      expect(e.vars["MOVE_ROWS_PER_DAY"], name).toBeUndefined();
+    }
   });
 
   it("gives each its own D1 database named for it, id the placeholder or the one its first deploy wrote, with the migrations", () => {

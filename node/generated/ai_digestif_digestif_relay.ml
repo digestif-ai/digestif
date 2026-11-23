@@ -104,9 +104,17 @@ module Error_code = struct
     | Retract_not_author
     | Not_mailer
     | Unknown_digest
+    | Circle_unknown
+    | Circle_suspended
+    | Moving
+    | Not_vouched
+    | Not_hosting
+    | Relay_full
+    | Circle_full
+    | Too_many_circles
     | Undefined of string
 
-  let all = [ Malformed; Bad_signature; Not_admitted; Stale_request; Replayed_nonce; Sequence_regression; Fork; Too_large; Rate_limited; Wrong_circle; Retract_not_author; Not_mailer; Unknown_digest ]
+  let all = [ Malformed; Bad_signature; Not_admitted; Stale_request; Replayed_nonce; Sequence_regression; Fork; Too_large; Rate_limited; Wrong_circle; Retract_not_author; Not_mailer; Unknown_digest; Circle_unknown; Circle_suspended; Moving; Not_vouched; Not_hosting; Relay_full; Circle_full; Too_many_circles ]
 
   let to_string = function
     | Malformed -> "malformed"
@@ -122,6 +130,14 @@ module Error_code = struct
     | Retract_not_author -> "retract_not_author"
     | Not_mailer -> "not_mailer"
     | Unknown_digest -> "unknown_digest"
+    | Circle_unknown -> "circle_unknown"
+    | Circle_suspended -> "circle_suspended"
+    | Moving -> "moving"
+    | Not_vouched -> "not_vouched"
+    | Not_hosting -> "not_hosting"
+    | Relay_full -> "relay_full"
+    | Circle_full -> "circle_full"
+    | Too_many_circles -> "too_many_circles"
     | Undefined s -> s
 
   let of_string = function
@@ -138,6 +154,14 @@ module Error_code = struct
     | "retract_not_author" -> Stdlib.Ok Retract_not_author
     | "not_mailer" -> Stdlib.Ok Not_mailer
     | "unknown_digest" -> Stdlib.Ok Unknown_digest
+    | "circle_unknown" -> Stdlib.Ok Circle_unknown
+    | "circle_suspended" -> Stdlib.Ok Circle_suspended
+    | "moving" -> Stdlib.Ok Moving
+    | "not_vouched" -> Stdlib.Ok Not_vouched
+    | "not_hosting" -> Stdlib.Ok Not_hosting
+    | "relay_full" -> Stdlib.Ok Relay_full
+    | "circle_full" -> Stdlib.Ok Circle_full
+    | "too_many_circles" -> Stdlib.Ok Too_many_circles
     | s -> Stdlib.Error (Stdlib.Printf.sprintf "undefined error_code %S" s)
 
   let of_yojson : t decoder = function
@@ -410,6 +434,42 @@ module Relay_build = struct
       (Stdlib.List.concat
         [
         enc_optional_field "relay_version" enc_string t.relay_version;
+        ])
+end
+
+module Relay_info = struct
+  (* What anyone may read of a relay, unsigned (docs/protocol.md, Hosted circles). *)
+  type t = {
+    relay_version : string option;
+    mailer : bool;
+    encryption_key : string option;
+    hosting : bool;
+    home : string option;
+    last_unprefixed_at : Ptime.t option;
+  }
+
+  let of_yojson (j : Yojson.Safe.t) : (t, string) result =
+    let c = "relay_info" in
+    let* relay_version = optional c "relay_version" string j in
+    let* mailer = required c "mailer" bool j in
+    let* encryption_key = optional c "encryption_key" string j in
+    let* hosting = required c "hosting" bool j in
+    let* home = optional c "home" string j in
+    let* last_unprefixed_at = optional c "last_unprefixed_at" date_time_iso8601 j in
+    Stdlib.Ok { relay_version; mailer; encryption_key; hosting; home; last_unprefixed_at }
+
+  let make ?relay_version ~mailer ?encryption_key ~hosting ?home ?last_unprefixed_at () : t = { relay_version; mailer; encryption_key; hosting; home; last_unprefixed_at }
+
+  let to_yojson (t : t) : Yojson.Safe.t =
+    `Assoc
+      (Stdlib.List.concat
+        [
+        enc_optional_field "relay_version" enc_string t.relay_version;
+        [ ("mailer", enc_bool t.mailer) ];
+        enc_optional_field "encryption_key" enc_string t.encryption_key;
+        [ ("hosting", enc_bool t.hosting) ];
+        enc_optional_field "home" enc_string t.home;
+        enc_optional_field "last_unprefixed_at" enc_date_time t.last_unprefixed_at;
         ])
 end
 
@@ -772,6 +832,7 @@ module Stored_envelope = struct
     envelope : Envelope.t;
     body : Yojson.Safe.t option;
     received_at : Ptime.t;
+    circle : string option;
   }
 
   let of_yojson (j : Yojson.Safe.t) : (t, string) result =
@@ -781,9 +842,10 @@ module Stored_envelope = struct
     let* envelope = required c "envelope" Envelope.of_yojson j in
     let* body = optional c "body" json j in
     let* received_at = required c "received_at" date_time_iso8601 j in
-    Stdlib.Ok { relay_id; hash; envelope; body; received_at }
+    let* circle = optional c "circle" string j in
+    Stdlib.Ok { relay_id; hash; envelope; body; received_at; circle }
 
-  let make ~relay_id ~hash ~envelope ?body ~received_at () : t = { relay_id; hash; envelope; body; received_at }
+  let make ~relay_id ~hash ~envelope ?body ~received_at ?circle () : t = { relay_id; hash; envelope; body; received_at; circle }
 
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
@@ -794,6 +856,7 @@ module Stored_envelope = struct
         [ ("envelope", Envelope.to_yojson t.envelope) ];
         enc_optional_field "body" enc_json t.body;
         [ ("received_at", enc_date_time t.received_at) ];
+        enc_optional_field "circle" enc_string t.circle;
         ])
 end
 

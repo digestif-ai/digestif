@@ -433,7 +433,10 @@ let upload_assets env (r : Operate.record) ~token ~root ~scratch =
               "Cloudflare took every bucket and named no completion token"))
 
 (* The binding kinds every upload keeps from the version serving now: the deployment's vars,
-   secrets and database are set once in the operator's account and never in a bundle. *)
+   secrets and database are set once in the operator's account and never in a bundle. HOME_ROOT,
+   the relay's home circle, is one of those vars: `digestif circle found --relay` writes it, and
+   every release carries it forward from the version it replaces, since the metadata names no
+   plain_text binding of its own. *)
 let keep_bindings =
   [
     "plain_text";

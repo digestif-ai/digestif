@@ -33,6 +33,9 @@ export default defineConfig(async () => {
     ],
     test: {
       include: ["test/**/*.test.ts", "spike/**/*.test.ts"],
+      // The move copies the home circle from the relay's D1 into its store; here the D1 binding is
+      // that very store, so there is nothing apart to move from.
+      exclude: ["test/move.test.ts"],
       setupFiles: ["./spike/apply-migrations.ts"],
       testTimeout: 120_000,
     },
