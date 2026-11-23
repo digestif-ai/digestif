@@ -284,15 +284,24 @@ let check_token cloudflare (s : setup) =
   in
   cf (Cloudflare.serving_version cloudflare ~token ~account_id ~worker:s.worker)
 
+(* The home circle's address on the relay at [url], <url>/c/<root hex>: every read the operator's
+   node makes of its relay goes there, never to the unprefixed routes, whose use holds back the
+   relay release that drops them (docs/protocol.md, Hosted circles). *)
+let home_address (n : Node.t) ~url =
+  match Node.root n with
+  | Some root -> Ok (Relay_client.circle_address url ~root)
+  | None -> Error "this node holds no circle root"
+
 (* The relay release a relay reports: GET /v0/relay, unsigned (docs/protocol.md, Hosted circles), and,
    from a Worker built before relays hosted many circles, which has no such route, the signed
-   GET /v0/circle. None from a Worker built before relay releases. *)
+   GET /v0/circle at the home circle's address. None from a Worker built before relay releases. *)
 let reported_version transport (n : Node.t) ~url =
   match Relay_client.relay_info transport ~base:url with
   | Ok i -> Ok i.relay_version
   | Error _ -> (
       let* key = Node.device_key n in
-      match Relay_client.circle transport ~base:url ~key with
+      let* address = home_address n ~url in
+      match Relay_client.circle transport ~base:address ~key with
       | Error e ->
           Error
             ("the relay at " ^ url ^ " did not answer: "
@@ -357,9 +366,9 @@ let homeless ?(transport = Relay_client.curl) ~url () =
   | Ok { home = Some h; _ } ->
       Error
         (Printf.sprintf
-           "home_set: the relay at %s already has its home circle %s, and \
-            a             relay has exactly one; found from your circle there \
-            without             --relay, which vouches for the new one"
+           "home_set: the relay at %s already has its home circle %s, and a \
+            relay has exactly one; found from your circle there without \
+            --relay, which vouches for the new one"
            url (Relay_url.short_root h))
   | Ok i -> Ok i
 
@@ -380,8 +389,8 @@ let write_home ?(cloudflare = Cloudflare.curl) ?(form = Cloudflare.form_curl)
         if Unix.gettimeofday () > deadline then
           Error
             (Printf.sprintf
-               "the relay at %s did not report %s as its home within \
-                %.0f                 seconds (%s)"
+               "the relay at %s did not report %s as its home within %.0f \
+                seconds (%s)"
                url
                (match root with
                | Some r -> Relay_url.short_root r
@@ -685,7 +694,11 @@ let resolve_root (circles : hosted list) prefix =
   let p = String.lowercase_ascii (Relay_url.root_hex (String.trim prefix)) in
   if String.length p < 8 then
     Error "name the circle by its root: at least its first 8 hex digits"
-  else if not (String.for_all (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) p)
+  else if
+    not
+      (String.for_all
+         (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
+         p)
   then Error (prefix ^ " is not a root's hex digits")
   else
     match
@@ -704,8 +717,7 @@ let resolve_root (circles : hosted list) prefix =
 
 (* Suspend ([to_ = "suspended"]) or resume ([to_ = "open"]) the circle [prefix] names: every route
    under its address answers 410 circle_suspended while it is suspended. Its log is untouched. *)
-let set_circle_state ?(cloudflare = Cloudflare.curl) (n : Node.t) ~prefix ~to_
-    =
+let set_circle_state ?(cloudflare = Cloudflare.curl) (n : Node.t) ~prefix ~to_ =
   let* r, token = operated_setup n in
   let* circles = hosted_circles ~cloudflare n in
   let* h = resolve_root circles prefix in
@@ -718,8 +730,8 @@ let set_circle_state ?(cloudflare = Cloudflare.curl) (n : Node.t) ~prefix ~to_
         (Cloudflare.d1_query cloudflare ~token ~account_id:r.account_id
            ~database_id:r.database_id
            (Printf.sprintf
-              "UPDATE hosted_circles SET state = '%s', state_changed_at = \
-               '%s' WHERE root = 'sha256:%s'"
+              "UPDATE hosted_circles SET state = '%s', state_changed_at = '%s' \
+               WHERE root = 'sha256:%s'"
               to_ (Time_fmt.now ()) root_hex))
     in
     Ok (Printf.sprintf "%s\t%s" (Relay_url.short_root h.root) to_)

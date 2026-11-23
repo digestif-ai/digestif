@@ -61,6 +61,18 @@ let curl : transport =
   | Ok { code; stderr; _ } ->
       Error (Printf.sprintf "curl exited %d: %s" code (String.trim stderr))
 
+(* A circle's address on a relay (docs/protocol.md, Hosted circles): the relay's base url, then
+   /c/ and the 64 hex digits of the circle's root hash. Every circle route lives under it, and an
+   unprefixed route is the home circle's legacy address, which the relay counts as still in use.
+   Relay_url holds the arithmetic; these are the names the deploy pass reads them by. *)
+
+(* The relay's base url: [url] without a trailing slash or a circle's address at its end. *)
+let relay_base = Relay_url.base_of
+
+(* The address of the circle whose root hash is [root] on the relay at [url]. A url that already
+   names a circle's address is taken from its base, so the answer never nests two. *)
+let circle_address url ~root = Relay_url.address ~base:url ~root
+
 type error =
   | Transport of string
   | Refused of int * (string * string) list
@@ -157,8 +169,8 @@ let append ?voucher transport ~base ~key (sg : Envelope.signed) =
     match voucher with Some v -> [ (Voucher.header, v) ] | None -> []
   in
   match
-    request transport ~base ~key ~meth:"POST" ~path:"/v0/envelopes" ~extra
-      ~body ()
+    request transport ~base ~key ~meth:"POST" ~path:"/v0/envelopes" ~extra ~body
+      ()
   with
   | Error e -> Error e
   | Ok { status = (200 | 201) as status; body } ->

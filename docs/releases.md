@@ -1162,8 +1162,8 @@ memory. Before it stores anything it:
   see the named Worker or can see a second one, and reads the database;
 - reads the Worker version serving now, the first rollback target;
 - reads the relay's `relay_version` on the unsigned `GET /v0/relay` (a Worker built before relays
-  hosted many circles answers it on a signed `GET /v0/circle`), so the record starts from what is
-  running.
+  hosted many circles answers it on a signed `GET /v0/circle` at the home circle's address,
+  `<url>/c/<root hex>`; protocol.md, Hosted circles), so the record starts from what is running.
 
 It then stores the token in the keystore as `relay-deploy-token` (service `digestif`, account
 `relay-deploy-token@<data dir>`) and the rest in `relay-deploy.json` in the data directory: url,
@@ -1208,8 +1208,9 @@ nothing is deployed. Otherwise:
    step when none is applied) with `old_tag` and `new_tag`; that upload serves at once. A Worker on a
    tag the bundle does not list refuses the release for good. A rollback cannot cross a migration,
    so a release that carries one changes nothing else (relay/README.md, Each circle's store).
-5. **Health check.** A signed `GET /v0/circle` answering 200 with the release's `relay_version` and
-   the circle's `root`, and `GET /app/` answering 200, within two minutes of awake time counted in
+5. **Health check.** A signed `GET /v0/circle` at the home circle's address, `<url>/c/<root hex>`,
+   answering 200 with the release's `relay_version` and the circle's `root`, and `GET /app/` on the
+   relay's base url answering 200, within two minutes of awake time counted in
    one-second steps as a trial is.
 6. **Kept, or rolled back.** A pass records the version, and the next digest says "Deployed relay
    0.3.0 to dinners.digestif.io." A failure deploys the rollback target at 100%, checks that the

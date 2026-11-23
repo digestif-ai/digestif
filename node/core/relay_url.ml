@@ -77,9 +77,9 @@ let strip_slash u =
 
 let is_hex64 s =
   String.length s = 64
-  && String.for_all (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) s
-
-let address ~base ~root = strip_slash base ^ "/c/" ^ root_hex root
+  && String.for_all
+       (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
+       s
 
 (* The base url and root an address names, or None for a url that names no circle (a base url, the
    address every node used before relays hosted many circles). *)
@@ -97,14 +97,17 @@ let split_address url =
 let base_of url =
   match split_address url with Some (b, _) -> b | None -> strip_slash url
 
+(* The address of the circle [root] on the relay at [base]; a [base] that already names a circle's
+   address is taken from its base url, so the answer never nests two. *)
+let address ~base ~root = base_of base ^ "/c/" ^ root_hex root
+
 (* The host a voucher names: the authority of the base url as the founding node addresses it,
    host and port, as a URL's host reads. *)
 let voucher_host url =
   let url = base_of url in
   let rest =
     match String.index_opt url ':' with
-    | Some i
-      when i + 3 <= String.length url && String.sub url i 3 = "://" ->
+    | Some i when i + 3 <= String.length url && String.sub url i 3 = "://" ->
         String.sub url (i + 3) (String.length url - i - 3)
     | _ -> url
   in

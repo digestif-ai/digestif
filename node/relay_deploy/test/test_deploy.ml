@@ -132,6 +132,8 @@ type world = {
   mutable scripts : int;  (** script uploads Cloudflare took *)
   mutable rollback_refused : bool;
       (** Cloudflare refuses a deployment of a version older than a migration *)
+  mutable circle_reads : string list;
+      (** the url of every GET /v0/circle the pass sent, newest first *)
 }
 
 let world () =
@@ -154,6 +156,7 @@ let world () =
     migration_tag = None;
     scripts = 0;
     rollback_refused = false;
+    circle_reads = [];
   }
 
 let answer result =
@@ -393,10 +396,22 @@ let form w : Cf.form_transport =
           answer (`Assoc [ ("id", `String "digestif-relay") ]))
       else Ok { Relay_client.status = 404; body = "{}" }
 
+(* The home circle's address on the fake relay: <url>/c/<root hex>. *)
+let address (n : Node.t) =
+  let root = Option.get (Node.root n) in
+  url ^ "/c/"
+  ^ String.sub root
+      (String.length Keys.sha256_prefix)
+      (String.length root - String.length Keys.sha256_prefix)
+
+(* The fake relay serves the home circle at its address only: an unprefixed GET /v0/circle has no
+   route, as on a relay that dropped the unprefixed routes (DES-271). *)
 let relay w (n : Node.t) : Relay_client.transport =
  fun ~meth:_ ~url:u ~headers:_ ~body:_ ->
+  if String.ends_with ~suffix:"/v0/circle" u then
+    w.circle_reads <- u :: w.circle_reads;
   if u = url ^ "/app/" then Ok { Relay_client.status = 200; body = "<html>" }
-  else if u = url ^ "/v0/circle" then
+  else if u = address n ^ "/v0/circle" then
     match List.assoc_opt w.serving w.served with
     | Some (Some v) ->
         Ok
@@ -832,6 +847,52 @@ let refuses_a_malformed_store_bundle () =
         (List.map fst b.migrations)
   | Error e -> Alcotest.fail e
 
+(* Every health check read goes to the home circle's address, <url>/c/<root hex>, never the
+   unprefixed routes a relay counts as last_unprefixed_at. *)
+let checks_the_home_circle_at_its_address () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  (match pass w n bytes m with
+  | [ D.Deployed _ ] -> ()
+  | os ->
+      Alcotest.failf "%s" (String.concat "; " (List.map D.outcome_to_string os)));
+  Alcotest.(check bool) "read the circle" true (w.circle_reads <> []);
+  List.iter
+    (fun u ->
+      let path =
+        String.sub u (String.length url) (String.length u - String.length url)
+      in
+      Alcotest.(check bool)
+        ("the health check's path starts with /c/: " ^ path)
+        true
+        (String.starts_with ~prefix:"/c/" path);
+      Alcotest.(check string)
+        "at the home circle's address"
+        (address n ^ "/v0/circle")
+        u)
+    w.circle_reads
+
+(* A relay url that already names a circle's address (a node's stored urls once rewritten) is
+   taken from its base: the address never nests a second /c/. *)
+let the_address_never_nests () =
+  let root = "sha256:" ^ String.make 64 'a' in
+  let address = url ^ "/c/" ^ String.make 64 'a' in
+  Alcotest.(check string)
+    "from the base" address
+    (Relay_client.circle_address url ~root);
+  Alcotest.(check string)
+    "from the address" address
+    (Relay_client.circle_address address ~root);
+  Alcotest.(check string)
+    "from the address with a slash" address
+    (Relay_client.circle_address (address ^ "/") ~root);
+  Alcotest.(check string)
+    "the base of an address" url
+    (Relay_client.relay_base address);
+  Alcotest.(check string)
+    "a path that is not an address is kept" (url ^ "/c/x")
+    (Relay_client.relay_base (url ^ "/c/x"))
+
 let () =
   Ci_alcotest.run "digestif-relay-deploy-pass"
     [
@@ -839,6 +900,10 @@ let () =
         [
           Alcotest.test_case "deploys and says so once" `Quick
             deploys_and_says_so_once;
+          Alcotest.test_case "checks the home circle at its address" `Quick
+            checks_the_home_circle_at_its_address;
+          Alcotest.test_case "the address never nests" `Quick
+            the_address_never_nests;
           Alcotest.test_case "uploads assets in several buckets" `Quick
             uploads_assets_in_several_buckets;
           Alcotest.test_case "resumes where the relay is" `Quick
