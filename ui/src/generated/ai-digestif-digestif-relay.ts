@@ -156,7 +156,7 @@ export interface ApprovalAnswer {
 }
 
 export interface Circle {
-  /** sha256:<hex> of the circle root this relay is configured with: its circle envelope, or the dinner that founded it. */
+  /** sha256:<hex> of the root of the circle at the address this GET /v0/circle was made to: its circle envelope, or the dinner that founded it. */
   root: string;
   /** The current epoch by this relay's fold. */
   epoch: number;

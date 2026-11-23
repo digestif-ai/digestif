@@ -110,16 +110,17 @@ them.
 }
 ```
 
-A `circle` is valid only as the circle root, and each relay is configured with the hash of its
-envelope; any other `circle` envelope names a circle this one is not, and is refused
-`wrong_circle`. Its `host` is admitted by the message itself. `circle.name` is the circle's name and
+A `circle` is valid only as the circle root, and the hash of its envelope is the circle's address on
+each relay that hosts it (Hosted circles); any other `circle` envelope names a circle this one is
+not, and is refused `wrong_circle`. Its `host` is admitted by the message itself. `circle.name` is the circle's name and
 is not blank. `guests` lists the circle's first guests exactly as a dinner does, admitted by their
 invite keys alone, and may be empty or absent: the founder invites everyone else later, with the
 admins' signed admission, in a dinner message. A circle root carries no date and no dinner.
 
 `admins` is the circle's own signer set, and every circle root names it: a non-empty list of
 `{ name, key }`, each key an ed25519 admin key, none twice. `digestif circle found` names the
-founder's (the `public_key` of their `signer.json`, or `--admin-key`). Those admins, and not the
+founder's: an admin key it makes for the circle and keeps in the keystore beside the circle's device
+key, or the one `--admin-key` names. Those admins, and not the
 release signers, sign every later invite's `digestif-admission-v0` and every change of their own set
 (Approvals), so the release signers never sign for, or learn who is in, a circle they are not in.
 Only a founding dinner is judged by the release signer set. The set may start from one key, its
@@ -140,8 +141,8 @@ admits nobody and its circle is founded again.
 ```
 
 A circle founded at a dinner has that **founding dinner** as its root instead of a `circle`: its
-`host` is admitted by the message itself, each relay is configured with the hash of its envelope,
-and it folds exactly as a circle root does, its label read as the circle's name. A relay has no
+`host` is admitted by the message itself, the hash of its envelope is the circle's address on each
+relay that hosts it, and it folds exactly as a circle root does, its label read as the circle's name. A relay has no
 root of its own. Any admitted member may write a later dinner, but after the circle's admission cutover a guest entry counts only
 when its `admission` is a `digestif-admission-v0` every key of the signer set signed (Approvals,
 below; The admission fold), so in practice the starting admin's node writes every dinner once the
