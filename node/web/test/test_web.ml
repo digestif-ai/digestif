@@ -11813,8 +11813,7 @@ let member_review () =
       Alcotest.(check string) "the item is about Dee" dee_id (s "about" i);
       Alcotest.(check bool)
         "its title says how long she has been silent" true
-        (String.starts_with ~prefix:"Dee Rao has sent no note in "
-           (s "title" i));
+        (String.starts_with ~prefix:"Dee Rao has sent no note in " (s "title" i));
       Alcotest.(check bool)
         "it shows the command that removes her" true
         (contains
@@ -15383,8 +15382,8 @@ let () =
           Alcotest.test_case "member review" `Quick (cleaned member_review);
           Alcotest.test_case "member review: the member's notice" `Quick
             member_review_notice;
-          Alcotest.test_case "member review: the removed member's notice"
-            `Quick member_review_removed_words;
+          Alcotest.test_case "member review: the removed member's notice" `Quick
+            member_review_removed_words;
           Alcotest.test_case "suggestion rounds" `Quick suggestion_rounds;
           Alcotest.test_case "a suggestion adopted" `Quick suggestion_flow;
           Alcotest.test_case "a suggestion with judges" `Quick suggestion_judges;
