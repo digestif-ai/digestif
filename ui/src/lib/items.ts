@@ -107,7 +107,8 @@ const SUBJECT: Record<ItemSubject, string> = {
   [ItemSubject.FolderAccess]: 'Notice',
   [ItemSubject.SkippedProjects]: 'Notice',
   [ItemSubject.InboxAgentFailed]: 'Notice',
-  [ItemSubject.SendInvite]: 'Notice'
+  [ItemSubject.SendInvite]: 'Notice',
+  [ItemSubject.Review]: 'Review'
 };
 
 /** "Question", "Intro", "Work": the subject's name when the item serves one, else its kind's. */

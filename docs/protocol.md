@@ -887,8 +887,9 @@ relay checks only the envelope, as it does an item, since it cannot read the pla
 An admin promoted after a Keep holds no copy of it, since it was sealed to the admins of the day.
 When a promotion takes effect (its `signer_set` folds), every admin's node, at its next upkeep,
 posts each Keep still in force (the newest honoured Keep per member, younger than three whole UTC
-days, with no note from the member since) as a new `keep` envelope sealed to the new admin and
-naming them in `to`, its plaintext unchanged. Copies from several nodes are one Keep by its id.
+days, with no note from the member since) as a new `keep` envelope sealed to the new admin and to
+the forwarding admin, naming both in `to`, its plaintext unchanged; the forwarding node reads its own
+copy, so it forwards each Keep to each admin once. Copies from several nodes are one Keep by its id.
 
 ## Encryption
 
