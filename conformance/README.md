@@ -85,13 +85,15 @@ Without `--node` it runs the reference node.
 The suite runs the command it is given with these arguments appended:
 
 ```
-sync --home <empty directory> --device-seed-file <file> --relay <url> [--relay <url>...]
+sync --home <empty directory> --device-seed-file <file> [--encryption-seed-file <file>] --relay <url> [--relay <url>...]
 ```
 
 The node starts from the empty home, signs its relay requests with the device key whose 32-byte
 Ed25519 seed is in the file (base64url, no padding, one line), reads every relay in the order given,
 prints one JSON object on stdout and exits 0. The device key is the test circle's host device, so it
-reads everything. The object:
+reads everything. With `--encryption-seed-file`, the node holds the X25519 key whose 32-byte secret is
+in that file (base64url, no padding, one line) as its own encryption key, and opens with it every
+sealed body sealed to it. The object:
 
 ```json
 {
@@ -102,7 +104,8 @@ reads everything. The object:
     { "kind": "fork", "author": "ed25519:...", "seq": 3, "hashes": [ "sha256:...", "sha256:..." ] },
     { "kind": "invalid_envelope", "author": "ed25519:...", "seq": 4, "hashes": [ "sha256:..." ] }
   ],
-  "gaps": [ { "author": "ed25519:...", "missing": [ 2 ] } ]
+  "gaps": [ { "author": "ed25519:...", "missing": [ 2 ] } ],
+  "keeps": [ "sha256:<Keep id>" ]
 }
 ```
 
@@ -113,10 +116,14 @@ reads everything. The object:
   every envelope a relay served whose signature or `body_hash` does not verify (`invalid_envelope`,
   its one hash, at the `author` and `seq` it claims), once however many relays served it. An invalid
   envelope is never folded and never in `feed`.
+- `keeps` names the id (`sha256(JCS(plaintext))`) of every Keep the node honours (docs/protocol.md,
+  Member review), once however many copies it opened: every `keep` sealed to its encryption key whose
+  signature verifies, by an admitted device of an identity other than the member kept that a key of
+  the signer set the fold held at the Keep's `created_at` is bound to. Empty without an encryption key.
 - `gaps` names, per device key, the `seq` numbers below its highest that no relay served. Mail keys
   are chainless and never have gaps.
 
-`keys`, `faults` and `gaps` may come in any order; the suite sorts them. `feed` order is checked.
+`keys`, `faults`, `gaps` and `keeps` may come in any order; the suite sorts them. `feed` order is checked.
 
 ## Self-test
 
@@ -142,7 +149,7 @@ something; a new case lands with the break that fails it.
 | `seq` regression | `relay.seq.chained-regression-refused`, `relay.seq.mail-regression-allowed` | `node.seq.mail-gaps-allowed` |
 | Revocation | `relay.revocation.device-refused`, `relay.revocation.identity-refused`, `relay.revocation.cutoff-required` | `node.revocation.ignored-from-revoke-forward`, `node.revocation.mail-read-by-listed-hashes` |
 | Admin revoke | `relay.revocation.admin-revokes-member`, `relay.revocation.admin-may-not-revoke-admin` | `node.revocation.admin-revokes-member`, `node.revocation.admin-may-not-revoke-admin` |
-| Keep | `relay.keep.served-to-readers` | |
+| Keep | `relay.keep.served-to-readers` | `node.keep.admins-only` |
 | Clock drift | `relay.clock.skew-inside-window`, `relay.clock.skew-outside-window`, `relay.clock.replayed-nonce` | |
 | Bootstrap | `relay.circle.root`, `relay.bootstrap.valid-join`, `relay.bootstrap.unknown-invite-refused`, `relay.bootstrap.spent-invite-refused`, `relay.bootstrap.expired-invite-refused` | `node.bootstrap.bad-joins-not-admitted` |
 | Pushed join | `relay.bootstrap.pushed-late-join-accepted`, `relay.bootstrap.pushed-join-after-expiry-refused`, `relay.bootstrap.pushed-join-revoked-pusher-refused` | `node.bootstrap.join-replicated-after-expiry` |
