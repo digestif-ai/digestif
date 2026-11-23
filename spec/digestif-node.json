@@ -1220,7 +1220,7 @@
           "description": "The newest review outcome: the newest honoured Keep, or the revoke another identity signed. Only to an admin or the member themselves."
         }
       ],
-      "description": "A row of Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note first within each. A revoked identity is not a row."
+      "description": "A row of Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note first within each, then every revoked identity, whose status reads revoked."
     },
     "device": {
       "fields": [
@@ -4030,7 +4030,7 @@
       "operations": [
         {
           "method": "GET",
-          "description": "Every member, by last posted, newest first, one page at a time.",
+          "description": "Every member, in the order member_summary names, revoked identities last, one page at a time.",
           "responses": {
             "200": {
               "type": "[member_summary]"

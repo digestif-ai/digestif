@@ -1062,7 +1062,7 @@ export interface MemberReview {
 }
 
 /**
- * A row of Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note first within each. A revoked identity is not a row.
+ * A row of Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note first within each, then every revoked identity, whose status reads revoked.
  */
 export interface MemberSummary {
   identity: string;

@@ -10,7 +10,7 @@
   import FeedRow from '#lib/components/FeedRow.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { clockTime, memberStage, relativeTime, shortKey } from '#lib/format.ts';
+  import { clockTime, memberRowStage, relativeTime, shortKey } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { trash } from '#lib/icons.ts';
   import { admins, IN_REVIEW, removeCommand, reviewLine } from '#lib/review.ts';
@@ -103,9 +103,7 @@
     <dt class="dg-muted">Stage</dt>
     <dd>
       <span class="inline-flex flex-wrap gap-1">
-        <StatusBadge
-          status={member.status === 'revoked' ? { label: 'Revoked', tone: 'bad' } : memberStage(member.stage)}
-        />{#if member.in_review_since}<StatusBadge status={IN_REVIEW} />{/if}
+        <StatusBadge status={memberRowStage(member)} />{#if member.in_review_since}<StatusBadge status={IN_REVIEW} />{/if}
       </span>
     </dd>
     {#if member.review}

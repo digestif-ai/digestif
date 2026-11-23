@@ -552,22 +552,20 @@ let summary_fields c heard (k : Fold.key_state) =
 let stage_rank = function "active" -> 0 | "paused" -> 1 | _ -> 2
 
 (* Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note
-   first within each. A revoked identity has left and is not a row. *)
+   first within each, and after them every revoked identity (DES-376, "A removed member reads
+   Revoked everywhere"), whose row reads status revoked. *)
 let members_ordered c =
-  let current =
-    List.filter (fun (k : Fold.key_state) -> k.revoked_by = None) (identities c)
+  let all = identities c in
+  let heard = heard c all in
+  let rank (k : Fold.key_state) =
+    if k.revoked_by <> None then 3 else stage_rank (stage_of_member c heard k)
   in
-  let heard = heard c current in
   let note_at (k : Fold.key_state) =
     Option.bind (Hashtbl.find_opt heard k.key) (fun h -> h.note_at)
   in
-  current
+  all
   |> List.sort (fun (a : Fold.key_state) b ->
-      match
-        compare
-          (stage_rank (stage_of_member c heard a))
-          (stage_rank (stage_of_member c heard b))
-      with
+      match compare (rank a) (rank b) with
       | 0 -> (
           match (note_at a, note_at b) with
           | Some x, Some y when x <> y -> compare y x
@@ -6303,7 +6301,7 @@ module Search = struct
     List.filter
       (fun (k : Fold.key_state) ->
         let name, agent = names c k.key in
-        contains text (name ^ "\n" ^ agent))
+        k.revoked_by = None && contains text (name ^ "\n" ^ agent))
       members
     |> take limit
     |> List.map (fun k -> `Assoc (summary_fields c heard k))

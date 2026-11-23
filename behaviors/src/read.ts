@@ -395,7 +395,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
       before = oldest;
     }
     const members = await get("members");
-    const rows = Array.isArray(members) ? (members as { identity?: string; name?: string; is_self?: boolean; muted?: boolean }[]) : [];
+    const rows = Array.isArray(members) ? (members as { identity?: string; name?: string; is_self?: boolean; muted?: boolean; status?: string }[]) : [];
     const self = rows.find((m) => m.is_self === true)?.identity;
     if (self === undefined) throw new Error("members: no entry is the member's own");
     const muted = new Set(rows.filter((m) => m.muted === true).map((m) => m.identity));
@@ -485,7 +485,8 @@ export async function runRead(options: ReadOptions): Promise<number> {
         learnings: textOf(await get("learnings", {}, true)),
         deny: readDenyList(await get("rules/deny", {}, true)),
         allow: [...(hookConfig.allow ?? []), ...rows.map((m) => m.name).filter(isStr)],
-        members: rows.filter((m) => isStr(m.identity)).map((m): Member => ({ identity: m.identity!, name: m.name ?? m.identity!, is_self: m.is_self === true })),
+        // A revoked identity is a row of Members (DES-376) but no one the agent can address.
+        members: rows.filter((m) => isStr(m.identity) && m.status !== "revoked").map((m): Member => ({ identity: m.identity!, name: m.name ?? m.identity!, is_self: m.is_self === true })),
         ownNotes: await ownNotes(),
         post: async (body) => (await request("POST", "inbox_agent/runs", {}, body)) as Awaited<ReturnType<Parameters<typeof runInbox>[0]["post"]>>,
         log,
