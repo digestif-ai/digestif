@@ -1488,7 +1488,150 @@ let self_test =
                 (Option.value (Node.root n) ~default:"-")))
       $ data_dir $ expect)
 
-(* The service's process (Supervisor): the last healthy release's binary, running the current one. *)
+(* The circle folders the machine's service runs beside the standard node (Circle_nodes): every
+   node under the parent, a link's target included, that holds a log. A parent check_parent refuses
+   is said once and its nodes still run: Circles.entries lists only nodes, and a folder only once a
+   log is in it. DIG-347 *)
+let circle_dirs ~machine () =
+  Circles.entries ()
+  |> List.map (fun (e : Circles.entry) -> e.dir)
+  |> List.filter (fun d -> Sys.file_exists (Node.log_path d))
+  |> U.Circle_nodes.folders ~machine
+
+let circle_folders ~said ~machine () =
+  (match Circles.check_parent () with
+  | Ok _ -> said := None
+  | Error e ->
+      if !said <> Some e then
+        Printf.printf "%s supervise: %s\n%!" (Time_fmt.now ()) e;
+      said := Some e);
+  circle_dirs ~machine ()
+
+(* Whether the machine's one service runs the node at [d]: a circle folder under the parent other
+   than the standard node. Its service is the machine's, never one of its own. *)
+let machine_runs d =
+  let machine = Node.standard_dir () in
+  (not (Node.is_standard d))
+  && List.exists
+       (fun f -> Node.canonical_dir f = Node.canonical_dir d)
+       (circle_dirs ~machine ())
+
+(* Retire every per-node service DIG-264 installed for [dir], then point it at the machine's
+   release (Layout.share). *)
+let prepare_circle_folder ~machine ~dir ~release =
+  let c = Node.canonical_dir dir in
+  let rec retire = function
+    | [] -> Ok ()
+    | (u : Service.unit_file) :: rest -> (
+        if Option.map Node.canonical_dir u.data_dir <> Some c then retire rest
+        else
+          match Service.retire u with
+          | Ok () ->
+              Printf.printf "%s supervise: %s: retired its own service %s\n%!"
+                (Time_fmt.now ()) dir u.name;
+              retire rest
+          | Error e ->
+              Error
+                (Printf.sprintf "its own service %s was not retired: %s" u.name
+                   e))
+  in
+  match retire (Service.per_node_units ()) with
+  | Error e -> Error e
+  | Ok () -> (
+      let exe = U.Layout.binary_in (U.Layout.release_dir machine release) in
+      if not (Sys.file_exists exe) then Error (exe ^ " does not exist")
+      else
+        match U.Layout.share ~machine dir ~release with
+        | () -> Ok ()
+        | exception Unix.Unix_error (e, f, a) ->
+            Error (Printf.sprintf "%s %s: %s" f a (Unix.error_message e))
+        | exception Sys_error e -> Error e)
+
+(* A circle folder's node: the machine's release, never updating itself, its output appended to
+   the folder's own digestif.log as a service of its own wrote it. *)
+let spawn_circle_node ~machine ~dir ~release =
+  let exe = U.Layout.binary_in (U.Layout.release_dir machine release) in
+  match
+    Unix.openfile
+      (Filename.concat dir "digestif.log")
+      [ Unix.O_WRONLY; Unix.O_APPEND; Unix.O_CREAT; Unix.O_CLOEXEC ]
+      0o600
+  with
+  | exception Unix.Unix_error (e, _, _) -> Error (Unix.error_message e)
+  | log ->
+      Fun.protect
+        ~finally:(fun () -> Unix.close log)
+        (fun () ->
+          match
+            Unix.create_process exe
+              [| exe; "run"; "--data-dir"; dir; "--no-self-update" |]
+              Unix.stdin log log
+          with
+          | pid -> Ok pid
+          | exception Unix.Unix_error (e, _, _) ->
+              Error (exe ^ ": " ^ Unix.error_message e))
+
+(* The circle folder whose node the supervisor's own child runs in the machine's place, chosen at
+   each start of that child (Circle_nodes.stand_in) and prepared as every circle folder is: none
+   while the standard place holds a node. A folder that cannot be prepared is passed over for the
+   next; when none can be, the child runs the standard place, as before the circle folders, and
+   says why. [stand_in] holds the choice, which the circle folders leave out. DIG-351 *)
+let choose_stand_in ~machine ~stand_in () =
+  let holds = Sys.file_exists (Node.log_path machine) in
+  let rec pick previous = function
+    | [] -> None
+    | folders -> (
+        match
+          U.Circle_nodes.stand_in ~machine_holds_node:holds ~previous folders
+        with
+        | None -> None
+        | Some d -> (
+            let prepared =
+              match U.Layout.good machine with
+              | None -> Error "the machine has no good release"
+              | Some release -> prepare_circle_folder ~machine ~dir:d ~release
+            in
+            match prepared with
+            | Ok () -> Some d
+            | Error e ->
+                Printf.printf
+                  "%s supervise: %s cannot run in the machine's place: %s\n%!"
+                  (Time_fmt.now ()) d e;
+                pick None (List.filter (( <> ) d) folders)))
+  in
+  let chosen = pick !stand_in (circle_dirs ~machine ()) in
+  if chosen <> !stand_in then
+    Printf.printf "%s supervise: %s\n%!" (Time_fmt.now ())
+      (match chosen with
+      | Some d ->
+          Printf.sprintf
+            "the standard place holds no node, so its release is judged by the \
+             node of %s, run in its place"
+            d
+      | None -> "the node at the standard place runs");
+  stand_in := chosen;
+  chosen
+
+let circle_node_ops ~machine ~stand_in (base : U.Supervisor.ops) :
+    U.Circle_nodes.ops =
+  let said = ref None in
+  {
+    folders =
+      (fun () ->
+        List.filter
+          (fun d -> Some d <> !stand_in)
+          (circle_folders ~said ~machine ()));
+    release = (fun () -> U.Layout.good machine);
+    prepare = prepare_circle_folder ~machine;
+    spawn = spawn_circle_node ~machine;
+    poll = base.poll;
+    terminate = base.terminate;
+    now = Unix.gettimeofday;
+    log = (fun l -> Printf.printf "%s supervise: %s\n%!" (Time_fmt.now ()) l);
+  }
+
+(* The service's process (Supervisor): the last healthy release's binary, running the current one,
+   and under the machine's service every circle folder's node beside it (Circle_nodes). *)
 let supervise =
   cmd "supervise"
     "Run `current/bin/digestif run` and keep a switch only once the new \
@@ -1527,11 +1670,36 @@ let supervise =
                 Printf.printf "%s supervise: %s kept crashing; stays: %s\n%!"
                   (Time_fmt.now ()) (U.Version.to_string v) why
           in
-          match
-            U.Supervisor.run ~on_trial ~on_crash
-              (U.Supervisor.real_ops ~dir)
-              dir
-          with
+          let runs_circles = Node.is_standard dir in
+          let stand_in = ref None in
+          let node () =
+            if runs_circles then choose_stand_in ~machine:dir ~stand_in ()
+            else None
+          in
+          let ops = U.Supervisor.real_ops ~runs_circles ~node ~dir () in
+          let circles = ref U.Circle_nodes.empty in
+          let cops = circle_node_ops ~machine:dir ~stand_in ops in
+          (* The supervisor looks at its child once a second; the circle folders' nodes are looked
+             at on the same beat. *)
+          let ops =
+            if not runs_circles then ops
+            else
+              {
+                ops with
+                sleep =
+                  (fun s ->
+                    (circles :=
+                       try U.Circle_nodes.tick cops !circles
+                       with e ->
+                         Printf.printf "%s supervise: circle folders: %s\n%!"
+                           (Time_fmt.now ()) (Printexc.to_string e);
+                         !circles);
+                    ops.sleep s);
+              }
+          in
+          let status = U.Supervisor.run ~on_trial ~on_crash ops dir in
+          U.Circle_nodes.stop cops !circles;
+          match status with
           | U.Supervisor.Exited n -> exit n
           | Signaled _ -> exit 1)
       $ data_dir)
@@ -2259,14 +2427,51 @@ let report_finished =
       Printf.printf "%s behavior %s\t%s after %.0fs\n" (Time_fmt.now ())
         (B.hook_name f.f_hook) f.status f.seconds)
 
-(* The service runs the supervisor from the last healthy release (docs/releases.md). *)
+(* The node whose service runs [dir]'s node: the standard node for a circle folder, whose service
+   is the machine's (DIG-347), else the node itself. *)
+let service_dir dir =
+  let d = node_dir dir in
+  if machine_runs d then Node.standard_dir () else d
+
+(* The service runs the supervisor from the last healthy release (docs/releases.md). The machine's
+   service carries the DIGESTIF_CIRCLES of the shell that installed it, so its supervisor runs the
+   circle folders that shell names. *)
 let service_plan dir =
-  let dir = node_dir dir in
+  let dir = service_dir dir in
+  let env =
+    match Sys.getenv_opt "DIGESTIF_CIRCLES" with
+    | Some c when c <> "" && Node.is_standard dir -> [ ("DIGESTIF_CIRCLES", c) ]
+    | _ -> []
+  in
   Service.plan
     ~exe:(U.Layout.binary_in (U.Layout.good_link dir))
-    ~command:[ "supervise" ] ~dir
+    ~command:[ "supervise" ] ~env ~dir
     ~path:(Option.value (Sys.getenv_opt "PATH") ~default:"/usr/bin:/bin")
     ()
+
+(* A standard node the machine's service runs under a supervisor from before the circle folders
+   (Supervisor.runs_circles_var unset) exits once its own release is good and a circle folder is
+   waiting for that supervisor to run it: the service manager then starts the supervisor from good,
+   which runs them. The exit is clean, so it counts against no release. DIG-347 *)
+let hands_over_to_newer_supervisor d =
+  let under_machine_service () =
+    if Keystore.is_macos () then
+      Sys.getenv_opt "XPC_SERVICE_NAME" = Some Service.label
+    else
+      match
+        In_channel.with_open_bin
+          (Printf.sprintf "/proc/%d/cmdline" (Unix.getppid ()))
+          In_channel.input_all
+      with
+      | cmdline -> List.mem "supervise" (String.split_on_char '\000' cmdline)
+      | exception Sys_error _ -> false
+  in
+  let real p = try Unix.realpath p with Unix.Unix_error _ -> p in
+  Node.is_standard d
+  && Sys.getenv_opt U.Supervisor.runs_circles_var = None
+  && under_machine_service ()
+  && real (exe ()) = real (U.Layout.binary_in (U.Layout.good_link d))
+  && circle_dirs ~machine:d () <> []
 
 (* A node launchd started brings its installed plist up to this release's (Service.refresh). Only
    then: launchd names the job in XPC_SERVICE_NAME, and the PATH this process holds is the one the
@@ -2316,7 +2521,21 @@ let run =
              that stops part way names the last thing it did. ISS-79885 *)
           Out_channel.set_buffered stdout false;
           Out_channel.set_buffered stderr false;
-          refresh_service dir;
+          (* Where this node's releases, trial, health report and update state live: its own
+             directory, unless its supervisor runs it in the machine's place (Supervisor.node_var),
+             when they are the machine's and its store, keys and UI port are the circle folder's.
+             DIG-351 *)
+          let machine = node_dir dir in
+          let dir =
+            match Sys.getenv_opt U.Supervisor.node_var with
+            | Some d when d <> "" ->
+                Printf.printf
+                  "%s run: the node of %s, in the machine's place at %s\n%!"
+                  (Time_fmt.now ()) d machine;
+                Some d
+            | _ -> dir
+          in
+          refresh_service (Some machine);
           let stop = stop_on_signals () in
           let sync_wanted = Atomic.make false in
           let server =
@@ -2406,8 +2625,7 @@ let run =
             (* An automatic update runs this release under the supervisor that was already
                running, so the links are kept here too: the first pass after good moves to a
                release carrying digestif-update makes its link (Cli_links). *)
-            U.Cli_links.link_default ~last:cli_links_failure ~dir:(node_dir dir)
-              ();
+            U.Cli_links.link_default ~last:cli_links_failure ~dir:machine ();
             let stored = ref 0 in
             let sync n =
               let r = watch_joins n in
@@ -2514,7 +2732,7 @@ let run =
           let updates =
             U.Schedule.config ~base
               ~circle:(fun () -> !circle_recalls)
-              ~dir:(node_dir dir) ()
+              ~dir:machine ()
           in
           (* A switch ends the process: the supervisor runs the new release on trial. *)
           let self_update ~woke =
@@ -2532,7 +2750,7 @@ let run =
                   (* Self-update reports through the problem record: what the updater's own
                      status says is wrong is the job's problem until a check finds nothing. *)
                   (let module P = Digestif_web.Store.Problems in
-                   match U.Status.problems ~dir:(node_dir dir) with
+                   match U.Status.problems ~dir:machine with
                    | [] -> P.resolve bnode.log ~job:"self_update" ()
                    | lines ->
                        ignore
@@ -2561,7 +2779,15 @@ let run =
             if B.busy behaviors then wake_owed := woke
             else begin
               wake_owed := false;
-              self_update ~woke
+              self_update ~woke;
+              if hands_over_to_newer_supervisor machine then begin
+                Printf.printf
+                  "%s supervise: the service's supervisor predates the circle \
+                   folders; exiting so the service starts this release's, \
+                   which runs them\n"
+                  (Time_fmt.now ());
+                exit 0
+              end
             end
           in
           (* The release has started: its store is open and initialized, its UI serves and its
@@ -2569,7 +2795,7 @@ let run =
              the first pass, whose length grows with the node's history and the network's mood and
              says nothing about whether the release runs; a pass that fails is the pass's problem
              (guarded) and never ends the process. DIG-223 *)
-          U.Health.write (node_dir dir)
+          U.Health.write machine
             {
               version = U.Version.to_string (U.Trust_root.version ());
               pid = Unix.getpid ();
@@ -2925,9 +3151,10 @@ let service_print =
           Printf.printf "# %s\n%s" p.path p.contents)
       $ data_dir)
 
-(* Make this binary the node's release and install and start the per-user service. *)
+(* Make this binary the node's release and install and start the per-user service. A circle
+   folder's node is run by the machine's service, so for one of those it is the machine's. *)
 let install_service dir behaviors =
-  let name = adopt (node_dir dir) behaviors in
+  let name = adopt (service_dir dir) behaviors in
   let p = service_plan dir in
   Result.map (fun () -> (name, p.path)) (Service.install p)
 
@@ -2949,13 +3176,26 @@ let service_install =
           | _ -> ());
           let name, path = ok_or_die (install_service dir behaviors) in
           Printf.printf "release %s\n" name;
+          if machine_runs (node_dir dir) then
+            print_endline
+              "the machine's service runs this circle's node beside every \
+               other circle folder";
           print_endline path)
       $ data_dir $ behaviors_arg)
 
 let service_uninstall =
   cmd "uninstall" "Stop and remove the per-user service."
     Term.(
-      const (fun dir -> ok_or_die (Service.uninstall (service_plan dir)))
+      const (fun dir ->
+          let d = node_dir dir in
+          if machine_runs d then
+            die
+              "the machine's one service runs every circle folder's node, this \
+               one included: digestif service uninstall, with no --circle or \
+               --data-dir, stops them all, and removing its entry from %s \
+               stops this one"
+              (Circles.parent ());
+          ok_or_die (Service.uninstall (service_plan dir)))
       $ data_dir)
 
 (* setup in the terminal: digestif join and digestif setup (docs/design.md, Install) *)

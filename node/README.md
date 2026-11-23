@@ -116,7 +116,8 @@ so it never lands in an argv or a shell history.
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
     digestif update check|apply|pin|unpin    what a self-update would install, stage and switch now, pin a version
     digestif supervise                       what the service runs: current/bin/digestif run, rolled back
-                                             to good when a new release does not report healthy
+                                             to good when a new release does not report healthy, and
+                                             under the machine's service every circle folder's node
     digestif self-test --expect-version <v>  a release's check before a switch: version, store, config
     digestif service print|install|uninstall  the launchd agent or systemd user unit, with this shell's
                                              PATH; install makes this binary (and --behaviors <dir>)
@@ -132,13 +133,33 @@ clone of this repository at `~/digestif`, is refused with the way out (docs/desi
 
 The node at that standard place (`DIGESTIF_HOME` aside) is the machine's first: its service is
 `com.digestif.node` (launchd) or `digestif.service` (systemd), its UI answers on 7420, and the
-commands on PATH run its release. A node in any other data directory, such as a second circle's,
-gets names derived from that directory: `com.digestif.node.<slug>` or `digestif-<slug>.service`,
-where the slug is the directory's base name and eight hex digits of its path, and a UI port in
-7421-7999. `digestif --data-dir <dir> service install` installs it beside the first, and
-`digestif --data-dir <dir> open` opens it. Its updates move its own releases and never the commands
+commands on PATH run its release. That service is the machine's only one for its circles: its
+supervisor runs the first node and, beside it, `digestif run --no-self-update` for every circle
+folder under the parent (a link's target included, once a log is in it), starts one for a folder
+that appears within a second, stops one whose folder goes, and starts one that exits again after a
+pause that doubles while it keeps exiting (`node/update/lib/circle_nodes.ml`). Each folder's node
+writes its output to its own `digestif.log` and answers on the UI port its directory derives, in
+7421-7999, so a saved link keeps opening. Every folder's `releases` is a link to the first node's,
+and its `current` and `good` name the release the first node's `good` names: a folder's node moves
+to a release once the first node has kept it. `digestif --circle <id> service install` installs
+the machine's service, and `digestif --circle <id> service uninstall` is refused, since it would
+stop every circle. A service installed with `$DIGESTIF_CIRCLES` set carries it. On a machine whose only
+nodes are circle folders the standard place holds the machine's releases and no node: the
+supervisor runs the first circle folder's node as its own child in that place (named to it by
+`DIGESTIF_NODE_DIR`), with that folder's store, keys and UI port and the standard place's
+releases, trial, health report and update state, so each release is kept or rolled back by that
+node, and nothing answers on 7420.
+
+Before a folder's node first runs under the machine's service, every `com.digestif.node.<slug>` or
+`digestif-<slug>.service` whose own `--data-dir` names that folder is unloaded and its file removed,
+and the folder's own releases are removed. A node in a data directory outside the parent keeps a
+service of its own, named from that directory (the slug is the directory's base name and eight hex
+digits of its path), installed with `digestif --data-dir <dir> service install`, until `digestif
+circle link` brings it under the parent; its updates move its own releases and never the commands
 on PATH. A service a second node installed under the fixed names, before they were derived, is
-retired by its next `service install`.
+retired by its next `service install`. A first node whose service's supervisor predates the circle
+folders exits once its own release is good and a folder is waiting, so the service starts the
+newer supervisor.
 
 ## The web UI
 

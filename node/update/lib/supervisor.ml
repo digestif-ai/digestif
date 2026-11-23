@@ -336,13 +336,46 @@ and after_child ~on_trial ~on_crash ~self_test ops dir ~release (status, awake)
 
 let stop_requested = ref false
 
-let real_ops ~dir =
+(* Set in the environment of the node a supervisor that runs the circle folders starts (DIG-347). A
+   standard node under the machine's service that finds it unset runs under a supervisor from before
+   the circle folders, and once its own release is good it exits, so the service starts the newer
+   one in its place (digestif run). *)
+let runs_circles_var = "DIGESTIF_SUPERVISOR_RUNS_CIRCLES"
+
+(* Set in the environment of the child that runs a circle folder's node in the machine's place
+   (DIG-351): a machine whose standard place holds no node, only releases, has its supervisor run
+   the first circle folder's node as its child. That child keeps its store, keys and UI port in the
+   folder this names, and reads and writes the machine's releases, trial, health report and update
+   state at its --data-dir, so the trial judges each release by it. A release from before it reads
+   nothing of it and runs the standard place, as every release did before. *)
+let node_var = "DIGESTIF_NODE_DIR"
+
+(* The environment of the child: [base] with the two variables above set as asked, and the folder
+   variable never inherited from [base], since only this supervisor decides it. *)
+let child_env ~runs_circles ~node base =
+  let prefix = node_var ^ "=" in
+  let inherited =
+    List.filter
+      (fun kv -> not (String.starts_with ~prefix kv))
+      (Array.to_list base)
+  in
+  Array.of_list
+    (inherited
+    @ (if runs_circles then [ runs_circles_var ^ "=1" ] else [])
+    @ match node with Some d -> [ prefix ^ d ] | None -> [])
+
+(* [node] names, at each start of the child, the circle folder whose node it runs in the machine's
+   place, if any. *)
+let real_ops ?(runs_circles = false) ?(node = fun () -> None) ~dir () =
   {
     spawn =
       (fun exe ->
-        Unix.create_process exe
+        let env =
+          child_env ~runs_circles ~node:(node ()) (Unix.environment ())
+        in
+        Unix.create_process_env exe
           [| exe; "run"; "--data-dir"; dir |]
-          Unix.stdin Unix.stdout Unix.stderr);
+          env Unix.stdin Unix.stdout Unix.stderr);
     poll =
       (fun pid ->
         match Unix.waitpid [ Unix.WNOHANG ] pid with
