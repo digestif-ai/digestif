@@ -98,6 +98,7 @@ async function main(): Promise<number> {
     case "empty":
       console.error("digestif-write: the harness answered nothing");
       return 1;
+    case "usage_limited":
     case "failed":
       console.error(`digestif-write: ${r.message}`);
       return 1;

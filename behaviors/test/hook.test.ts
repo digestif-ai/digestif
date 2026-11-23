@@ -7,8 +7,8 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { writeProgress } from "../src/hook.ts";
-import { nightly } from "../src/nightly.ts";
+import { NIGHTLY_WAITING, writeProgress } from "../src/hook.ts";
+import { MAX_ATTEMPTS, nightly } from "../src/nightly.ts";
 import type { Source } from "../src/sources.ts";
 import { fetchContext } from "../src/writer.ts";
 import { noLoopback } from "./loopback.ts";
@@ -230,6 +230,22 @@ test("a failed run exits 1 so the node tries again; the last try exits 0, and th
   assert.equal(recorded().length, 0, "no failed tick");
   assert.equal(run(handoff(), e).status, 0, "a date whose tries are spent is over");
   assert.equal(harnessCalls().length, 3);
+});
+
+test("a run its agent's usage limit held exits NIGHTLY_WAITING, spends no try, and runs nothing until the reset (DIG-371)", () => {
+  const e = env({ FAKE_FIXTURE: fixture("usage-limit.txt"), FAKE_EXIT: "1" });
+  assert.equal(run(handoff(), e).status, NIGHTLY_WAITING);
+  for (let i = 0; i < MAX_ATTEMPTS + 1; i++) assert.equal(run(handoff(), e).status, NIGHTLY_WAITING, "still waiting, never given up");
+  assert.equal(harnessCalls().length, 1, "the later passes run no harness before the reset");
+  const st = JSON.parse(readFileSync(join(own, "nightly.json"), "utf8")) as { attempts?: unknown; waiting?: { date: string; until: number; waits: number } };
+  assert.equal(st.attempts, undefined, "no try counted");
+  assert.equal(st.waiting?.date, "2026-10-29");
+  assert.ok(st.waiting!.until > Date.now(), "until the reset, still ahead");
+  // The reset passed: the next pass writes the note.
+  writeFileSync(join(own, "nightly.json"), JSON.stringify({ ...st, waiting: { ...st.waiting, until: Date.now() - 1000 } }));
+  assert.equal(run(handoff()).status, 0);
+  assert.equal(recorded().filter((c) => c.args[0] === "note").length, 1);
+  assert.equal((JSON.parse(readFileSync(join(own, "nightly.json"), "utf8")) as { waiting?: unknown }).waiting, undefined, "the wait is over with the date");
 });
 
 test("a sleep during the run does not use up the node's deadline", async () => {
