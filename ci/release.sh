@@ -46,10 +46,10 @@
 #   ci/release.sh publish --version X.Y.Z
 #       Once every test node passed: one commit on main lists the version in release/index.json,
 #       trims the list to the seven newest plus the newest unrecalled, and copies in every
-#       take-back the branch holds that main lacks. The channel branch lists it too while main's
-#       list held fewer than two versions before the publish, or while no version the branch names
-#       that reads main is unrecalled. Then the GitHub release stops being a prerelease; no release
-#       is marked Latest, since the release list is the one record of what is published.
+#       take-back the branch holds that main lacks. The channel branch lists it too only while no
+#       version the branch names that reads main is unrecalled. Then the GitHub release stops being
+#       a prerelease; no release is marked Latest, since the release list is the one record of what
+#       is published.
 #   ci/release.sh channel [--version X.Y.Z]
 #       Read-only, what a member's node reads off release/ on main as origin holds it now.
 #       Without --version: prints the newest version the list names, and nothing before the
@@ -749,18 +749,12 @@ publish_branch() {
   mv "$wt/index.json.next" "$wt/index.json"
 }
 
-# Whether a publish also lists the version on the branch (docs/releases.md, How installed nodes
-# move): while main's list held fewer than two versions before it, and whenever no version the
-# branch names that reads main (its tag holds release/index.json) is unrecalled on the branch, so a
-# node still reading the branch always finds a version that takes it to main.
+# Whether a publish also lists the version on the branch (docs/releases.md, The channel branch, for
+# nodes older than the move): only when no version the branch names that reads main (its tag holds release/index.json) is
+# unrecalled on the branch, so a node still reading the branch always finds a version that takes it
+# to main. Otherwise a publish writes main alone.
 branch_wants() {
-  local listed head v
-  listed="$(git -C "$root" show "refs/remotes/origin/main:$channel_dir/index.json" 2>/dev/null |
-    jq '.releases | length')" || listed=0
-  if [ "${listed:-0}" -lt 2 ]; then
-    echo "release.sh: main's list held $listed versions, so the $channel_branch branch lists this one too" >&2
-    return 0
-  fi
+  local head v
   head="$(branch_read)"
   [ -n "$head" ] || return 1
   while IFS= read -r v; do

@@ -4,8 +4,7 @@
 # against a scratch repository whose origin is a local bare repository, with a gh that answers for a
 # prerelease: `publish` lists a version in release/index.json on main by its release's urls, copies
 # in the take-backs an older digestif-update wrote to the channel branch alone, lists it on the
-# branch too while main's list held fewer than two versions or no version the branch names that
-# reads main is unrecalled, and trims the list to the seven newest with their recalls; `channel`
+# branch too only while no version the branch names that reads main is unrecalled, and trims the list to the seven newest with their recalls; `channel`
 # and `feed` read main's list with the branch's take-backs; `build --changelog` writes the ledger as
 # the message of an annotated tag; every commit it writes carries the release's own identity on a
 # machine whose git has none. ci/build.slow.sh runs it; it needs git and jq and no network.
@@ -138,7 +137,7 @@ tag v0.2.0
 expect "" "$(release channel)" "an empty list"
 
 # The first publish: main lists it by its release's urls with the branch's take-backs, and so does
-# the branch, since main's list held none.
+# the branch, since no version it names reads main.
 expect v0.2.0 "$(release publish --version 0.2.0)" "publish 0.2.0"
 expect 0.2.0 "$(main_versions)" "main after 0.2.0"
 expect "0.1.1 0.2.0" "$(branch_versions)" "the branch after 0.2.0"
@@ -168,19 +167,19 @@ commit "more code"
 tag v0.2.1
 release publish --version 0.2.1 >/dev/null
 expect "0.2.0 0.2.1" "$(main_versions)" "main after 0.2.1"
-expect "0.1.1 0.2.0 0.2.1" "$(branch_versions)" "the branch after 0.2.1, main having held one"
+expect "0.1.1 0.2.0" "$(branch_versions)" "the branch after 0.2.1: it names 0.2.0, which reads main"
 expect 2 "$(git -C "$tmp/origin.git" show main:release/signers/abc.sig.json | jq '.signatures | length')" \
   "both signatures of the signer-set change"
 
-# From the third on, main alone: the branch names 0.2.0, which reads main.
+# And main alone again: the branch is left after the hop.
 commit "even more code"
 tag v0.2.2
 release publish --version 0.2.2 >/dev/null
 expect "0.2.0 0.2.1 0.2.2" "$(main_versions)" "main after 0.2.2"
-expect "0.1.1 0.2.0 0.2.1" "$(branch_versions)" "the branch is left after the hop"
+expect "0.1.1 0.2.0" "$(branch_versions)" "the branch is left after the hop"
 
-# A recall of both hop versions, written to the branch alone: the next publish lists on the branch
-# again, and main takes the recalls of the versions it lists.
+# A recall of the hop version and of 0.2.1, written to the branch alone: the next publish lists on
+# the branch again, and main takes the recalls of the versions it lists.
 git -C "$branch" fetch --quiet origin
 git -C "$branch" reset --quiet --hard origin/channel
 mkdir -p "$branch/recalls"
@@ -196,7 +195,7 @@ branch_commit "recall the hop versions"
 commit "a fix"
 tag v0.2.3
 release publish --version 0.2.3 >/dev/null
-expect "0.1.1 0.2.0 0.2.1 0.2.3" "$(branch_versions)" "the branch after a recall of its hop versions"
+expect "0.1.1 0.2.0 0.2.3" "$(branch_versions)" "the branch after a recall of its hop version"
 expect "0.2.0 0.2.1" "$(main_index | jq -r '[ .recalls[].version ] | join(" ")')" "main takes the recalls"
 
 # Seven newest: the oldest leave the list, and their recalls with them.
@@ -209,7 +208,7 @@ expect "0.2.3 0.2.4 0.2.5 0.2.6 0.2.7 0.2.8 0.2.9" "$(main_versions)" "the seven
 expect 0 "$(main_index | jq '.recalls | length')" "a recall goes with its version"
 git -C "$tmp/origin.git" cat-file -e main:release/recalls/0.2.0.json 2>/dev/null &&
   fail "a trimmed version's recall file stayed"
-expect "0.1.1 0.2.0 0.2.1 0.2.3" "$(branch_versions)" "the branch names 0.2.3, which reads main"
+expect "0.1.1 0.2.0 0.2.3" "$(branch_versions)" "the branch names 0.2.3, which reads main"
 # A trimmed recall is not brought back from the branch.
 expect 0 "$(main_index | jq '.recalls | length')" "the branch's recall of a trimmed version"
 expect 0.2.9 "$(release channel)" "channel names the newest"
