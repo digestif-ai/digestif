@@ -404,14 +404,16 @@ let check_filing ?timeout command =
   | Ok () -> Ok "Worked. Nothing was filed."
   | Error e -> Error ("It failed: " ^ e ^ ".")
 
-(* What the saved sources hold, through the reader a note uses. Refused until they are saved. *)
+(* What the saved sources hold in the last day: the node's own reader (Sources.extract_reading, not
+   the note's in behaviors/), of the repositories, commit authors and default branch a note reads.
+   Refused until they are saved. *)
 let read (n : Node.t) ~now =
   match Store.Setup.next n.log with
   | Some (Names | Sources) ->
       Error "Nothing is read until the sources are saved."
   | _ ->
       let reading =
-        Sources.extract_reading ~now
+        Sources.extract_reading ~now n.log
           (List.filter
              (fun (s : Store.source) -> s.selected)
              (Store.sources n.log))

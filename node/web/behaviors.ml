@@ -121,61 +121,17 @@ let nightly_due_at ~note_time ~last_date ~armed_since ~now =
 let chosen_sources (log : Log.t) =
   List.filter (fun (s : Store.source) -> s.selected) (Store.sources log)
 
-(* The record (DES-37265, The record and where each note starts). The git source reads the
-   clones of every approved repository, and only the commit authors the member owns, once the
-   Repositories page has a scan and a list of authors; before that, its own paths and every
-   author. *)
-type repository = {
-  repo_id : string;
-  repo_name : string;
-  repo_paths : string list;
-  repo_found_at : string option;
-      (** when a scan after setup found it (ISS-42314); None for setup's and a
-          hand-set path *)
-}
-
-let repositories (log : Log.t) (s : Store.source) =
-  let module R = Store.Repositories in
-  if Store.config log R.k_scanned <> None then
-    List.map
-      (fun (r : R.repository) ->
-        {
-          repo_id = r.r_id;
-          repo_name = r.r_name;
-          repo_paths = r.r_paths;
-          repo_found_at =
-            (match r.found_by with Some _ -> Some r.found_at | None -> None);
-        })
-      (R.repositories ~status:"approved" ~limit:max_int ~offset:0 log)
-  else
-    List.map
-      (fun p ->
-        let p = Sources.untilde p in
-        {
-          repo_id = p;
-          repo_name = Filename.basename p;
-          repo_paths = [ p ];
-          repo_found_at = None;
-        })
-      s.paths
-
-(* The owned authors' emails, or None while the list was never proposed: every author. *)
-let authors (log : Log.t) =
-  let module R = Store.Repositories in
-  if R.authors_proposed log then
-    Some (List.map (fun (a : R.author) -> a.email) (R.authors log))
-  else None
-
 (* Every record key the chosen sources stand for. *)
 let record_keys (log : Log.t) sources =
   List.concat_map
     (fun (s : Store.source) ->
       if s.kind = "git" then
         List.map
-          (fun r -> Store.Record.repository_key r.repo_id)
-          (repositories log s)
+          (fun (r : Sources.repository) ->
+            Store.Record.repository_key r.repo_id)
+          (Sources.repositories log s)
         @ List.map Store.Record.author_key
-            (Option.value (authors log) ~default:[])
+            (Option.value (Sources.authors log) ~default:[])
       else [ Store.Record.source_key s.id ])
     sources
 
@@ -202,13 +158,16 @@ let start_fields ?found_at (log : Log.t) ~now key :
 let source_record_fields (log : Log.t) ~now (s : Store.source) =
   let strings l = `List (List.map (fun s -> `String s) l) in
   if s.kind = "git" then
-    let repos = repositories log s in
+    let repos = Sources.repositories log s in
     [
-      ("paths", strings (List.concat_map (fun r -> r.repo_paths) repos));
+      ( "paths",
+        strings
+          (List.concat_map (fun (r : Sources.repository) -> r.repo_paths) repos)
+      );
       ( "repositories",
         `List
           (List.map
-             (fun r ->
+             (fun (r : Sources.repository) ->
                `Assoc
                  ([
                     ("id", `String r.repo_id);
@@ -219,7 +178,7 @@ let source_record_fields (log : Log.t) ~now (s : Store.source) =
                      (Store.Record.repository_key r.repo_id)))
              repos) );
       ( "authors",
-        match authors log with
+        match Sources.authors log with
         | None -> `Null
         | Some emails ->
             `List

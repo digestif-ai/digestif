@@ -191,7 +191,8 @@ Every outbound message passes the deny layer before it is signed: the member's d
 built-in secret detectors, a trip naming the rule and never the text. Every note waits as a Feed message until
 the member approves it on its message page, or the agent does when auto approval is saved. Draft for me, on the brief's edit page in Settings, runs the writer, `DIGESTIF_WRITER` or the program `digestif writer set` recorded (digest
 lines on stdin, the answer on stdout), told `DIGESTIF_WRITER_TASK=brief`: it drafts a first brief from the member's card and the chosen
-sources when the brief is empty; with no writer the action is absent
+sources when the brief is empty, and reads of a git source, as `setup read` does, only the approved repositories and the
+owned authors' default-branch commits; with no writer the action is absent
 (docs/behaviors.md, What a behavior hands back).
 
 Every job reports a failure the same way (docs/design.md, One way a failure is reported): one

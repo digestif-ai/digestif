@@ -58,6 +58,12 @@ let cleaned f () =
         (List.filter (fun d -> not (List.mem d before)) !fixtures);
       fixtures := before)
 
+(* The log of a node with no scan and no list of authors, whose git sources read their own paths. *)
+let bare_log () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  n.log
+
 let demo () =
   let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
   Store.init n.log;
@@ -3550,7 +3556,7 @@ let command_sources () =
       (fun (x : Store.source) -> String.starts_with ~prefix:"command-" x.id)
       (Store.sources n.log)
   in
-  let extracted, failures = Sources.extract_with_failures ~now chosen in
+  let extracted, failures = Sources.extract_with_failures ~now n.log chosen in
   Alcotest.(check (list string))
     "one line per item, labelled, with --since appended"
     [
@@ -4470,7 +4476,10 @@ let judging_fail_closed () =
             selected = true;
           }
         in
-        let extracted, failures = Sources.extract_with_failures [ source ] in
+        let log = bare_log () in
+        let extracted, failures =
+          Sources.extract_with_failures log [ source ]
+        in
         Alcotest.(check (list string)) "nothing of it is read" [] extracted;
         Alcotest.(check (list string))
           "and the member is told"
@@ -4483,7 +4492,7 @@ let judging_fail_closed () =
           "with no mark" false
           (mark (Filename.concat projects3 "-locked"));
         (* ISS-81609: the same failure, carried as the folder and why for the node's notice. *)
-        let r = Sources.extract_reading [ source ] in
+        let r = Sources.extract_reading log [ source ] in
         Alcotest.(check int) "one project unjudged" 1 r.unjudged;
         Alcotest.(check bool)
           "carried as the folder and why" true
@@ -5261,7 +5270,134 @@ let many_repos () =
   Alcotest.(check (list string))
     "only the repository whose HEAD moved is read"
     [ "commit: Ship the active repo" ]
-    (Sources.extract [ Sources.git_source repos ])
+    (Sources.extract (bare_log ()) [ Sources.git_source repos ])
+
+(* DIG-463: setup read and Draft for me read what the note reads of a git source: the approved
+   repositories, the owned authors and the default branch. *)
+let readers_honor_choices () =
+  let n = demo () in
+  let c = session n in
+  let root = tmpdir () in
+  let git ?(email = "ada@example.com") repo args =
+    let argv =
+      [ "git"; "-C"; repo; "-c"; "user.name=t"; "-c"; "user.email=" ^ email ]
+      @ args
+    in
+    match Proc.run (Array.of_list argv) with
+    | Ok { code = 0; _ } -> ()
+    | _ -> Alcotest.fail ("git " ^ String.concat " " args)
+  in
+  let commit ?email repo subject =
+    git ?email repo [ "commit"; "-q"; "--allow-empty"; "-m"; subject ]
+  in
+  let repo name =
+    let dir = Filename.concat root name in
+    Node.mkdir_p dir;
+    git dir [ "init"; "-q"; "-b"; "main" ];
+    commit dir (name ^ " owned");
+    dir
+  in
+  (* What a fetch leaves: origin/main at main, and origin/HEAD naming it. *)
+  let fetched dir =
+    git dir [ "update-ref"; "refs/remotes/origin/main"; "main" ];
+    git dir
+      [ "symbolic-ref"; "refs/remotes/origin/HEAD"; "refs/remotes/origin/main" ]
+  in
+  let age dir ref =
+    let old = Unix.gettimeofday () -. (3. *. 86400.) in
+    Unix.utimes (Filename.concat dir (".git/logs/" ^ ref)) old old
+  in
+  let approved = repo "approved" in
+  Out_channel.with_open_bin (Filename.concat approved ".mailmap") (fun oc ->
+      output_string oc "t <ada@example.com> <mapped@example.com>\n");
+  commit ~email:"Ada@Example.com" approved "owned in another case";
+  commit ~email:"stranger@example.com" approved "unlisted author";
+  commit ~email:"xada@example.com" approved "author containing an owned one";
+  commit ~email:"mapped@example.com" approved "author the mailmap renames";
+  fetched approved;
+  git approved [ "checkout"; "-q"; "-b"; "side" ];
+  commit approved "side branch only";
+  (* The default branch moved today; HEAD, on another branch, did not. *)
+  let moved = repo "moved" in
+  fetched moved;
+  git moved [ "checkout"; "-q"; "-b"; "side" ];
+  age moved "HEAD";
+  (* The default branch has not moved in the window; HEAD has. *)
+  let still = repo "still" in
+  fetched still;
+  age still "refs/remotes/origin/main";
+  (* A remote's branch with no reflog: git is asked. *)
+  let cloned = repo "cloned" in
+  fetched cloned;
+  Sys.remove (Filename.concat cloned ".git/logs/refs/remotes/origin/main");
+  (* No origin/HEAD: the checked-out branch. *)
+  let local = repo "local" in
+  git local [ "checkout"; "-q"; "-b"; "topic" ];
+  commit local "checked-out branch of a repository with no remote";
+  (* More commits by others than the subjects one repository may give do not hide an owned one. *)
+  let busy = repo "busy" in
+  for i = 1 to Sources.max_subjects + 1 do
+    commit ~email:"stranger@example.com" busy (Printf.sprintf "busy %d" i)
+  done;
+  let declined = repo "declined" and undecided = repo "undecided" in
+  (* Approved, and since discovery last offered it no longer a source's path. *)
+  let unoffered = repo "unoffered" in
+  let offered =
+    [ approved; moved; still; cloned; local; busy; declined; undecided ]
+  in
+  Store.set_offered n.log [ Sources.git_source offered ];
+  Store.Setup.names_saved n.log;
+  Log.set_config n.log Digestif_daily.Daily_digest.k_email "ada@example.com";
+  Store.select_sources n.log [ "git" ];
+  let module R = Store.Repositories in
+  let id dir = "test/" ^ Filename.basename dir in
+  R.apply_scan n.log ~at:(Time_fmt.now ())
+    (List.map
+       (fun dir : R.found ->
+         {
+           f_id = id dir;
+           f_name = Filename.basename dir;
+           f_org_id = "test";
+           f_org_name = "test";
+           f_path = Sources.tilde dir;
+         })
+       (unoffered :: offered));
+  List.iter
+    (fun dir -> R.set_status n.log (id dir) "approved")
+    [ approved; moved; still; cloned; local; busy; unoffered ];
+  R.set_status n.log (id declined) "declined";
+  Alcotest.(check (option string))
+    "found later, undecided" (Some "undecided")
+    (Option.map
+       (fun (r : R.repository) -> r.status)
+       (R.repository n.log (id undecided)));
+  let expected =
+    List.sort compare
+      [
+        "commit: approved owned";
+        "commit: owned in another case";
+        "commit: moved owned";
+        "commit: cloned owned";
+        "commit: local owned";
+        "commit: checked-out branch of a repository with no remote";
+        "commit: busy owned";
+      ]
+  in
+  Alcotest.(check (list string))
+    "setup read" expected
+    (List.sort compare (ok (Setup_chat.read n ~now:(Unix.gettimeofday ()))));
+  let writer = script root "writer" "cat" in
+  Unix.putenv "DIGESTIF_WRITER" writer;
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "DIGESTIF_WRITER" "")
+    (fun () ->
+      let st, j = call n c ~meth:"POST" "brief/draft" in
+      Alcotest.(check int) "drafted" 200 st;
+      Alcotest.(check (list string))
+        "the lines the brief's writer is given" expected
+        (String.split_on_char '\n' (s "text" j)
+        |> List.filter (String.starts_with ~prefix:"commit: ")
+        |> List.sort compare))
 
 (* The member experience's operations (DES-37265): each is routed, and a row not yet built answers
    501 not_built naming its issue rather than 404, so the UI can tell the two apart. *)
@@ -15527,6 +15663,8 @@ let () =
             (cleaned machine_scan_cannot_judge);
           Alcotest.test_case "project dirs" `Quick (cleaned project_dirs);
           Alcotest.test_case "many repos" `Quick many_repos;
+          Alcotest.test_case "readers honor the member's choices" `Quick
+            readers_honor_choices;
           Alcotest.test_case "brief draft" `Quick brief_draft;
           Alcotest.test_case "demo behaviors" `Quick demo_behaviors;
           Alcotest.test_case "member experience routes" `Quick

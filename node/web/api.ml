@@ -751,7 +751,7 @@ let draft_brief c =
   let chosen =
     List.filter (fun (s : Store.source) -> s.selected) (Store.sources (log c))
   in
-  let reading = Sources.extract_reading ~now:c.now chosen in
+  let reading = Sources.extract_reading ~now:c.now (log c) chosen in
   (* What the reading skipped is told in the Inbox on this machine, never handed to the writer. *)
   Skipped.record (log c) (Skipped.of_reading reading);
   match Sources.draft_brief (log c) ~name ~agent_name reading.lines with
