@@ -221,14 +221,13 @@ old layout: `index.json`, `<version>/manifest.json` and `<version>/manifest.sig.
 `revocations/`, `recalls/` and `signers/`. An installed node reads the branch until it runs a
 version that reads main, so the branch carries those stragglers to main:
 
-- The first version that reads main, and the one after it, are listed on both: `publish` lists a
-  version on the branch too while main's list held fewer than two versions before it.
-- From the third on, a publish writes only `release/`, and the branch is left in place and
-  readable, its index naming a version that reads main. A node older than that takes it from the
-  branch and reads main from its next pass.
-- **A publish lists on the branch again whenever no version the branch names that reads main is
-  unrecalled**, so a recall of the hop version never strands a straggler on its old version. A
-  version reads main when its tag holds `release/index.json`.
+- **A publish lists a version on the branch only when no version the branch names that reads main
+  is unrecalled.** A version reads main when its tag holds `release/index.json`. So the first
+  version that reads main is listed on both, every later publish writes only `release/`, and the
+  branch is left in place and readable, its index naming a version that reads main. A node older
+  than that takes it from the branch and reads main from its next pass. A recall of that hop
+  version makes the next publish list on the branch again, so a straggler is never stranded on its
+  old version. No member's node reads the branch for anything else.
 - **Every recall, revocation and signer-set change is written to both**, by `digestif-update`'s
   channel writer, for as long as the branch is readable. A `digestif-update` older than the move
   still writes the branch alone, so `ci/release.sh` reads the take-backs as one set before it checks
@@ -245,8 +244,8 @@ version that reads main, so the branch carries those stragglers to main:
   addresses too (The signing job).
 
 The branch also still holds `changelog/<commit>.json`, an earlier What's new hand-off, and its
-earlier `candidate/` and `relay/` records, which nothing writes or reads any more, and a node's
-pre-move manifest copies.
+earlier `candidate/` and `relay/` records, which nothing writes or reads any more (the Release
+workflow reads What's new from the tag alone: What's new), and a node's pre-move manifest copies.
 
 `index.json` is unsigned and lists where things are. Its `version` is only a hint to skip fetching
 old manifests; the version that counts is the manifest's own. Because nobody signs it, a node bounds
@@ -559,7 +558,8 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
    `channel_commit` pushes the branch (from main as fetched, started again from the new head when
    the push loses a race). The same commit trims the list (The channel) and copies in every
    take-back the branch holds that main lacks. It lists the version on the `channel` branch too
-   while older nodes still need it there (The channel branch, for nodes older than the move). Then
+   only when no version the branch names that reads main is unrecalled (The channel branch, for
+   nodes older than the move). Then
    it clears the release's prerelease flag, marking no release Latest. From then on members' nodes
    take it on their next update pass, and the relay's `https://digestif.io/install.sh` offers it
    (below).
