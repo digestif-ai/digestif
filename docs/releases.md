@@ -244,7 +244,7 @@ version that reads main, so the branch carries those stragglers to main:
   the first version that reads main**, so the signing job's pinned copy writes take-backs to both
   addresses too (The signing job).
 
-The branch also still holds `changelog/<commit>.json`, the What's new hand-off (What's new), its
+The branch also still holds `changelog/<commit>.json`, an earlier What's new hand-off, and its
 earlier `candidate/` and `relay/` records, which nothing writes or reads any more, and a node's
 pre-move manifest copies.
 
@@ -583,13 +583,11 @@ the empty `ui/static/changelog.json`.
 The entries are the Digestif product's entries of the changelog idempotent writes (`dev changelog
 build`). Only an identity idempotent admits reads them, and the release command holds none, so the
 Digestif rollout's job reads them (`GET /dev/changelog/releases?repo=digestif-ai/digestif&product=digestif`)
-once `ci/release.sh changed` answers `changed`, and hands them to the release command before the tag
-exists. `ci/release.sh build --changelog <file>` writes the tag it mints as an annotated tag whose
-message is the file, kept verbatim, so the ledger rides in the push that starts the run, attached to
-the one thing it describes; the Release run on the tag reads its own tag's message. Until the
-rollout passes `--changelog`, it hands them to `ci/release.sh changelog --sha <commit> --file
-<file>`, which leaves them on `channel` as `changelog/<commit>.json` before the job tags the commit,
-and the run reads that file when the tag carries no ledger. Notes are
+once `ci/release.sh changed` answers `changed`, writes them to a file and cuts the version's tag
+itself as an annotated tag whose message is that file, kept verbatim, so the ledger rides in the push
+that starts the run, attached to the one thing it describes; the Release run on the tag reads its
+own tag's message. The job cuts the same tag `ci/release.sh build --changelog <file>` would, and
+writes the ledger only for a checkout whose `ci/release.sh` takes `--changelog`. Notes are
 written after a version is released, so a version carries every earlier version's entries and its
 own as the commit titles its manifest's notes hold, which the next release replaces with its
 entries. A version whose notes are not written yet, and every version when the run finds no ledger (a tag a

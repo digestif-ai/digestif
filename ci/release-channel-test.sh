@@ -7,7 +7,8 @@
 # branch too while main's list held fewer than two versions or no version the branch names that
 # reads main is unrecalled, and trims the list to the seven newest with their recalls; `channel`
 # and `feed` read main's list with the branch's take-backs; `build --changelog` writes the ledger as
-# the message of an annotated tag. ci/build.slow.sh runs it; it needs git and jq and no network.
+# the message of an annotated tag; every commit it writes carries the release's own identity on a
+# machine whose git has none. ci/build.slow.sh runs it; it needs git and jq and no network.
 
 set -euo pipefail
 
@@ -87,7 +88,12 @@ tag() {
   git -C "$repo" tag "$1"
   git -C "$repo" push --quiet origin "refs/tags/$1"
 }
-release() { "$repo/ci/release.sh" "$@" 2>>"$tmp/stderr"; }
+# Run as a machine whose git has no identity: no global or system config and no identity in the
+# environment. The commits it writes carry the release's own identity all the same. ISS-102360
+release() { (
+  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL EMAIL
+  "$repo/ci/release.sh" "$@" 2>>"$tmp/stderr"
+); }
 main_index() { git -C "$tmp/origin.git" show main:release/index.json; }
 branch_index() { git -C "$tmp/origin.git" show channel:index.json; }
 main_versions() { main_index | jq -r '[ .releases[].version ] | join(" ")'; }
@@ -143,6 +149,12 @@ expect revocations/k.json "$(main_index | jq -r '.revocations[0].document')" "th
 git -C "$tmp/origin.git" cat-file -e main:release/signers/abc.sig.json || fail "the signer-set change's signatures"
 git -C "$tmp/origin.git" cat-file -e channel:0.2.0/manifest.sig.json || fail "the branch's copy of 0.2.0"
 grep -q -- '--prerelease=false --latest=false' "$GH_LOG" || fail "publish marked a release Latest"
+for c in main channel; do
+  expect "Digestif release <release@digestif.invalid>" \
+    "$(git -C "$tmp/origin.git" log -1 --format='%an <%ae>' "$c")" "the author of $c"
+  expect "Digestif release <release@digestif.invalid>" \
+    "$(git -C "$tmp/origin.git" log -1 --format='%cn <%ce>' "$c")" "the committer of $c"
+done
 expect 0.2.0 "$(release channel)" "channel after 0.2.0"
 
 # A second signature an older digestif-update added on the branch alone joins main's copy.
