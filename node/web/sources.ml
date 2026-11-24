@@ -582,7 +582,7 @@ let holds_financial_records ?judging ?memo dir =
 
 (* Git repositories one level under the usual code directories, then the repositories Claude Code
    has worked in, from its project directories' names. The cost of reading them is bounded in
-   [git_subjects], which skips a repository whose HEAD has not moved in the window, and by the
+   [git_subjects], which skips a repository whose default branch has not moved in the window, and by the
    digest's line cap, never by dropping repositories by name. The one repository never proposed is
    one that holds financial records. *)
 let code_dirs () =
@@ -649,16 +649,97 @@ let lines s =
   |> List.map String.trim
   |> List.filter (fun l -> l <> "")
 
-(* Whether [repo]'s HEAD may hold a commit made since [since]. Every commit, merge, pull or checkout
-   that moves HEAD appends to .git/logs/HEAD, so a reflog last written before the window rules the
-   repository out without running git. With no reflog to read, git is asked. *)
-let head_moved_since ~since repo =
-  match Unix.stat (Filename.concat repo ".git/logs/HEAD") with
+(* The record (DES-37265, The record and where each note starts): what the note reads of a git
+   source, and what setup read and Draft for me read of it too (extract_reading). The git source
+   reads the clones of every approved repository, and only the commit authors the member owns, once
+   the Repositories page has a scan and a list of authors; before that, its own paths and every
+   author. *)
+type repository = {
+  repo_id : string;
+  repo_name : string;
+  repo_paths : string list;
+  repo_found_at : string option;
+      (** when a scan after setup found it (ISS-42314); None for setup's and a
+          hand-set path *)
+}
+
+let repositories (log : Log.t) (s : Store.source) =
+  let module R = Store.Repositories in
+  if Store.config log R.k_scanned <> None then
+    List.map
+      (fun (r : R.repository) ->
+        {
+          repo_id = r.r_id;
+          repo_name = r.r_name;
+          repo_paths = r.r_paths;
+          repo_found_at =
+            (match r.found_by with Some _ -> Some r.found_at | None -> None);
+        })
+      (R.repositories ~status:"approved" ~limit:max_int ~offset:0 log)
+  else
+    List.map
+      (fun p ->
+        let p = untilde p in
+        {
+          repo_id = p;
+          repo_name = Filename.basename p;
+          repo_paths = [ p ];
+          repo_found_at = None;
+        })
+      s.paths
+
+(* The owned authors' emails, or None while the list was never proposed: every author. *)
+let authors (log : Log.t) =
+  let module R = Store.Repositories in
+  if R.authors_proposed log then
+    Some (List.map (fun (a : R.author) -> a.email) (R.authors log))
+  else None
+
+(* Whether [ref] in [repo] may hold a commit made since [since]. Everything that moves a ref (a
+   commit, merge, pull or checkout for HEAD, a fetch or push for a remote's branch) appends to its
+   reflog, so a reflog last written before the window rules the ref out without reading the log.
+   With no reflog, as for a remote's branch nothing has fetched since the clone, git is asked. *)
+let ref_moved_since ~since repo ref =
+  match Unix.stat (Filename.concat repo (Filename.concat ".git/logs" ref)) with
   | st -> st.st_mtime >= since
   | exception Unix.Unix_error _ -> true
 
-let git_subjects ~since repo =
-  if not (head_moved_since ~since repo) then []
+let head_moved_since ~since repo = ref_moved_since ~since repo "HEAD"
+
+(* The default branch, by the note's rule (defaultRef in behaviors/src/git.ts): what the remote's
+   HEAD names (origin/HEAD), else the checked-out branch. *)
+let default_ref repo =
+  match
+    Proc.run
+      [|
+        "git"; "-C"; repo; "symbolic-ref"; "--quiet"; "refs/remotes/origin/HEAD";
+      |]
+  with
+  | Ok { code = 0; stdout; _ } when String.trim stdout <> "" ->
+      String.trim stdout
+  | _ -> "HEAD"
+
+let max_subjects = 50
+
+(* The subjects of the default branch's commits since [since], newest first, by [authors] only (None:
+   every author). An author is matched as the note matches one (gitItems in
+   behaviors/src/extract.ts), on the email the commit carries: git's own --author would match through
+   the repository's mailmap. *)
+let git_subjects ~authors ~since repo =
+  let norm = Store.Repositories.normalize_email in
+  let owned = Option.map (List.map norm) authors in
+  let is_owned email =
+    match owned with None -> true | Some l -> List.mem (norm email) l
+  in
+  let subject line =
+    match String.index_opt line '\x1f' with
+    | Some i when is_owned (String.sub line 0 i) -> (
+        let rest = String.sub line (i + 1) (String.length line - i - 1) in
+        match String.trim rest with "" -> None | s -> Some s)
+    | _ -> None
+  in
+  let ref = default_ref repo in
+  if not (ref_moved_since ~since repo ref) then []
   else
     match
       Proc.run
@@ -669,13 +750,25 @@ let git_subjects ~since repo =
           "log";
           "--no-merges";
           Printf.sprintf "--since=@%d" (int_of_float since);
-          "--format=%s";
-          "-n";
-          "50";
+          "--format=%ae%x1f%s";
+          ref;
+          "--";
         |]
     with
-    | Ok { code = 0; stdout; _ } -> lines stdout
+    | Ok { code = 0; stdout; _ } ->
+        lines stdout |> List.filter_map subject
+        |> List.filteri (fun i _ -> i < max_subjects)
     | _ -> []
+
+(* The clones a reading of a git source reads: those of the repositories the note reads, less any the
+   source no longer offers, so one discovery stopped offering since it was approved (it holds
+   financial records now) is not read. *)
+let git_paths (log : Log.t) (s : Store.source) =
+  let offered = Hashtbl.create 64 in
+  List.iter (fun p -> Hashtbl.replace offered (untilde p) ()) s.paths;
+  List.concat_map (fun r -> r.repo_paths) (repositories log s)
+  |> List.map untilde
+  |> List.filter (Hashtbl.mem offered)
 
 (* A directory's own top-level transcripts. Nothing below it is listed: a session's subagent and
    tool-result directories hold another agent's transcripts, not a session of the member's. *)
@@ -1312,7 +1405,10 @@ type reading = {
   skipped : (string * reason) list;
 }
 
-let extract_reading ?(now = Unix.gettimeofday ()) (chosen : Store.source list) =
+(* Every reader of the chosen sources but the note's comes through here, and [log] holds the
+   member's choices: which repositories and which commit authors are read. *)
+let extract_reading ?(now = Unix.gettimeofday ()) (log : Log.t)
+    (chosen : Store.source list) =
   let since = now -. day in
   let failures = ref [] in
   (* One deadline for the whole reading, however many paths the sources name. It begins with the
@@ -1332,13 +1428,16 @@ let extract_reading ?(now = Unix.gettimeofday ()) (chosen : Store.source list) =
   let extracted =
     List.concat_map
       (fun (s : Store.source) ->
-        let paths = List.map untilde s.paths in
         match s.kind with
         | "git" ->
-            List.concat_map (git_subjects ~since) paths
+            List.concat_map
+              (git_subjects ~authors:(authors log) ~since)
+              (git_paths log s)
             |> List.map (fun x -> "commit: " ^ x)
         | "claude_code" ->
-            List.concat_map (session_titles ~judging ~since) paths
+            List.concat_map
+              (session_titles ~judging ~since)
+              (List.map untilde s.paths)
             |> List.map (fun x -> "session: " ^ x)
         | k when k = Store.k_command -> (
             match command_lines ~since ~label:s.label s.paths with
@@ -1363,11 +1462,11 @@ let extract_reading ?(now = Unix.gettimeofday ()) (chosen : Store.source list) =
 
 (* The digest lines the writer is given, from the chosen sources, and why any command source gave
    none. *)
-let extract_with_failures ?now chosen =
-  let r = extract_reading ?now chosen in
+let extract_with_failures ?now log chosen =
+  let r = extract_reading ?now log chosen in
   (r.lines, r.failures)
 
-let extract ?now chosen = (extract_reading ?now chosen).lines
+let extract ?now log chosen = (extract_reading ?now log chosen).lines
 
 (* The writer: a program run with no tools, given the digest lines on stdin, answering on stdout.
    DIGESTIF_WRITER names it for one process; `digestif writer set` (and `digestif service install`,
