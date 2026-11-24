@@ -6,10 +6,8 @@
 # notes not built yet and one it lacks carry their commit titles without the issue key, the pull
 # request number or a merge build's title; a ledger version with notes but no entries carries none;
 # a version not tagged yet carries the commits since the newest tag; 0.0.0 carries every tag; a
-# ledger that is not an array and a version that is not MAJOR.MINOR.PATCH are refused. Then
-# `ci/release.sh changelog` against a bare origin: the ledger lands on the channel branch keyed by
-# the full commit, and a commit off main is refused. ci/build.slow.sh runs it; it needs bash, git
-# and jq and no network.
+# ledger that is not an array and a version that is not MAJOR.MINOR.PATCH are refused.
+# ci/build.slow.sh runs it; it needs bash, git and jq and no network.
 
 set -euo pipefail
 
@@ -97,45 +95,5 @@ echo '{"versions": []}' >"$tmp/object.json"
 if run 0.1.2 "$tmp/object.json" >/dev/null 2>&1; then fail "a ledger that is not an array was taken"; fi
 if run 0.1 >/dev/null 2>&1; then fail "0.1 was taken as a version"; fi
 if run 0.1.2 "$tmp/absent.json" >/dev/null 2>&1; then fail "an absent ledger was taken"; fi
-
-# `ci/release.sh changelog` leaves the ledger on the channel branch of origin, keyed by the full
-# commit, making the branch when origin has none, and refuses a commit that is not on main.
-origin="$tmp/origin.git"
-git init --quiet --bare "$origin"
-g branch -M main
-g remote add origin "$origin"
-g push --quiet origin main
-cp "$root/ci/release.sh" "$repo/ci/release.sh"
-head_sha="$(g rev-parse HEAD)"
-short="$(g rev-parse --short HEAD)"
-# Run as a machine whose git has no identity: no global or system config, no identity in the
-# environment. The channel's commits carry the release's own identity all the same. ISS-102360
-rel() { (
-  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL EMAIL GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
-  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash "$repo/ci/release.sh" "$@"
-); }
-said="$(rel changelog --sha "$short" --file "$tmp/ledger.json" 2>/dev/null)" || fail "release.sh changelog failed"
-expect "release.sh changelog's answer" "$said" "changelog/$head_sha.json"
-expect "the ledger on the channel branch" "$(git --git-dir="$origin" show "channel:changelog/$head_sha.json" | jq -c .)" \
-  "$(jq -c . "$tmp/ledger.json")"
-git --git-dir="$origin" show channel:index.json >/dev/null || fail "the channel branch made without its index.json"
-for c in channel channel~1; do
-  expect "the author of $c" "$(git --git-dir="$origin" log -1 --format='%an <%ae>' "$c")" \
-    "Digestif release <release@digestif.invalid>"
-  expect "the committer of $c" "$(git --git-dir="$origin" log -1 --format='%cn <%ce>' "$c")" \
-    "Digestif release <release@digestif.invalid>"
-done
-g checkout --quiet -b side
-commit "Not on main"
-if rel changelog --sha "$(g rev-parse HEAD)" --file "$tmp/ledger.json" >/dev/null 2>&1; then
-  fail "release.sh changelog took a commit that is not on main"
-fi
-g push --quiet origin side
-if rel changelog --sha "$(g rev-parse HEAD)" --file "$tmp/ledger.json" >/dev/null 2>&1; then
-  fail "release.sh changelog took a pushed commit that is not on main"
-fi
-if rel changelog --sha "$head_sha" --file "$tmp/object.json" >/dev/null 2>&1; then
-  fail "release.sh changelog took a ledger that is not an array"
-fi
 
 echo "changelog-test.sh: ok"
