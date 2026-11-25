@@ -76,11 +76,16 @@ let list ~opendir ~readdir ~started ~dir ~max ~wanted =
       let max_matches =
         match wanted with Some w -> w.max_matches | None -> max_int
       in
+      let first = ref true in
       let rec go n matches acc =
         match readdir h with
         | exception End_of_file -> Names (acc, End)
+        (* A refusal at the first read is the folder's, as at its open (Folder_access). *)
+        | exception Unix.Unix_error ((EACCES | EPERM), _, _) when !first ->
+            Refused
         | exception Unix.Unix_error _ -> Names (acc, Broke)
         | name ->
+            first := false;
             if n = 0 && matches = 0 then started ();
             if name = "." || name = ".." then go n matches acc
             else if n >= max then Names (acc, Over)

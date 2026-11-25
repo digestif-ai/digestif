@@ -3,8 +3,9 @@
    refused (EPERM) on ~/Documents, ~/Desktop and ~/Downloads, and the sessions reader skips every
    project under a folder it cannot judge (Sources, DIG-349), so the member's notes go quiet.
 
-   When the node starts, and once a day after, each folder is tried with one opendir and one
-   readdir, never more: no walk below its top level, no file opened, nothing written to it. A
+   When the node starts, and once a day after, each folder is tried with one listing that stops at
+   its first entry, made by a child process killed at judging's limit (Folder_reader): no walk
+   below its top level, no file opened, nothing written to it. A
    folder that refuses (EACCES or EPERM) and holds at least one known session project, read from
    the names of the chosen Claude Code source's project directories alone, is kept here as
    refused. Each one is a notice from the node (Digest_lines), local to this machine (Item), raised
@@ -30,30 +31,18 @@ let k_refused = "folder_access_refused"
    a folder whose access came back is raised again on its next refusal. *)
 let k_told = "folder_access_told"
 
-type probe = {
-  opendir : string -> Unix.dir_handle; (* test hook *)
-  readdir : Unix.dir_handle -> string; (* test hook *)
-  closedir : Unix.dir_handle -> unit; (* test hook *)
-}
-
-let default_probe =
-  { opendir = Unix.opendir; readdir = Unix.readdir; closedir = Unix.closedir }
-
-(* Whether macOS refuses [dir]: one opendir and one readdir, as the judging listings read a folder
-   (Folder_reader.list), and no more of it. A folder that is not there, or fails otherwise, is not
-   refused: only a missing permission is what this check tells of. *)
-let refused probe dir =
-  match probe.opendir dir with
-  | exception Unix.Unix_error ((EACCES | EPERM), _, _) -> true
-  | exception Unix.Unix_error _ -> false
-  | h ->
-      Fun.protect
-        ~finally:(fun () -> try probe.closedir h with _ -> ())
-        (fun () ->
-          match probe.readdir h with
-          | exception Unix.Unix_error ((EACCES | EPERM), _, _) -> true
-          | exception _ -> false
-          | _ -> false)
+(* Whether macOS refuses [dir]: one listing that stops at its first entry, made by a child process
+   and abandoned at judging's limit for one listing (Folder_reader, Sources.max_listing_seconds), so
+   a folder macOS holds back cannot block the pass (DIG-489). Only a missing permission (EACCES or
+   EPERM, at the open or the first read) is what this check tells of: a folder that is not there,
+   fails otherwise or answers too late is not refused. *)
+let refused ?(ask = Folder_reader.(ask own)) dir =
+  match
+    ask ~seconds:Sources.max_listing_seconds
+      (Folder_reader.List { dir; max = 0; wanted = None })
+  with
+  | Folder_reader.Refused -> true
+  | Names _ | Found _ | Absent | Failed | Timed_out _ -> false
 
 (* The project directory names of [projects] (each a ~/.claude/projects) that name a path at or
    under [dir]. Claude Code names a project's directory by its path with every character but a
@@ -84,14 +73,14 @@ let session_project_names (log : Log.t) =
   |> Sources.dedupe
 
 (* Each refused folder with how many session projects sit under it, in [folders] order. *)
-let check ?(probe = default_probe) ?(home = Sources.home ()) ~names () =
+let check ?ask ?(home = Sources.home ()) ~names () =
   List.filter_map
     (fun f ->
       let dir = Filename.concat home f in
       match projects_under ~names dir with
       | [] -> None
       | under ->
-          if refused probe dir then Some (dir, List.length under) else None)
+          if refused ?ask dir then Some (dir, List.length under) else None)
     folders
 
 let lines s = List.filter (( <> ) "") (String.split_on_char '\n' s)
@@ -140,10 +129,10 @@ let due (log : Log.t) ~now =
   | None -> true
 
 (* The pass's check: run when the node has just started or the last one is a day old. *)
-let check_if_due ?probe ?home (log : Log.t) ~now =
+let check_if_due ?ask ?home (log : Log.t) ~now =
   if due log ~now then begin
     checked_since_start := true;
-    record log ~now (check ?probe ?home ~names:(session_project_names log) ())
+    record log ~now (check ?ask ?home ~names:(session_project_names log) ())
   end
 
 (* The notice's title, on this machine alone: the folder and what it holds. *)
