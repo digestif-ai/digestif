@@ -48,8 +48,9 @@
 #       trims the list to the seven newest plus the newest unrecalled, and copies in every
 #       take-back the branch holds that main lacks. The channel branch lists it too only while no
 #       version the branch names that reads main is unrecalled. Then the GitHub release stops being
-#       a prerelease; no release is marked Latest, since the release list is the one record of what
-#       is published.
+#       a prerelease. It is marked Latest only while the deployed relay answers install.sh from the
+#       Latest mark (relay_reads_latest); no reader chooses a version by it otherwise, since the
+#       release list is the one record of what is published.
 #   ci/release.sh channel [--version X.Y.Z]
 #       Read-only, what a member's node reads off release/ on main as origin holds it now.
 #       Without --version: prints the newest version the list names, and nothing before the
@@ -99,6 +100,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 wait_minutes="${DIGESTIF_RELEASE_WAIT_MINUTES:-60}"
 poll_seconds=60
+relay_version_url="${DIGESTIF_RELAY_VERSION_URL:-https://dinners.digestif.io/v0/version}"
 
 die() {
   echo "release.sh: $*" >&2
@@ -769,8 +771,25 @@ branch_wants() {
   return 0
 }
 
+# Whether the deployed relay answers https://digestif.io/install.sh from the release GitHub marks
+# Latest: a relay whose tag does not hold relay/src/install-render.ts proxies
+# releases/latest/download/install.sh, and one that holds it renders the script from the release
+# list. A relay whose version or tag cannot be read is taken to read the mark, since marking a
+# version that is published is harmless and a script left at an older version is not. DIG-471
+relay_reads_latest() {
+  local version
+  version="$(curl -fsSL --retry 2 --max-time 20 "$relay_version_url" | jq -r '.relay_version // empty')" ||
+    version=""
+  if ! valid_version "$version" ||
+    ! git -C "$root" cat-file -e "refs/tags/relay-v$version:relay/src/install-render.ts" 2>/dev/null; then
+    echo "release.sh: the deployed relay (${version:-unread}) answers install.sh from Latest" >&2
+    return 0
+  fi
+  return 1
+}
+
 cmd_publish() {
-  local version tag dir have
+  local version tag dir have latest
   version="$(version_option "$@")"
   tag="v$version"
   fetch
@@ -792,7 +811,9 @@ cmd_publish() {
   if branch_wants; then both=true; fi
   main_commit "Publish $version" publish_main "$version"
   [ "$both" = false ] || channel_commit "Publish $version" publish_branch "$version" "$dir/listed"
-  gh release edit "$tag" --repo "$(repo)" --draft=false --prerelease=false --latest=false >/dev/null
+  latest=false
+  if relay_reads_latest; then latest=true; fi
+  gh release edit "$tag" --repo "$(repo)" --draft=false --prerelease=false --latest="$latest" >/dev/null
   echo "release.sh: $tag is published, and listed in release/index.json on main" >&2
   echo "$tag"
 }
