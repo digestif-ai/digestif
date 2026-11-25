@@ -21,7 +21,9 @@
    5. Health check: a signed GET /v0/circle at the home circle's address, <url>/c/<root hex>,
       answering 200 with this relay_version and the circle's root, and GET /app/ answering 200,
       within two minutes of awake time.
-   6. Kept, or rolled back to the recorded version, the release refused on this relay for good.
+   6. Kept, or rolled back to the recorded version, the release refused on this relay for good;
+      the rollback's check reads the unsigned GET /v0/version, which every supported relay release
+      answers, and GET /app/.
 
    A step failing before 4 changes nothing the relay serves and is kept as pending, tried again on
    the update pass's backoff. A 401 or 403 waits for a new token. A migration D1 refuses, and a
@@ -594,9 +596,20 @@ let upload env (r : Operate.record) ~token (m : Release.relay_manifest) ~root
            ~worker:r.worker
            (module_parts ~root b ~scratch (metadata m b ~jwt ())))
 
-(* What the relay answers, read once: [Ok ()] when it is the version [want] (None: a Worker built
-   before relay releases, reporting none) serving the circle at its address, else what it
-   answered. *)
+(* GET /app/ on the relay's base url answering 200: the phone app serves. *)
+let app_serves env ~url =
+  match
+    env.relay ~meth:"GET"
+      ~url:(Relay_client.relay_base url ^ "/app/")
+      ~headers:[] ~body:None
+  with
+  | Ok { status = 200; _ } -> Ok ()
+  | Ok { status; _ } -> Error (Printf.sprintf "/app/ answered %d" status)
+  | Error e -> Error ("/app/ did not answer: " ^ e)
+
+(* The new release's health check, read once: [Ok ()] when a signed GET /v0/circle at the home
+   circle's address answers the version [want] and the circle's root, and the app serves; else what
+   it answered. *)
 let answers env (n : Node.t) ~url ~want =
   let* key = Node.device_key n in
   let* address = Operate.home_address n ~url in
@@ -613,7 +626,7 @@ let answers env (n : Node.t) ~url ~want =
           | _ -> None
         in
         let got = field "relay_version" in
-        if got <> want then
+        if got <> Some want then
           Error ("it answered relay_version " ^ Option.value got ~default:"none")
         else if field "root" <> Node.root n then
           Error
@@ -621,20 +634,27 @@ let answers env (n : Node.t) ~url ~want =
             ^ Option.value (field "root") ~default:"none")
         else Ok ()
   in
-  match
-    env.relay ~meth:"GET"
-      ~url:(Relay_client.relay_base url ^ "/app/")
-      ~headers:[] ~body:None
-  with
-  | Ok { status = 200; _ } -> Ok ()
-  | Ok { status; _ } -> Error (Printf.sprintf "/app/ answered %d" status)
-  | Error e -> Error ("/app/ did not answer: " ^ e)
+  app_serves env ~url
 
-(* 5. The health check: [answers] until it passes or two minutes of awake time have passed;
-   [Error] is the last thing the relay answered. *)
-let healthy env n ~url ~want =
+(* The rollback's check, read once: [Ok ()] when the relay's GET /v0/version answers the version
+   [want] it reported before (None: a Worker that reports none) and the app serves. The version
+   read, not the home circle's, since the Worker rolled back to may be a release older than the
+   circle routes at /c/<root hex> (docs/releases.md, Relay releases). *)
+let answers_back env ~url ~want =
+  let* () =
+    match Relay_client.version env.relay ~base:url with
+    | Error e -> Error ("it did not answer: " ^ Relay_client.error_to_string e)
+    | Ok got when got <> want ->
+        Error ("it answered relay_version " ^ Option.value got ~default:"none")
+    | Ok _ -> Ok ()
+  in
+  app_serves env ~url
+
+(* 5. The health check: [read] until it passes or two minutes of awake time have passed; [Error]
+   is the last thing the relay answered. *)
+let healthy env read =
   let rec go awake =
-    match answers env n ~url ~want with
+    match read () with
     | Ok () -> Ok ()
     | Error last when awake.Digestif_update.Awake.elapsed >= health_bound ->
         Error last
@@ -660,7 +680,7 @@ let check env (n : Node.t) (r : Operate.record) ~token
     (m : Release.relay_manifest) =
   let url = r.url and v = Version.to_string m.relay_version in
   let refuse why = { Operate.version = v; why } :: r.refused in
-  match healthy env n ~url ~want:(Some v) with
+  match healthy env (fun () -> answers env n ~url ~want:v) with
   | Ok () ->
       Ok
         ( {
@@ -686,7 +706,7 @@ let check env (n : Node.t) (r : Operate.record) ~token
         with
         | Error e ->
             Error ("Cloudflare did not deploy it: " ^ Cf.error_to_string e)
-        | Ok () -> healthy env n ~url ~want:previous
+        | Ok () -> healthy env (fun () -> answers_back env ~url ~want:previous)
       in
       let why = "it failed its health check: " ^ answered in
       match back with
@@ -853,27 +873,17 @@ let reported (r : Operate.record) =
   Option.bind r.reported_version (fun s ->
       Result.to_option (Version.of_string s))
 
-(* What the relay reports now on a signed GET /v0/circle at the home circle's address; None when
-   it did not answer. *)
-let live env (n : Node.t) ~url =
-  match (Node.device_key n, Operate.home_address n ~url) with
-  | Error _, _ | _, Error _ -> None
-  | Ok key, Ok address -> (
-      match Relay_client.circle env.relay ~base:address ~key with
-      | Ok (`Assoc f) -> (
-          match List.assoc_opt "relay_version" f with
-          | Some (`String v) -> Some (Some v)
-          | _ -> Some None)
-      | Ok _ -> Some None
-      | Error _ -> None)
+(* What the relay reports now on its GET /v0/version (Relay_client.version); None when it did not
+   answer. *)
+let live env ~url = Result.to_option (Relay_client.version env.relay ~base:url)
 
 (* A lead line stands until the relay answers a version this node knows: a counted relay release,
    or the one it ran before. *)
-let clear_lead env n (r : Operate.record)
+let clear_lead env (n : Node.t) (r : Operate.record)
     ~(releases : Digestif_update.Circle_relay_release.t) =
   if not (List.exists (fun (x : Operate.note) -> x.lead) r.notes) then r
   else
-    match live env n ~url:r.url with
+    match live env ~url:r.url with
     | Some (Some v)
       when List.exists
              (fun (c : Release.relay_manifest Release.signed) ->
@@ -926,7 +936,7 @@ let pass ?(env = default_env) ?fold ~dir (n : Node.t)
             | Ok (Some token) -> (
                 (* A relay already on this release, or a newer one, was deployed some other way
                    (by hand, or by a pass cut off after its deploy): record it and deploy nothing. *)
-                match live env n ~url:r.url with
+                match live env ~url:r.url with
                 | Some (Some v)
                   when match Version.of_string v with
                        | Ok lv -> Version.compare lv m.relay_version >= 0

@@ -134,6 +134,9 @@ type world = {
       (** Cloudflare refuses a deployment of a version older than a migration *)
   mutable circle_reads : string list;
       (** the url of every GET /v0/circle the pass sent, newest first *)
+  mutable older : string list;
+      (** Worker versions on a relay release older than 0.1.76: they answer GET
+          /v0/version and 404 at GET /v0/relay and at a circle's address *)
 }
 
 let world () =
@@ -157,6 +160,7 @@ let world () =
     scripts = 0;
     rollback_refused = false;
     circle_reads = [];
+    older = [];
   }
 
 let answer result =
@@ -404,15 +408,37 @@ let address (n : Node.t) =
       (String.length Keys.sha256_prefix)
       (String.length root - String.length Keys.sha256_prefix)
 
-(* The fake relay serves the home circle at its address only: an unprefixed GET /v0/circle has no
-   route, as on a relay that dropped the unprefixed routes (DES-271). *)
+(* The fake relay serves the unsigned GET /v0/version, and the home circle at its address only: an
+   unprefixed GET /v0/circle has no route, as on a relay that dropped the unprefixed routes
+   (DES-271). A Worker version in [w.older] answers GET /v0/version alone. *)
 let relay w (n : Node.t) : Relay_client.transport =
  fun ~meth:_ ~url:u ~headers:_ ~body:_ ->
   if String.ends_with ~suffix:"/v0/circle" u then
     w.circle_reads <- u :: w.circle_reads;
+  let served = List.assoc_opt w.serving w.served in
   if u = url ^ "/app/" then Ok { Relay_client.status = 200; body = "<html>" }
+  else if u = url ^ "/v0/version" then
+    match served with
+    | Some v ->
+        Ok
+          {
+            Relay_client.status = 200;
+            body =
+              Yojson.Safe.to_string
+                (`Assoc
+                   (match v with
+                   | Some v -> [ ("relay_version", `String v) ]
+                   | None -> []));
+          }
+    | None -> Ok { Relay_client.status = 503; body = "{}" }
+  else if List.mem w.serving w.older then
+    Ok
+      {
+        Relay_client.status = 404;
+        body = {|{"code":"malformed","message":"no route"}|};
+      }
   else if u = address n ^ "/v0/circle" then
-    match List.assoc_opt w.serving w.served with
+    match served with
     | Some (Some v) ->
         Ok
           {
@@ -610,6 +636,52 @@ let a_failed_rollback_leads_until_the_relay_answers () =
     "and not among the once lines" 0
     (List.length (D.digest_lines n ~now:0.));
   (* The operator rolls back by hand: the relay answers 0.1.0 again. *)
+  w.served <- [ ("ver-now", Some "0.1.0") ];
+  w.serving <- "ver-now";
+  ignore (pass w n bytes m);
+  Alcotest.(check int) "cleared" 0 (List.length (D.lead_lines n ~now:0.))
+
+(* A relay older than 0.1.76 answers GET /v0/version and 404 at GET /v0/relay and at
+   /c/<root hex>/v0/circle. The pass reads it on GET /v0/version. *)
+let rolls_back_to_a_relay_older_than_0_1_76 () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.older <- [ "ver-now" ];
+  w.served <- [ ("ver-now", Some "0.1.0"); ("ver-new", None) ];
+  (match pass w n bytes m with
+  | [ D.Rolled_back { to_; _ } ] -> Alcotest.(check string) "to" "0.1.0" to_
+  | os ->
+      Alcotest.failf "%s" (String.concat "; " (List.map D.outcome_to_string os)));
+  Alcotest.(check (list string))
+    "deployed, then deployed the old version back" [ "ver-new"; "ver-now" ]
+    w.deployed;
+  Alcotest.(check int)
+    "no lead line: the rollback is good" 0
+    (List.length (D.lead_lines n ~now:0.))
+
+let recognises_a_relay_older_than_0_1_76_deployed_by_hand () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.older <- [ "ver-now" ];
+  w.served <- [ ("ver-now", Some "0.2.0") ];
+  Alcotest.(check int)
+    "deploys nothing to a relay already on it" 0
+    (List.length (pass w n bytes m));
+  Alcotest.(check (list string)) "deployed nothing" [] w.deployed;
+  Alcotest.(check (option string))
+    "records it" (Some "0.2.0") (record n).reported_version
+
+let a_lead_line_clears_on_a_relay_older_than_0_1_76 () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.served <- [ ("ver-now", None); ("ver-new", None) ];
+  (match pass w n bytes m with
+  | [ D.Rollback_failed _ ] -> ()
+  | os ->
+      Alcotest.failf "%s" (String.concat "; " (List.map D.outcome_to_string os)));
+  Alcotest.(check int) "a lead line" 1 (List.length (D.lead_lines n ~now:0.));
+  (* The operator rolls back by hand to a Worker older than 0.1.76. *)
+  w.older <- [ "ver-now" ];
   w.served <- [ ("ver-now", Some "0.1.0") ];
   w.serving <- "ver-now";
   ignore (pass w n bytes m);
@@ -912,6 +984,13 @@ let () =
             rolls_back_a_failed_health_check;
           Alcotest.test_case "a failed rollback leads until the relay answers"
             `Quick a_failed_rollback_leads_until_the_relay_answers;
+          Alcotest.test_case "rolls back to a relay older than 0.1.76" `Quick
+            rolls_back_to_a_relay_older_than_0_1_76;
+          Alcotest.test_case
+            "recognises a relay older than 0.1.76 deployed by hand" `Quick
+            recognises_a_relay_older_than_0_1_76_deployed_by_hand;
+          Alcotest.test_case "a lead line clears on a relay older than 0.1.76"
+            `Quick a_lead_line_clears_on_a_relay_older_than_0_1_76;
           Alcotest.test_case "a failure before the deploy is pending" `Quick
             a_failure_before_the_deploy_is_pending;
           Alcotest.test_case "a bundle that does not match is pending" `Quick
