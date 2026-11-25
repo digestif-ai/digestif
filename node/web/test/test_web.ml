@@ -5399,6 +5399,82 @@ let readers_honor_choices () =
         |> List.filter (String.starts_with ~prefix:"commit: ")
         |> List.sort compare))
 
+(* DIG-464: a repository approved before it held financial records is left out of the note's context
+   once a scan finds a ledger in its clone, and keeps its row and its choice; a clone that is only
+   gone keeps its path. *)
+let approved_repository_gains_books () =
+  let home = fixture () in
+  let clone name =
+    let d = Filename.concat home ("code/" ^ name) in
+    Node.mkdir_p (Filename.concat d ".git");
+    write_file
+      (Filename.concat d ".git/config")
+      [ {|[remote "origin"]|}; "\turl = https://github.com/o/" ^ name ^ ".git" ];
+    d
+  in
+  let books = clone "books" and gone = clone "gone" in
+  ignore (clone "app");
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" home;
+  Fun.protect
+    ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+    (fun () ->
+      let log = (Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ())).log in
+      Store.init log;
+      let module R = Store.Repositories in
+      let scan now = ignore (Machine_scan.scan_report ~root:home ~now log) in
+      scan 1000.;
+      let ids =
+        List.map
+          (fun (r : R.repository) -> r.r_id)
+          (R.repositories log ~limit:50)
+      in
+      Alcotest.(check int) "every clone is found" 3 (List.length ids);
+      List.iter (fun id -> R.set_status log id "approved") ids;
+      Store.select_sources log [ "git" ];
+      let paths () =
+        let git =
+          List.find
+            (fun (s : Store.source) -> s.kind = "git")
+            (Store.sources log)
+        in
+        let ctx =
+          Behaviors.context ~log ~hook:Read ~dir:home ~digestif:"digestif"
+            ~api:None ~sources:[ git ] ~now:(Unix.gettimeofday ())
+            ~deadline:(Unix.gettimeofday () +. 60.)
+            ()
+        in
+        match member "sources" ctx with
+        | `List [ s ] ->
+            List.map
+              (function `String p -> Filename.basename p | _ -> "")
+              (list (member "paths" s))
+            |> List.sort compare
+        | _ -> Alcotest.fail "one source in the context"
+      in
+      Alcotest.(check (list string))
+        "before the ledger, every approved clone" [ "app"; "books"; "gone" ]
+        (paths ());
+      write_file (Filename.concat books "main.beancount") [ "; books" ];
+      ignore (Sys.command (Filename.quote_command "/bin/rm" [ "-rf"; gone ]));
+      scan 2000.;
+      Alcotest.(check (list string))
+        "the clone holding books is not read; the gone one keeps its path"
+        [ "app"; "gone" ] (paths ());
+      Alcotest.(check (list string))
+        "nor read by setup read and Draft for me" [ "app" ]
+        (List.map Filename.basename
+           (Sources.git_paths log
+              (List.find
+                 (fun (s : Store.source) -> s.kind = "git")
+                 (Store.sources log))));
+      Alcotest.(check (list string))
+        "every repository keeps its row and its choice"
+        [ "approved"; "approved"; "approved" ]
+        (List.map
+           (fun (r : R.repository) -> r.status)
+           (R.repositories log ~limit:50)))
+
 (* The member experience's operations (DES-37265): each is routed, and a row not yet built answers
    501 not_built naming its issue rather than 404, so the UI can tell the two apart. *)
 (* ISS-87810 (DES-85466, A signer-set change): GET /signers answers the set the update state holds,
@@ -15665,6 +15741,8 @@ let () =
           Alcotest.test_case "many repos" `Quick many_repos;
           Alcotest.test_case "readers honor the member's choices" `Quick
             readers_honor_choices;
+          Alcotest.test_case "an approved repository that gains books" `Quick
+            (cleaned approved_repository_gains_books);
           Alcotest.test_case "brief draft" `Quick brief_draft;
           Alcotest.test_case "demo behaviors" `Quick demo_behaviors;
           Alcotest.test_case "member experience routes" `Quick

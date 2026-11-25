@@ -509,7 +509,11 @@ record they were started in, so a path since removed or moved is judged by what 
 and a project once seen to hold them stays skipped while any of its paths is gone (both readers
 keep that verdict in a file inside the project's own directory, the one place both read);
 and an agent that proposes sources during setup proposes nothing that holds them. A member who
-wants one read anyway chooses it by path.
+wants one read anyway chooses it by path. A repository approved before one of its clones came to
+hold them keeps its row, its choice and its recorded point, but that clone is not read: the note's
+context, setup read and Draft for me leave out every clone the last machine scan judged to hold
+financial records, and a repository with no other clone with it. A clone that is gone or could not
+be judged is not a verdict, and keeps its path (DIG-464).
 
 The statement of that rule for a Claude Code project directory is
 [`node/web/test/sessions_cases.json`](../node/web/test/sessions_cases.json): folder layouts, each

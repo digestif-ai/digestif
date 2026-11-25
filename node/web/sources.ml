@@ -653,7 +653,11 @@ let lines s =
    source, and what setup read and Draft for me read of it too (extract_reading). The git source
    reads the clones of every approved repository, and only the commit authors the member owns, once
    the Repositories page has a scan and a list of authors; before that, its own paths and every
-   author. *)
+   author. A clone the machine scan last judged to hold financial records is not read, whatever the
+   member approved, and a repository left with none of its clones is not read at all (DIG-464):
+   discovery stops offering such a clone, but the repository keeps its row, its choice and its
+   recorded point (Store.Repositories.apply_scan). A clone that is gone or could not be judged keeps
+   its path here: the scan's verdict, never its absence, leaves one out. *)
 type repository = {
   repo_id : string;
   repo_name : string;
@@ -666,15 +670,27 @@ type repository = {
 let repositories (log : Log.t) (s : Store.source) =
   let module R = Store.Repositories in
   if Store.config log R.k_scanned <> None then
-    List.map
+    let clones = Store.Scan_index.clones log in
+    let financial p =
+      match Hashtbl.find_opt clones (untilde p) with
+      | Some (c : Store.Scan_index.clone) -> c.financial
+      | None -> false
+    in
+    List.filter_map
       (fun (r : R.repository) ->
-        {
-          repo_id = r.r_id;
-          repo_name = r.r_name;
-          repo_paths = r.r_paths;
-          repo_found_at =
-            (match r.found_by with Some _ -> Some r.found_at | None -> None);
-        })
+        match List.filter (fun p -> not (financial p)) r.r_paths with
+        | [] when r.r_paths <> [] -> None
+        | paths ->
+            Some
+              {
+                repo_id = r.r_id;
+                repo_name = r.r_name;
+                repo_paths = paths;
+                repo_found_at =
+                  (match r.found_by with
+                  | Some _ -> Some r.found_at
+                  | None -> None);
+              })
       (R.repositories ~status:"approved" ~limit:max_int ~offset:0 log)
   else
     List.map
