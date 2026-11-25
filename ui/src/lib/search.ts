@@ -77,6 +77,7 @@ export const SETTINGS_PAGES: SettingsPage[] = [
   { title: 'Learnings', href: href.learningsEdit(), about: 'What your notes have learned' },
   { title: 'Deny list', href: href.denyList(), about: 'Words and patterns that are never sent' },
   { title: 'Approval', href: href.approvalEdit(), about: 'Approve notes yourself or let them go out on their own' },
+  { title: 'Nightly note log', href: href.noteLog(), about: 'Why the last note could not be written, and what each run did' },
   { title: 'Note time', href: href.noteTimeEdit(), about: 'When the nightly note is written, and the time zone' },
   { title: 'Digest', href: href.digestEdit(), about: 'The email digest' },
   { title: 'Phones', href: href.phones(), about: 'Your paired phones' }

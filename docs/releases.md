@@ -1331,9 +1331,8 @@ memory. Before it stores anything it:
   `GET /accounts/<id>/tokens/verify`), lists the account's Workers and refuses a token that cannot
   see the named Worker or can see a second one, and reads the database;
 - reads the Worker version serving now, the first rollback target;
-- reads the relay's `relay_version` on the unsigned `GET /v0/relay` (a Worker built before relays
-  hosted many circles answers it on a signed `GET /v0/circle` at the home circle's address,
-  `<url>/c/<root hex>`; protocol.md, Hosted circles), so the record starts from what is running.
+- reads the relay's `relay_version` with the version read (below), so the record starts from what
+  is running.
 
 It then stores the token in the keystore as `relay-deploy-token` (service `digestif`, account
 `relay-deploy-token@<data dir>`) and the rest in `relay-deploy.json` in the data directory: url,
@@ -1343,11 +1342,24 @@ again with the same body, which makes this node its operator from the next sync.
 for the same relay replaces the token; naming another relay is refused until
 `digestif relay operate --remove <url>` deletes the token and the record. The token is a Cloudflare
 custom API token on the relay's own account, with `Workers Scripts: Edit` and `D1: Edit`, and
-reaches `curl` only in a config file on stdin (`curl -K -`), never on an argv.
+reaches `curl` only in a config file on stdin (`curl -K -`), never on an argv. The account needs a
+`workers.dev` subdomain, whatever address the relay serves at: Cloudflare refuses the upload of a
+release that carries a Durable Object migration without one. Opening Workers and Pages once in the
+account's dashboard creates it; the token checks do not read it.
 
 **`digestif relay status`** prints the newest relay release, the record, who the circle reads as
 the operator, the deployed version, a pending step and its retry time, and refused versions, never
 the token.
+
+**The version read.** Every read the operator's node makes of which release a relay runs (`digestif
+relay operate`, the check for a relay already deployed by hand, the rollback's check and clearing a
+lead line) is the unsigned `GET /v0/version` at the relay's base url (protocol.md, Relay version;
+`Relay_client.version`). A **supported** relay is one on any relay release from `relay-v0.1.1`,
+the first to answer it: the route is unprefixed, asks no key, and answers alike on a relay that
+hosts many circles (0.1.76 and later) and on one that does not, which answers `404` to
+`GET /v0/relay` and at `<url>/c/<root hex>`. A Worker older than `relay-v0.1.1` answers `404`
+there too and is read as reporting no version, as is an unstamped Worker. Only the new release's
+health check (step 5) reads the home circle, signed.
 
 **The deploy step** is a pass of `digestif run`, after each sync (`node/relay_deploy/deploy.ml`).
 It is due when this node operates a relay, the newest relay release is newer than the version the
@@ -1384,7 +1396,8 @@ nothing is deployed. Otherwise:
    one-second steps as a trial is.
 6. **Kept, or rolled back.** A pass records the version, and the next digest says "Deployed relay
    0.3.0 to dinners.digestif.io." A failure deploys the rollback target at 100%, checks that the
-   relay answers the version it reported before, refuses the release on this relay for good, and
+   relay answers the version it reported before on the version read and `GET /app/` answers 200,
+   within the same two minutes, refuses the release on this relay for good, and
    the next digest says what the relay answered and that the node rolled it back. A rollback that
    fails too is a line leading the digest's "On your machine" section, with the `wrangler rollback`
    to run, on every digest until the relay answers a version the node knows.
@@ -1398,8 +1411,17 @@ listed twice refuses the bundle for good.
 A step failing before the deploy changes nothing the relay serves. A download, a bundle whose bytes
 do not match, or Cloudflare not answering or answering 5xx is kept as pending in
 `relay-deploy.json` with its step and cause, and tried again on the update pass's backoff (ten
-minutes, doubling, at most a day). A 401 or 403 is a digest line naming `digestif relay operate`,
-once, and nothing is tried until that command stores a new token. A migration D1 refuses is refused
+minutes, doubling, at most a day).
+
+What Cloudflare refuses is read from its error code, never from the HTTP status alone:
+
+| Cloudflare answers | The node |
+|---|---|
+| a 401 or 403 whose code says the token is wrong, expired or lacks a permission (1000, 9109, 10000, 10001) | puts a digest line naming `digestif relay operate`, once, and tries nothing until that command stores a new token |
+| code 10063, the account has no `workers.dev` subdomain | keeps the step pending and retries it on the backoff; a digest line, once per release, names the account id and says to open Workers and Pages in it |
+| a 401 or 403 of any other code, or refusing an asset upload (which carries its session's token, not the deploy token) | keeps the step pending and retries it on the backoff; a digest line, once per release, carries Cloudflare's message |
+
+A migration D1 refuses is refused
 for good, and so is a bundle whose sha256 matches but that cannot be deployed as it stands (it does
 not unpack, its migrations are not the manifest's, it has no `bundle.json`, module or `app/`): a
 later pass would meet the same bytes. Each digest line goes out once; `digestif relay status` shows

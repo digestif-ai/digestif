@@ -21,10 +21,15 @@
    5. Health check: a signed GET /v0/circle at the home circle's address, <url>/c/<root hex>,
       answering 200 with this relay_version and the circle's root, and GET /app/ answering 200,
       within two minutes of awake time.
-   6. Kept, or rolled back to the recorded version, the release refused on this relay for good.
+   6. Kept, or rolled back to the recorded version, the release refused on this relay for good;
+      the rollback's check reads the unsigned GET /v0/version, which every supported relay release
+      answers, and GET /app/.
 
    A step failing before 4 changes nothing the relay serves and is kept as pending, tried again on
-   the update pass's backoff. A 401 or 403 waits for a new token. A migration D1 refuses, and a
+   the update pass's backoff. An answer saying the token itself is wrong, expired or lacks a
+   permission waits for a new token; that is read from Cloudflare's error code, so a 401 or 403 of
+   any other code, and an account with no workers.dev subdomain, are pending too, each with a digest
+   line saying what Cloudflare answered. A migration D1 refuses, and a
    signed bundle that cannot be deployed as it stands, are refused for good: a later pass would
    meet the same bytes. Every step reads where the relay is, so a pass interrupted by sleep resumes
    there. *)
@@ -96,16 +101,21 @@ let health_step = 1.
 (* Why a step stopped the pass. *)
 type stop =
   | Retry of string * string  (** the step, and why: pending *)
+  | Held of string * Cf.error
+      (** the step, and Cloudflare's refusal that is not the token's: pending,
+          and the digest says what it answered *)
   | Token of string  (** Cloudflare refused the token *)
   | Refuse of string  (** this release never deploys on this relay *)
 
 let ( let* ) = Result.bind
 
-(* A Cloudflare error from [step]: a refused token waits for a new one, anything else is retried
-   unless [rejected] says what a refusal Cloudflare means is. *)
+(* A Cloudflare error from [step]: a refused token waits for a new one, anything else is retried (a
+   401 or 403 that is not the token's, and an account that is not set up, with a digest line) unless
+   [rejected] says what a refusal Cloudflare means is. *)
 let cf ?rejected step = function
   | Ok v -> Ok v
   | Error (Cf.Unauthorized _ as e) -> Error (Token (Cf.error_to_string e))
+  | Error ((Cf.No_subdomain _ | Cf.Forbidden _) as e) -> Error (Held (step, e))
   | Error (Cf.Rejected _ as e) when rejected <> None ->
       Error (Refuse (Option.get rejected ^ ": " ^ Cf.error_to_string e))
   | Error e -> Error (Retry (step, Cf.error_to_string e))
@@ -594,9 +604,20 @@ let upload env (r : Operate.record) ~token (m : Release.relay_manifest) ~root
            ~worker:r.worker
            (module_parts ~root b ~scratch (metadata m b ~jwt ())))
 
-(* What the relay answers, read once: [Ok ()] when it is the version [want] (None: a Worker built
-   before relay releases, reporting none) serving the circle at its address, else what it
-   answered. *)
+(* GET /app/ on the relay's base url answering 200: the phone app serves. *)
+let app_serves env ~url =
+  match
+    env.relay ~meth:"GET"
+      ~url:(Relay_client.relay_base url ^ "/app/")
+      ~headers:[] ~body:None
+  with
+  | Ok { status = 200; _ } -> Ok ()
+  | Ok { status; _ } -> Error (Printf.sprintf "/app/ answered %d" status)
+  | Error e -> Error ("/app/ did not answer: " ^ e)
+
+(* The new release's health check, read once: [Ok ()] when a signed GET /v0/circle at the home
+   circle's address answers the version [want] and the circle's root, and the app serves; else what
+   it answered. *)
 let answers env (n : Node.t) ~url ~want =
   let* key = Node.device_key n in
   let* address = Operate.home_address n ~url in
@@ -613,7 +634,7 @@ let answers env (n : Node.t) ~url ~want =
           | _ -> None
         in
         let got = field "relay_version" in
-        if got <> want then
+        if got <> Some want then
           Error ("it answered relay_version " ^ Option.value got ~default:"none")
         else if field "root" <> Node.root n then
           Error
@@ -621,20 +642,27 @@ let answers env (n : Node.t) ~url ~want =
             ^ Option.value (field "root") ~default:"none")
         else Ok ()
   in
-  match
-    env.relay ~meth:"GET"
-      ~url:(Relay_client.relay_base url ^ "/app/")
-      ~headers:[] ~body:None
-  with
-  | Ok { status = 200; _ } -> Ok ()
-  | Ok { status; _ } -> Error (Printf.sprintf "/app/ answered %d" status)
-  | Error e -> Error ("/app/ did not answer: " ^ e)
+  app_serves env ~url
 
-(* 5. The health check: [answers] until it passes or two minutes of awake time have passed;
-   [Error] is the last thing the relay answered. *)
-let healthy env n ~url ~want =
+(* The rollback's check, read once: [Ok ()] when the relay's GET /v0/version answers the version
+   [want] it reported before (None: a Worker that reports none) and the app serves. The version
+   read, not the home circle's, since the Worker rolled back to may be a release older than the
+   circle routes at /c/<root hex> (docs/releases.md, Relay releases). *)
+let answers_back env ~url ~want =
+  let* () =
+    match Relay_client.version env.relay ~base:url with
+    | Error e -> Error ("it did not answer: " ^ Relay_client.error_to_string e)
+    | Ok got when got <> want ->
+        Error ("it answered relay_version " ^ Option.value got ~default:"none")
+    | Ok _ -> Ok ()
+  in
+  app_serves env ~url
+
+(* 5. The health check: [read] until it passes or two minutes of awake time have passed; [Error]
+   is the last thing the relay answered. *)
+let healthy env read =
   let rec go awake =
-    match answers env n ~url ~want with
+    match read () with
     | Ok () -> Ok ()
     | Error last when awake.Digestif_update.Awake.elapsed >= health_bound ->
         Error last
@@ -660,7 +688,7 @@ let check env (n : Node.t) (r : Operate.record) ~token
     (m : Release.relay_manifest) =
   let url = r.url and v = Version.to_string m.relay_version in
   let refuse why = { Operate.version = v; why } :: r.refused in
-  match healthy env n ~url ~want:(Some v) with
+  match healthy env (fun () -> answers env n ~url ~want:v) with
   | Ok () ->
       Ok
         ( {
@@ -686,7 +714,7 @@ let check env (n : Node.t) (r : Operate.record) ~token
         with
         | Error e ->
             Error ("Cloudflare did not deploy it: " ^ Cf.error_to_string e)
-        | Ok () -> healthy env n ~url ~want:previous
+        | Ok () -> healthy env (fun () -> answers_back env ~url ~want:previous)
       in
       let why = "it failed its health check: " ^ answered in
       match back with
@@ -779,6 +807,51 @@ let with_scratch f =
       try Digestif_update.Stage.remove_tree dir with _ -> ())
     (fun () -> f dir)
 
+(* What the digest says of a deploy Cloudflare holds back for a cause that is not the token. It
+   names no time, so a later try that meets the same cause makes the same line. *)
+let held_line (r : Operate.record) v (e : Cf.error) =
+  let why = Cf.error_to_string e in
+  match e with
+  | Cf.No_subdomain _ ->
+      Printf.sprintf
+        "Relay %s is not deployed to %s yet: Cloudflare account %s has no \
+         workers.dev subdomain (%s). Open Workers and Pages in that account's \
+         Cloudflare dashboard to create it; this node tries again on its own."
+        v (host r.url) r.account_id why
+  | _ ->
+      Printf.sprintf
+        "Relay %s is not deployed to %s yet (%s). This node tries again on its \
+         own; digestif relay status shows when."
+        v (host r.url) why
+
+(* [step] failed and is tried again on the backoff. Of the notes an earlier try of [v] left, only
+   the told ones stay: [line], when it is not one of them, is said next. *)
+let pend (r : Operate.record) ~v ~step ~why ?line ~now () =
+  let earlier =
+    match r.pending with Some p when p.version = v -> Some p | _ -> None
+  in
+  let attempts =
+    match earlier with Some p -> p.Operate.attempts + 1 | None -> 1
+  in
+  let told =
+    match earlier with
+    | Some p -> List.filter (fun (x : Operate.note) -> x.told) p.notes
+    | None -> []
+  in
+  let notes =
+    match line with
+    | Some text
+      when not (List.exists (fun (x : Operate.note) -> x.text = text) told) ->
+        told @ [ note text ]
+    | _ -> told
+  in
+  let retry_at = now +. Digestif_update.Updater.backoff attempts in
+  ( {
+      r with
+      pending = Some { step; why; retry_at; version = v; attempts; notes };
+    },
+    Pending { url = r.url; why = step ^ ": " ^ why; retry_at } )
+
 (* One deploy of [m] to the relay [r] describes, the token in hand. *)
 let deploy env (n : Node.t) (r : Operate.record) ~token
     (m : Release.relay_manifest) ~now =
@@ -834,15 +907,10 @@ let deploy env (n : Node.t) (r : Operate.record) ~token
               ];
         },
         Refused { url; version = m.relay_version; why } )
-  | Error (Retry (step, why)) ->
-      let attempts =
-        match r.pending with
-        | Some p when p.version = v -> p.attempts + 1
-        | _ -> 1
-      in
-      let retry_at = now +. Digestif_update.Updater.backoff attempts in
-      ( { r with pending = Some { step; why; retry_at; version = v; attempts } },
-        Pending { url; why = step ^ ": " ^ why; retry_at } )
+  | Error (Held (step, e)) ->
+      pend r ~v ~step ~why:(Cf.error_to_string e) ~line:(held_line r v e) ~now
+        ()
+  | Error (Retry (step, why)) -> pend r ~v ~step ~why ~now ()
 
 let refused (r : Operate.record) v =
   List.exists
@@ -853,27 +921,17 @@ let reported (r : Operate.record) =
   Option.bind r.reported_version (fun s ->
       Result.to_option (Version.of_string s))
 
-(* What the relay reports now on a signed GET /v0/circle at the home circle's address; None when
-   it did not answer. *)
-let live env (n : Node.t) ~url =
-  match (Node.device_key n, Operate.home_address n ~url) with
-  | Error _, _ | _, Error _ -> None
-  | Ok key, Ok address -> (
-      match Relay_client.circle env.relay ~base:address ~key with
-      | Ok (`Assoc f) -> (
-          match List.assoc_opt "relay_version" f with
-          | Some (`String v) -> Some (Some v)
-          | _ -> Some None)
-      | Ok _ -> Some None
-      | Error _ -> None)
+(* What the relay reports now on its GET /v0/version (Relay_client.version); None when it did not
+   answer. *)
+let live env ~url = Result.to_option (Relay_client.version env.relay ~base:url)
 
 (* A lead line stands until the relay answers a version this node knows: a counted relay release,
    or the one it ran before. *)
-let clear_lead env n (r : Operate.record)
+let clear_lead env (n : Node.t) (r : Operate.record)
     ~(releases : Digestif_update.Circle_relay_release.t) =
   if not (List.exists (fun (x : Operate.note) -> x.lead) r.notes) then r
   else
-    match live env n ~url:r.url with
+    match live env ~url:r.url with
     | Some (Some v)
       when List.exists
              (fun (c : Release.relay_manifest Release.signed) ->
@@ -926,7 +984,7 @@ let pass ?(env = default_env) ?fold ~dir (n : Node.t)
             | Ok (Some token) -> (
                 (* A relay already on this release, or a newer one, was deployed some other way
                    (by hand, or by a pass cut off after its deploy): record it and deploy nothing. *)
-                match live env n ~url:r.url with
+                match live env ~url:r.url with
                 | Some (Some v)
                   when match Version.of_string v with
                        | Ok lv -> Version.compare lv m.relay_version >= 0
@@ -942,6 +1000,9 @@ let pass ?(env = default_env) ?fold ~dir (n : Node.t)
 let lines_of (n : Node.t) ~lead =
   match Operate.load n.dir with
   | Ok (Some r) ->
+      let pending (r : Operate.record) =
+        match r.pending with Some p -> p.notes | None -> []
+      in
       List.filter_map
         (fun (x : Operate.note) ->
           if x.lead <> lead || ((not lead) && x.told) then None
@@ -965,10 +1026,24 @@ let lines_of (n : Node.t) ~lead =
                                     Some { y with told = true }
                                   else None)
                                 r.notes;
+                            pending =
+                              Option.map
+                                (fun (p : Operate.pending) ->
+                                  {
+                                    p with
+                                    notes =
+                                      List.map
+                                        (fun (y : Operate.note) ->
+                                          if y.text = x.text then
+                                            { y with told = true }
+                                          else y)
+                                        p.notes;
+                                  })
+                                r.pending;
                           }
                     | _ -> ());
               })
-        r.notes
+        (r.notes @ pending r)
   | _ -> []
 
 (* A rollback that failed: the digest's lead lines, carried on every digest until the relay
@@ -976,7 +1051,7 @@ let lines_of (n : Node.t) ~lead =
 let lead_lines (n : Node.t) ~now:(_ : float) : Line.t list =
   lines_of n ~lead:true
 
-(* The digest's deploy lines: what this node deployed, why it rolled back, refused a release or
-   waits for a new token, each once. *)
+(* The digest's deploy lines: what this node deployed, why it rolled back, refused a release,
+   waits for a new token or is held back by Cloudflare, each once. *)
 let digest_lines (n : Node.t) ~now:(_ : float) : Line.t list =
   lines_of n ~lead:false

@@ -16,20 +16,22 @@ let token_name = "relay-deploy-token"
 let record_file = "relay-deploy.json"
 let record_path dir = Filename.concat dir record_file
 
+(* A digest line the deploy pass left (Deploy). A [lead] line leads the digest and is carried on
+   every digest until the pass clears it; any other goes out once. *)
+type note = { text : string; lead : bool; told : bool }
+
 (* A deploy step that failed before the relay's Worker was replaced, kept with its cause and tried
    again at [retry_at] (Deploy). [attempts] counts the failed tries of [version], which the backoff
-   doubles on. *)
+   doubles on. [notes] are what the digest says of it: one that went out stays, told, so a later try
+   that meets the same cause does not say it again, and they all go with the pending step. *)
 type pending = {
   step : string;
   why : string;
   retry_at : float;
   version : string;
   attempts : int;
+  notes : note list;
 }
-
-(* A digest line the deploy pass left (Deploy). A [lead] line leads the digest and is carried on
-   every digest until the pass clears it; any other goes out once. *)
-type note = { text : string; lead : bool; told : bool }
 
 (* A relay release this relay will never be deployed again, and why (Deploy). *)
 type refused = { version : string; why : string }
@@ -44,7 +46,7 @@ type record = {
       (** The Cloudflare Worker version a failed deploy goes back to: the one
           serving at setup, then the one serving before each deploy. *)
   reported_version : string option;
-      (** The relay release the relay last reported on GET /v0/circle, absent
+      (** The relay release the relay last reported on GET /v0/version, absent
           for a Worker built before relay releases. *)
   pending : pending option;
   refused : refused list;
@@ -52,10 +54,22 @@ type record = {
       (** The digest has said this node holds a token for a relay another member
           operates. *)
   token_refused : bool;
-      (** Cloudflare answered 401 or 403 for the token: no deploy is tried until
-          operate stores a new one. *)
+      (** Cloudflare said the token is wrong, expired or lacks a permission: no
+          deploy is tried until operate stores a new one. *)
   notes : note list;
 }
+
+let notes_to_json notes : Yojson.Safe.t =
+  `List
+    (List.map
+       (fun n ->
+         `Assoc
+           [
+             ("text", `String n.text);
+             ("lead", `Bool n.lead);
+             ("told", `Bool n.told);
+           ])
+       notes)
 
 let record_to_json r : Yojson.Safe.t =
   let opt name = function Some v -> [ (name, `String v) ] | None -> [] in
@@ -79,6 +93,7 @@ let record_to_json r : Yojson.Safe.t =
                   ("retry_at", `String (Time_fmt.of_unix p.retry_at));
                   ("version", `String p.version);
                   ("attempts", `Int p.attempts);
+                  ("notes", notes_to_json p.notes);
                 ] );
           ]
       | None -> [])
@@ -92,17 +107,7 @@ let record_to_json r : Yojson.Safe.t =
                r.refused) );
         ("told_not_operator", `Bool r.told_not_operator);
         ("token_refused", `Bool r.token_refused);
-        ( "notes",
-          `List
-            (List.map
-               (fun n ->
-                 `Assoc
-                   [
-                     ("text", `String n.text);
-                     ("lead", `Bool n.lead);
-                     ("told", `Bool n.told);
-                   ])
-               r.notes) );
+        ("notes", notes_to_json r.notes);
       ])
 
 let record_of_json (j : Yojson.Safe.t) : (record, string) result =
@@ -116,6 +121,21 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
   in
   let opt name =
     match field j name with Some (`String s) -> Some s | _ -> None
+  in
+  let notes_of o =
+    match field o "notes" with
+    | Some (`List l) ->
+        List.filter_map
+          (fun x ->
+            match field x "text" with
+            | Some (`String text) ->
+                let b name =
+                  match field x name with Some (`Bool b) -> b | _ -> false
+                in
+                Some { text; lead = b "lead"; told = b "told" }
+            | _ -> None)
+          l
+    | _ -> []
   in
   let ( let* ) = Result.bind in
   let* url = str "url" in
@@ -135,7 +155,8 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
               match field p "attempts" with Some (`Int i) -> i | _ -> 1
             in
             Option.map
-              (fun retry_at -> { step; why; retry_at; version; attempts })
+              (fun retry_at ->
+                { step; why; retry_at; version; attempts; notes = notes_of p })
               (Time_fmt.to_unix at)
         | _ -> None)
     | _ -> None
@@ -153,21 +174,6 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
     | _ -> []
   in
   let flag name = match field j name with Some (`Bool b) -> b | _ -> false in
-  let notes =
-    match field j "notes" with
-    | Some (`List l) ->
-        List.filter_map
-          (fun x ->
-            match field x "text" with
-            | Some (`String text) ->
-                let b name =
-                  match field x name with Some (`Bool b) -> b | _ -> false
-                in
-                Some { text; lead = b "lead"; told = b "told" }
-            | _ -> None)
-          l
-    | _ -> []
-  in
   Ok
     {
       url;
@@ -180,7 +186,7 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
       refused;
       told_not_operator = flag "told_not_operator";
       token_refused = flag "token_refused";
-      notes;
+      notes = notes_of j;
     }
 
 (* The record, or None when this node has none. A file that does not parse is an error, never read
@@ -292,27 +298,15 @@ let home_address (n : Node.t) ~url =
   | Some root -> Ok (Relay_client.circle_address url ~root)
   | None -> Error "this node holds no circle root"
 
-(* The relay release a relay reports: GET /v0/relay, unsigned (docs/protocol.md, Hosted circles), and,
-   from a Worker built before relays hosted many circles, which has no such route, the signed
-   GET /v0/circle at the home circle's address. None from a Worker built before relay releases. *)
-let reported_version transport (n : Node.t) ~url =
-  match Relay_client.relay_info transport ~base:url with
-  | Ok i -> Ok i.relay_version
-  | Error _ -> (
-      let* key = Node.device_key n in
-      let* address = home_address n ~url in
-      match Relay_client.circle transport ~base:address ~key with
-      | Error e ->
-          Error
-            ("the relay at " ^ url ^ " did not answer: "
-            ^ Relay_client.error_to_string e)
-      | Ok j -> (
-          match j with
-          | `Assoc f -> (
-              match List.assoc_opt "relay_version" f with
-              | Some (`String v) -> Ok (Some v)
-              | _ -> Ok None)
-          | _ -> Ok None))
+(* The relay release a relay reports, on the unsigned GET /v0/version (Relay_client.version), which
+   every supported relay release answers. None from a Worker that reports no version. *)
+let reported_version transport ~url =
+  match Relay_client.version transport ~base:url with
+  | Ok v -> Ok v
+  | Error e ->
+      Error
+        ("the relay at " ^ url ^ " did not answer GET /v0/version: "
+        ^ Relay_client.error_to_string e)
 
 (* Store the deploy token and the deployment record for [url], keeping what the deploy pass learned
    from an [existing] record for the same relay. *)
@@ -435,7 +429,7 @@ let operate ?(cloudflare = Cloudflare.curl) ?(transport = Relay_client.curl)
     | _ -> Ok ()
   in
   let* serving = check_token cloudflare s in
-  let* reported = reported_version transport n ~url in
+  let* reported = reported_version transport ~url in
   let* () = store n ~url ~existing ~serving ~reported s in
   let* claimed =
     match (Fold.relay_operator f url, identity n) with

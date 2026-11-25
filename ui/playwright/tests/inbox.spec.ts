@@ -337,3 +337,29 @@ test("the node's own notice takes no reply (DIG-477)", async ({ page }) => {
   await page.getByRole('button', { name: 'More actions' }).click();
   await expect(replyItem(page)).toHaveCount(0);
 });
+
+// DIG-484: the could_not_run notice says why on its page, and its button opens the nightly note's log,
+// which shows the failure.
+test('the could-not-run notice says why and opens the page that shows the failure (DIG-484)', async ({ page }) => {
+  const why = 'The note could not be written. The run was ended at its 30 minute deadline, while writing the note.';
+  await page.route('**/api/v0/items/itm-repositories', async (route) => {
+    const r = await route.fetch();
+    const item = (await r.json()) as Record<string, unknown>;
+    await route.fulfill({
+      response: r,
+      json: {
+        ...item,
+        subject: 'could_not_run',
+        title: 'Digestif could not run today.',
+        detail: why + ' Open the log to see where the run failed.',
+        path: '/settings/note-log'
+      }
+    });
+  });
+  await page.goto('/inbox/itm-repositories');
+  await expect(page.getByTestId('item-detail')).toContainText(why);
+  await page.getByRole('link', { name: 'Open on your machine' }).click();
+  await expect(page).toHaveURL(/\/settings\/note-log$/);
+  await expect(page.getByTestId('note-log-failure')).toHaveText(why);
+  await expect(page.getByTestId('note-log')).toContainText('past its deadline; ending it');
+});

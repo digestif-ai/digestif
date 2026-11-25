@@ -9,6 +9,16 @@ export const INBOX_LOG = [
   "2026-11-01T10:00:12.000Z the Inbox agent's run over 2 failed: the agent gave no answer (signed_out)",
   '2026-11-01T10:00:12.000Z digestif: exited 0'
 ];
+// The nightly note's log, as GET /settings/note_log serves it: a date whose third try ended at its deadline.
+export const NOTE_LOG = {
+  failures: ['The note could not be written. The run was ended at its 30 minute deadline, while writing the note.'],
+  lines: [
+    '2026-11-01T11:30:00.000Z digestif: spawn behaviors/bin/nightly-hook',
+    '2026-11-01T12:00:00.000Z digestif: past its deadline; ending it',
+    '2026-11-01T12:00:00.000Z killed by SIGTERM at write (try 3/3)',
+    '2026-11-01T12:00:01.000Z digestif: 3 runs failed; 2026-11-01 is over'
+  ]
+};
 // A made-up circle for `npm run dev` and the tests. No real person, key or path.
 import {
   type DenyEntry,

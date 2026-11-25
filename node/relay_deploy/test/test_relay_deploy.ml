@@ -129,10 +129,20 @@ let circle_route u =
   && String.ends_with ~suffix u
   && String.length u = String.length prefix + 64 + String.length suffix
 
-(* The relay answering GET /v0/circle with [version], at a circle's address only. *)
+let version_body version =
+  Yojson.Safe.to_string
+    (`Assoc
+       (match version with
+       | Some v -> [ ("relay_version", `String v) ]
+       | None -> []))
+
+(* The relay answering the unsigned GET /v0/version with [version], and GET /v0/circle with it at
+   a circle's address only. *)
 let relay ?version () : Relay_client.transport =
  fun ~meth:_ ~url:u ~headers:_ ~body:_ ->
-  if not (circle_route u) then Error ("no route to " ^ u)
+  if u = url ^ "/v0/version" then
+    Ok { Relay_client.status = 200; body = version_body version }
+  else if not (circle_route u) then Error ("no route to " ^ u)
   else
     Ok
       {
@@ -146,6 +156,23 @@ let relay ?version () : Relay_client.transport =
                | Some v -> [ ("relay_version", `String v) ]
                | None -> []));
       }
+
+(* A relay on a release older than 0.1.76, as dinners.digestif.io answered on 0.1.75: GET
+   /v0/version answers its version, GET /v0/relay and the circle routes at /c/<root hex> answer
+   404 no route, and the unprefixed GET /v0/circle answers 401 to a key it does not admit. *)
+let older_relay ?(reads = ref []) version : Relay_client.transport =
+ fun ~meth:_ ~url:u ~headers:_ ~body:_ ->
+  reads := u :: !reads;
+  let no_route = {|{"code":"malformed","message":"no route"}|} in
+  if u = url ^ "/v0/version" then
+    Ok { Relay_client.status = 200; body = version_body (Some version) }
+  else if u = url ^ "/v0/circle" then
+    Ok
+      {
+        Relay_client.status = 401;
+        body = {|{"code":"unauthorized","message":"no"}|};
+      }
+  else Ok { Relay_client.status = 404; body = no_route }
 
 let setup =
   {
@@ -251,6 +278,34 @@ let refuses_a_relay_that_does_not_answer =
   refuses_and_stores_nothing "relay down"
     ~relay:(fun ~meth:_ ~url:_ ~headers:_ ~body:_ -> Error "connection refused")
     "did not answer"
+
+(* operate against a relay older than 0.1.76 reads its version on GET /v0/version and stores it. *)
+let reads_a_relay_older_than_0_1_76 () =
+  let n = operator_node () in
+  let reads = ref [] in
+  ignore
+    (ok
+       (O.operate ~cloudflare:(cloudflare ())
+          ~transport:(older_relay ~reads "0.1.75")
+          n ~url setup));
+  Alcotest.(check (option string))
+    "starts from what the relay runs" (Some "0.1.75")
+    (Option.get (ok (O.load n.dir))).reported_version;
+  Alcotest.(check bool)
+    "read GET /v0/version" true
+    (List.mem (url ^ "/v0/version") !reads)
+
+(* A Worker older than relay-v0.1.1 has no GET /v0/version: it reports no version. *)
+let a_worker_without_the_version_route_reports_none () =
+  let n = operator_node () in
+  ignore
+    (ok
+       (O.operate ~cloudflare:(cloudflare ())
+          ~transport:(fun ~meth:_ ~url:_ ~headers:_ ~body:_ ->
+            Ok { Relay_client.status = 404; body = "{}" })
+          n ~url setup));
+  Alcotest.(check (option string))
+    "none reported" None (Option.get (ok (O.load n.dir))).reported_version
 
 (* A token the account owns answers only at the account's own verify route. *)
 let takes_an_account_token () =
@@ -459,6 +514,10 @@ let () =
             refuses_a_relay_the_circle_does_not_name;
           Alcotest.test_case "refuses a relay that does not answer" `Quick
             refuses_a_relay_that_does_not_answer;
+          Alcotest.test_case "reads a relay older than 0.1.76" `Quick
+            reads_a_relay_older_than_0_1_76;
+          Alcotest.test_case "a Worker without the version route reports none"
+            `Quick a_worker_without_the_version_route_reports_none;
           Alcotest.test_case "takes an account token" `Quick
             takes_an_account_token;
           Alcotest.test_case "again replaces the token" `Quick
