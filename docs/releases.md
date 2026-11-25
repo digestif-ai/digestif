@@ -439,7 +439,7 @@ refuses that version for good.
 ## Switching
 
 A node runs under a supervisor once `digestif service install` has set up `releases/`, `current`
-and `good`: the launchd agent or systemd unit runs `good/bin/digestif supervise`, the binary of the
+and `good`: the launchd agent (through its launcher, The launcher) or systemd unit runs `good/bin/digestif supervise`, the binary of the
 last healthy release, and the supervisor runs `current/bin/digestif run` as its child
 (`node/update/lib/supervisor.ml`). On a node not yet supervised a pass stages the release and the
 digest says to run its `service install` once. Releases live once per machine: the first node's
@@ -490,6 +490,34 @@ start cannot run code to fix itself, and the supervisor is always a release that
 supervisor takes over the next time the service manager starts it. Past the trial the supervisor
 counts the child's exits, and a version that keeps crashing goes back on its own (A version that
 keeps crashing).
+
+### The launcher
+
+macOS keeps a privacy decision (a folder read, Full Disk Access) against the program a launchd job
+starts, looked up by its resolved path and checked against its code signature. The supervisor's
+path names its release, `releases/<version>/bin/digestif`, so a supervisor started from a new
+release was a program macOS had never been asked about, and asked again, with nobody at the
+keyboard during a nightly run. So on macOS launchd starts a launcher at one fixed path,
+`<data dir>/launcher/Digestif`, with the supervisor's command as its arguments
+(`node/launcher/digestif_launcher.ml`). It spawns that command, never execs it, so it stays the
+process macOS holds responsible for everything beneath it; forwards SIGTERM, SIGINT and SIGHUP;
+and exits with the child's status, so launchd restarts the job exactly as before.
+
+The decision holds only while the launcher's bytes do: it is ad-hoc signed by the linker, so
+macOS checks it by its cdhash. Every node binary embeds the launcher it was built with beside a
+digest of the launcher's source (`node/update/lib/launcher.ml`), and writes those bytes to the
+fixed path, with the digest in `launcher/Digestif.source`, only when the digest there differs. A
+release rebuilt from the same launcher source leaves the installed bytes alone, whatever compiler
+or linker built them; a change to `node/launcher/` replaces them, and macOS asks once more on each
+machine. The bytes are part of a binary both release signers signed (or one the member built), so
+the rule that decides what a node runs is unchanged, and no Apple signature is needed or checked.
+
+The launcher is written by the supervisor when it starts, always a release that was healthy, and by
+`digestif service install`; a release on trial never writes it. The plist names it once it is
+there: `service install` loads the new plist at once, and a node launchd started rewrites its plist
+to name it (DIG-323), which launchd reads at the next load (the next login). A launcher that cannot
+be written leaves the job starting the supervisor directly. Linux has no such decision and runs the
+supervisor directly. DIG-492
 
 ## Cutting a release
 

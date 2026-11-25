@@ -1,0 +1,12 @@
+; The macOS service's fixed-path launcher (digestif_launcher.ml, docs/releases.md, The launcher).
+;
+; The node binary embeds this executable's bytes beside a digest of this directory's source
+; (update/lib, launcher_data.ml), and writes them to <data dir>/launcher/Digestif only when that
+; digest differs from the one installed there, so the bytes macOS keys a privacy grant to change
+; only when this source does. That is sound only while nothing outside this directory reaches
+; these bytes: the standard library and unix, and nothing of the node's. DIG-492
+
+(executable
+ (name digestif_launcher)
+ (modules digestif_launcher)
+ (libraries unix))

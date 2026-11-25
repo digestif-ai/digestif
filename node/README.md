@@ -34,7 +34,9 @@ links `~/.local/bin/digestif-update` (and an installer's `~/.local/bin/digestif`
 (docs/releases.md, The commands on PATH), and restarts the service. `--to <path>` only copies the binary and leaves the service alone. It runs no
 tests: `ci/build.slow.sh` is the whole check.
 
-The service runs `good/bin/digestif supervise`, which runs `current/bin/digestif run` and installs
+The service runs `good/bin/digestif supervise` (on macOS through the fixed-path launcher
+`<data dir>/launcher/Digestif`, so a privacy grant survives an update: docs/releases.md, The
+launcher), which runs `current/bin/digestif run` and installs
 signed releases on its own (`digestif update`, docs/releases.md); `./install.sh` is the upgrade for
 a node built from source.
 
