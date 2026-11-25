@@ -24,7 +24,10 @@
    6. Kept, or rolled back to the recorded version, the release refused on this relay for good.
 
    A step failing before 4 changes nothing the relay serves and is kept as pending, tried again on
-   the update pass's backoff. A 401 or 403 waits for a new token. A migration D1 refuses, and a
+   the update pass's backoff. An answer saying the token itself is wrong, expired or lacks a
+   permission waits for a new token; that is read from Cloudflare's error code, so a 401 or 403 of
+   any other code, and an account with no workers.dev subdomain, are pending too, each with a digest
+   line saying what Cloudflare answered. A migration D1 refuses, and a
    signed bundle that cannot be deployed as it stands, are refused for good: a later pass would
    meet the same bytes. Every step reads where the relay is, so a pass interrupted by sleep resumes
    there. *)
@@ -96,16 +99,21 @@ let health_step = 1.
 (* Why a step stopped the pass. *)
 type stop =
   | Retry of string * string  (** the step, and why: pending *)
+  | Held of string * Cf.error
+      (** the step, and Cloudflare's refusal that is not the token's: pending,
+          and the digest says what it answered *)
   | Token of string  (** Cloudflare refused the token *)
   | Refuse of string  (** this release never deploys on this relay *)
 
 let ( let* ) = Result.bind
 
-(* A Cloudflare error from [step]: a refused token waits for a new one, anything else is retried
-   unless [rejected] says what a refusal Cloudflare means is. *)
+(* A Cloudflare error from [step]: a refused token waits for a new one, anything else is retried (a
+   401 or 403 that is not the token's, and an account that is not set up, with a digest line) unless
+   [rejected] says what a refusal Cloudflare means is. *)
 let cf ?rejected step = function
   | Ok v -> Ok v
   | Error (Cf.Unauthorized _ as e) -> Error (Token (Cf.error_to_string e))
+  | Error ((Cf.No_subdomain _ | Cf.Forbidden _) as e) -> Error (Held (step, e))
   | Error (Cf.Rejected _ as e) when rejected <> None ->
       Error (Refuse (Option.get rejected ^ ": " ^ Cf.error_to_string e))
   | Error e -> Error (Retry (step, Cf.error_to_string e))
@@ -779,6 +787,51 @@ let with_scratch f =
       try Digestif_update.Stage.remove_tree dir with _ -> ())
     (fun () -> f dir)
 
+(* What the digest says of a deploy Cloudflare holds back for a cause that is not the token. It
+   names no time, so a later try that meets the same cause makes the same line. *)
+let held_line (r : Operate.record) v (e : Cf.error) =
+  let why = Cf.error_to_string e in
+  match e with
+  | Cf.No_subdomain _ ->
+      Printf.sprintf
+        "Relay %s is not deployed to %s yet: Cloudflare account %s has no \
+         workers.dev subdomain (%s). Open Workers and Pages in that account's \
+         Cloudflare dashboard to create it; this node tries again on its own."
+        v (host r.url) r.account_id why
+  | _ ->
+      Printf.sprintf
+        "Relay %s is not deployed to %s yet (%s). This node tries again on its \
+         own; digestif relay status shows when."
+        v (host r.url) why
+
+(* [step] failed and is tried again on the backoff. Of the notes an earlier try of [v] left, only
+   the told ones stay: [line], when it is not one of them, is said next. *)
+let pend (r : Operate.record) ~v ~step ~why ?line ~now () =
+  let earlier =
+    match r.pending with Some p when p.version = v -> Some p | _ -> None
+  in
+  let attempts =
+    match earlier with Some p -> p.Operate.attempts + 1 | None -> 1
+  in
+  let told =
+    match earlier with
+    | Some p -> List.filter (fun (x : Operate.note) -> x.told) p.notes
+    | None -> []
+  in
+  let notes =
+    match line with
+    | Some text
+      when not (List.exists (fun (x : Operate.note) -> x.text = text) told) ->
+        told @ [ note text ]
+    | _ -> told
+  in
+  let retry_at = now +. Digestif_update.Updater.backoff attempts in
+  ( {
+      r with
+      pending = Some { step; why; retry_at; version = v; attempts; notes };
+    },
+    Pending { url = r.url; why = step ^ ": " ^ why; retry_at } )
+
 (* One deploy of [m] to the relay [r] describes, the token in hand. *)
 let deploy env (n : Node.t) (r : Operate.record) ~token
     (m : Release.relay_manifest) ~now =
@@ -834,15 +887,10 @@ let deploy env (n : Node.t) (r : Operate.record) ~token
               ];
         },
         Refused { url; version = m.relay_version; why } )
-  | Error (Retry (step, why)) ->
-      let attempts =
-        match r.pending with
-        | Some p when p.version = v -> p.attempts + 1
-        | _ -> 1
-      in
-      let retry_at = now +. Digestif_update.Updater.backoff attempts in
-      ( { r with pending = Some { step; why; retry_at; version = v; attempts } },
-        Pending { url; why = step ^ ": " ^ why; retry_at } )
+  | Error (Held (step, e)) ->
+      pend r ~v ~step ~why:(Cf.error_to_string e) ~line:(held_line r v e) ~now
+        ()
+  | Error (Retry (step, why)) -> pend r ~v ~step ~why ~now ()
 
 let refused (r : Operate.record) v =
   List.exists
@@ -942,6 +990,9 @@ let pass ?(env = default_env) ?fold ~dir (n : Node.t)
 let lines_of (n : Node.t) ~lead =
   match Operate.load n.dir with
   | Ok (Some r) ->
+      let pending (r : Operate.record) =
+        match r.pending with Some p -> p.notes | None -> []
+      in
       List.filter_map
         (fun (x : Operate.note) ->
           if x.lead <> lead || ((not lead) && x.told) then None
@@ -965,10 +1016,24 @@ let lines_of (n : Node.t) ~lead =
                                     Some { y with told = true }
                                   else None)
                                 r.notes;
+                            pending =
+                              Option.map
+                                (fun (p : Operate.pending) ->
+                                  {
+                                    p with
+                                    notes =
+                                      List.map
+                                        (fun (y : Operate.note) ->
+                                          if y.text = x.text then
+                                            { y with told = true }
+                                          else y)
+                                        p.notes;
+                                  })
+                                r.pending;
                           }
                     | _ -> ());
               })
-        r.notes
+        (r.notes @ pending r)
   | _ -> []
 
 (* A rollback that failed: the digest's lead lines, carried on every digest until the relay
@@ -976,7 +1041,7 @@ let lines_of (n : Node.t) ~lead =
 let lead_lines (n : Node.t) ~now:(_ : float) : Line.t list =
   lines_of n ~lead:true
 
-(* The digest's deploy lines: what this node deployed, why it rolled back, refused a release or
-   waits for a new token, each once. *)
+(* The digest's deploy lines: what this node deployed, why it rolled back, refused a release,
+   waits for a new token or is held back by Cloudflare, each once. *)
 let digest_lines (n : Node.t) ~now:(_ : float) : Line.t list =
   lines_of n ~lead:false
