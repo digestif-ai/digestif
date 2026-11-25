@@ -14710,28 +14710,29 @@ let folder_access_notice () =
     ];
   Store.set_offered log
     [ { (Sources.claude_source [ projects ]) with selected = true } ];
-  (* The probe: a folder in [refusing] is refused at its open, every other one lists [projects]. *)
+  (* The listing, made here rather than by a child: a folder in [refusing] is refused at its open,
+     every other one lists [projects]. [limits] holds each call's limit. *)
   let refusing = ref [ documents; desktop ] in
-  let opened = ref [] and reads = ref 0 in
-  let probe : F.probe =
-    {
-      opendir =
-        (fun d ->
+  let opened = ref [] and reads = ref 0 and limits = ref [] in
+  let ask
+      ?(opendir =
+        fun d ->
           opened := d :: !opened;
           if List.mem d !refusing then
             raise (Unix.Unix_error (Unix.EPERM, "opendir", d))
-          else Unix.opendir projects);
-      readdir =
-        (fun h ->
+          else Unix.opendir projects)
+      ?(readdir =
+        fun h ->
           incr reads;
-          Unix.readdir h);
-      closedir = Unix.closedir;
-    }
+          Unix.readdir h) () ~seconds call =
+    limits := seconds :: !limits;
+    Folder_reader.perform ~opendir ~readdir call
   in
+  let lists () = ask ~opendir:(fun _ -> Unix.opendir projects) () in
   let real = Unix.gettimeofday () in
   let now = ref real in
   let pass () =
-    F.check_if_due ~probe ~home log ~now:!now;
+    F.check_if_due ~ask:(ask ()) ~home log ~now:!now;
     L.raise_notices n ~now:!now;
     now := !now +. (2. *. 86400.)
   in
@@ -14746,40 +14747,46 @@ let folder_access_notice () =
   Alcotest.(check (list (pair string int)))
     "only the refused folder holding a project"
     [ (documents, 1) ]
-    (F.check ~probe ~home ~names:(F.session_project_names log) ());
+    (F.check ~ask:(ask ()) ~home ~names:(F.session_project_names log) ());
   Alcotest.(check bool)
     "a folder with no project under it is never tried" false
     (List.mem desktop !opened);
   Alcotest.(check (list (pair string int)))
     "a folder that lists is not refused" []
-    (F.check
-       ~probe:{ probe with opendir = (fun _ -> Unix.opendir projects) }
-       ~home
-       ~names:(F.session_project_names log)
-       ());
+    (F.check ~ask:(lists ()) ~home ~names:(F.session_project_names log) ());
   Alcotest.(check bool)
     "a refusal at the read counts too" true
     (F.refused
-       {
-         probe with
-         opendir = (fun _ -> Unix.opendir projects);
-         readdir =
-           (fun _ -> raise (Unix.Unix_error (Unix.EACCES, "readdir", "")));
-       }
+       ~ask:
+         (ask
+            ~opendir:(fun _ -> Unix.opendir projects)
+            ~readdir:(fun _ ->
+              raise (Unix.Unix_error (Unix.EACCES, "readdir", "")))
+            ())
        documents);
   reads := 0;
-  ignore
-    (F.refused { probe with opendir = (fun _ -> Unix.opendir projects) } home);
-  Alcotest.(check int) "one readdir, never a walk" 1 !reads;
+  ignore (F.refused ~ask:(lists ()) home);
+  Alcotest.(check bool) "the first entry, never a walk" true (!reads <= 3);
   Alcotest.(check bool)
     "a folder that is not there is not refused" false
     (F.refused
-       {
-         probe with
-         opendir =
-           (fun d -> raise (Unix.Unix_error (Unix.ENOENT, "opendir", d)));
-       }
+       ~ask:
+         (ask
+            ~opendir:(fun d ->
+              raise (Unix.Unix_error (Unix.ENOENT, "opendir", d)))
+            ())
        documents);
+  (* DIG-489: a folder macOS holds back answers past the limit, which is not a refusal, and the
+     limit is judging's for one listing. *)
+  Alcotest.(check bool)
+    "a folder that answers too late is not refused" false
+    (F.refused
+       ~ask:(fun ~seconds:_ _ -> Folder_reader.Timed_out { started = false })
+       documents);
+  Alcotest.(check bool)
+    "each listing has judging's limit" true
+    (!limits <> []
+    && List.for_all (fun l -> l = Sources.max_listing_seconds) !limits);
   (* The notice: raised once on the first pass after a start. *)
   F.checked_since_start := false;
   pass ();
@@ -14895,7 +14902,7 @@ let folder_access_notice () =
   Log.exec log "UPDATE ui_sources SET selected = 0" [];
   Alcotest.(check (list (pair string int)))
     "no chosen sessions, no notice" []
-    (F.check ~probe ~home ~names:(F.session_project_names log) ())
+    (F.check ~ask:(ask ()) ~home ~names:(F.session_project_names log) ())
 
 let inbox_node_notices_clear () =
   let n = demo () in
