@@ -7,8 +7,8 @@
      not told before, never a name.
    - A note waiting: a note waits for the member to approve, the first one in its own words while
      Onboarding, any other while Active.
-   - A run that failed: a problem opened on a job that writes, checks or sends a note. The kind of
-     failure stays on the machine.
+   - A run that failed: the day's last try at a note failed, or a note could not be checked or sent.
+     The notice says why and is local; the digest's title says only that it could not run.
    - A pause coming: the day the pause banner first shows, for a member not looking at the page.
 
    What each line has told is kept in config, so a line that has gone out is never carried again;
@@ -19,11 +19,11 @@ open Digestif_core
 
 let k_repositories = "digest_told_repositories_found_at"
 let k_notes = "digest_told_notes_waiting"
-let k_problems = "digest_told_problems_first_seen_at"
-let k_pause = "digest_told_pause_warning"
+let k_problems = "digest_told_problems"
 
-(* The jobs that write, check or send a note: a problem opened on one is a run that could not. *)
-let note_jobs = [ "write_version"; "pii_check"; "rules_check"; "send" ]
+(* What a node before DIG-484 told: every problem first seen by this time. Never written. *)
+let k_problems_before = "digest_told_problems_first_seen_at"
+let k_pause = "digest_told_pause_warning"
 
 (* [about] is what the line told of, kept beside the notice it raises so the notice clears itself
    once that no longer holds ([resolved]). *)
@@ -109,32 +109,58 @@ let notes_waiting (log : Log.t) =
         })
       text
 
-(* An open problem on a note's job that opened after the last one told. *)
+(* A problem in writing the note has a try to come until the nightly ends its date with no note
+   (Store.k_nightly_no_note_at): DIG-484. A problem on any other of a note's jobs has no such end. *)
+let last_try_failed (log : Log.t) (p : Store.Problems.problem) =
+  p.job <> "write_version"
+  ||
+  match Store.config log Store.k_nightly_no_note_at with
+  | Some at -> p.first_seen_at <= at
+  | None -> false
+
+(* The open problems on a note's job not told yet, told together, once each: what has been told is
+   their ids, pruned to the ones still open. Local, since its words carry the failure as the run
+   reported it (could_not_run_detail). *)
 let could_not_run (log : Log.t) =
-  let after = Store.config log k_problems in
-  let opened =
-    Store.Problems.open_ log
-    |> List.filter (fun (p : Store.Problems.problem) ->
-        List.mem p.job note_jobs
-        && match after with Some a -> p.first_seen_at > a | None -> true)
+  let told =
+    Option.fold ~none:[] ~some:(String.split_on_char ' ')
+      (Store.config log k_problems)
   in
-  match opened with
+  let before = Store.config log k_problems_before in
+  let is_told (p : Store.Problems.problem) =
+    List.mem p.p_id told
+    || match before with Some at -> p.first_seen_at <= at | None -> false
+  in
+  let open_ = Api.Problems.open_note_problems log in
+  let due =
+    List.filter (fun p -> (not (is_told p)) && last_try_failed log p) open_
+  in
+  let ids ps = List.map (fun (p : Store.Problems.problem) -> p.p_id) ps in
+  match due with
   | [] -> None
   | _ ->
-      let latest =
-        List.fold_left
-          (fun acc (p : Store.Problems.problem) -> max acc p.first_seen_at)
-          "" opened
-      in
       Some
         {
-          about =
-            String.concat " "
-              (List.map (fun (p : Store.Problems.problem) -> p.p_id) opened);
-          text =
-            "Digestif could not run today. Open it on your machine to see why.";
-          tell = (fun () -> Store.set_config log k_problems latest);
+          about = String.concat " " (ids due);
+          text = "Digestif could not run today.";
+          tell =
+            (fun () ->
+              Store.set_config log k_problems
+                (String.concat " "
+                   (List.filter (fun id -> List.mem id told) (ids open_)
+                   @ ids due)));
         }
+
+(* The notice's words: the newest of the failures it tells of, in the member's words and then where
+   it happened, then where to read more. [about] is the line's. *)
+let could_not_run_detail (log : Log.t) about =
+  let told = String.split_on_char ' ' about in
+  Api.Problems.open_note_problems log
+  |> List.find_opt (fun (p : Store.Problems.problem) -> List.mem p.p_id told)
+  |> Option.map (fun p ->
+      Api.Problems.note_sentence p
+      ^ " "
+      ^ Option.value (Item.notice_instruction "could_not_run") ~default:"")
 
 (* ISS-85467: the Inbox agent's run failed. One notice a failure streak, from the first problem in
    reading the circle until none is open: a later failure of the same streak, of any kind, revises
@@ -276,9 +302,7 @@ let words s = List.filter (( <> ) "") (String.split_on_char ' ' s)
    repository waits undecided, no pause warning shows. ISS-71859 *)
 let resolved ?halt (log : Log.t) ~now subject about =
   let open_problems () =
-    Store.Problems.open_ log
-    |> List.filter (fun (p : Store.Problems.problem) ->
-        List.mem p.job note_jobs)
+    Api.Problems.open_note_problems log
     |> List.map (fun (p : Store.Problems.problem) -> p.p_id)
   in
   let undecided ~after ~latest =
@@ -536,6 +560,8 @@ let raise_notices (node : Node.t) ~now =
       let detail =
         if subject = agent_failed_subject then
           agent_failed_detail (reading_problems node.log)
+        else if subject = "could_not_run" then
+          could_not_run_detail node.log l.about
         else Item.notice_instruction subject
       in
       match Api.Inbox.raise_notice c ~subject ~title:l.text ?detail () with

@@ -202,8 +202,12 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   `learnings`, `pull_request` and `read_circle`; the kinds `signed_out`, `model_unavailable`, `out_of_budget`, `source_failed` and
   `failed`. The same job and kind add to one open problem. The member sees it in the header of
   Notes and the note's Log; the circle sees only the could_not_run status note (No note from <first name> today; <agent name> couldn't run.) when the clock runs out. A
-  command source that failed is a problem naming the source by its label, never its output. A run's
-  own words stay in its log; nothing hands them to the node. The `read` run reports its own failure
+  command source that failed is a problem naming the source by its label, never its output. A failed
+  try of the nightly reports where it ended and why in code's words (`try 1 of 3 ended at the write
+  step: the writer ended with empty`); what the agent said stays in the run's log. A try that exits
+  without reporting is reported by the node, and one the node ended at its deadline says so and names
+  the step `progress.json` gives. The member is told once, by a local `could_not_run` notice, when the
+  date is over with no note (DIG-484). The `read` run reports its own failure
   as `read_circle`, with `--detail` the error in code's words (the agent gave no answer, its answer
   could not be used, the feed could not be read), and exits 0 when the agent's run failed so its
   batch is read again: the node takes a run that reported a problem while it ran as failed, a run
@@ -237,7 +241,9 @@ reads: `digestif service install` installs the service with the PATH of the shel
 note and no brief drafted on a page: the setup chat proposes the brief.
 
 While it runs, the nightly behavior keeps `progress.json` in `<data_dir>/behaviors/nightly/` (`step`:
-reading, writing or checking, and `sources`, their labels), which the first note's page shows.
+reading, writing or checking, and `sources`, their labels), which the first note's page shows, with
+`run_step`, the pipeline's own step (`read`, `close questions`, `write`, `check`, `hand over` or
+`pull request`), by which the node says where a run it ended at its deadline was.
 While reading, `reading` says where: the `source` label, the `file` (or repository) in it, the
 `bytes` of that file read so far and `elapsed_ms` the source has taken, so a run the node ends at
 its deadline leaves where it was. A source that takes more than a third of the deadline is

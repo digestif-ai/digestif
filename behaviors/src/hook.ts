@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { holdAwake } from "./awake.ts";
 import { checkEdits, type Edit } from "./edits.ts";
 import type { SourceProgress } from "./extract.ts";
-import { countFailureSync, gaveUpDetail, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, nodeQuestions, reportProblemSync, type NightlyOptions } from "./nightly.ts";
+import { countFailureSync, failedDetail, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, nodeQuestions, reportProblemSync, type NightlyOptions } from "./nightly.ts";
 import { recordFields, type Source, type SourceKind } from "./sources.ts";
 import { fetchNotePrompt, openPullRequest, owedPullRequests, recordPullRequest } from "./prompts.ts";
 import { AGENT_KINDS, fetchAutoApprove, fetchContext, killHarnesses, type AgentKind, type ApiAccess, type HarnessOptions, type WriterOptions } from "./writer.ts";
@@ -182,12 +182,20 @@ export function harnessOf(config: HookConfig): HarnessOptions {
 }
 
 /** The note page's words for the pipeline's steps, once a run reaches them. */
-const NOTE_STEPS: Record<string, string> = { read: "reading", write: "writing", check: "checking" };
+const NOTE_STEPS: Record<string, string> = {
+  read: "reading",
+  "close questions": "reading",
+  write: "writing",
+  check: "checking",
+  "hand over": "checking",
+  "pull request": "checking",
+};
 
 /**
  * What the first note's page shows while it is written (docs/design.md, The setup chat and the first
- * note): `progress.json` in the state directory, which the node reads. Best effort: the note does not
- * depend on it.
+ * note): `progress.json` in the state directory, which the node reads. `run_step` is the pipeline's own
+ * step, by which the node says where a run it ended at its deadline was (DIG-484). Best effort: the
+ * note does not depend on it.
  */
 export function writeProgress(stateDir: string, step: string, sources: Source[], reading?: SourceProgress): void {
   const noteStep = NOTE_STEPS[step];
@@ -208,7 +216,7 @@ export function writeProgress(stateDir: string, step: string, sources: Source[],
   try {
     // Written beside and renamed over, so the node never reads half of it.
     const file = join(stateDir, "progress.json");
-    writeFileSync(file + ".tmp", JSON.stringify({ step: noteStep, sources: sources.map((s) => s.label), ...where }) + "\n");
+    writeFileSync(file + ".tmp", JSON.stringify({ step: noteStep, run_step: step, sources: sources.map((s) => s.label), ...where }) + "\n");
     renameSync(file + ".tmp", file);
   } catch {
     /* the state directory is the nightly run's to report */
@@ -282,7 +290,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       // The last try ending at the deadline leaves the member no note: the problem record says where,
       // so the Inbox tells them instead of leaving them to notice no note came (DIG-361).
       if (count === MAX_ATTEMPTS) {
-        const err = reportProblemSync(h.digestif, "write_version", "failed", gaveUpDetail(count, stepName, stepName === "read" ? reading?.source : undefined));
+        const err = reportProblemSync(h.digestif, "write_version", "failed", failedDetail(count, stepName, stepName === "read" ? reading?.source : undefined));
         if (err !== undefined) logLineSync(stateDir, h.localDate, `the problem was not recorded: ${err}`);
       }
     } catch {

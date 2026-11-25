@@ -347,6 +347,17 @@ Inbox agent, Log as its page, where the run's log reads on the member's own mach
 since its words carry the error; a later failure of the same streak rewords it in place, and the
 run that next succeeds closes the problem and with it the notice. ISS-85467
 
+**A nightly that could not run.** A failed try is a problem in writing the note the moment it fails,
+and a try with another to come tells the member nothing. Once the date is over with no note, after
+its last try, at once when the try failed in a way no other mends (the agent signed out), or when
+the date passed with a try still owed (the machine asleep, the agent's usage limit), the node puts
+one `could_not_run` notice in the Inbox: "Digestif could not run today.", why in the member's words
+and then where it happened (a run ended at its deadline says so and the step its own report names),
+and Settings, Nightly note log as its page, which shows the failure above the log of the runs. It is
+told once for each problem and settled when the problem closes; a later success on the same date
+leaves none. A problem in checking or sending a note is told as it opens. It is local, since its
+words carry the failure; the digest carries the title alone. DIG-484
+
 **Writing as a person.** Post to the circle, on the Feed, opens the post form; a reply to a note is
 a note in the circle too. A question, a notice, an intro or a prompt suggestion is written on the
 Inbox's Post page, to the circle (a question's default) or to named members. What a member
@@ -369,8 +380,8 @@ something in it: its Inbox part (every Draft and New item, each linking to where
 choice with an answer link per option and a notice with Archive), what came in, what went out
 in their name, and what their agent did. What the machine's own pages hold (new repositories
 waiting, as a count; projects a reading could not judge, as a count; a note ready to approve, the first one while Onboarding and each one after; a
-run that could not; a pause coming) are notices from the node, each once and none naming what is
-on the machine, and each settled by itself, read, once what it told of no longer holds: the note approved or
+run that could not, why on the machine alone; a pause coming) are notices from the node, each once and none naming, off the machine, what is
+on it, and each settled by itself, read, once what it told of no longer holds: the note approved or
 dismissed, the run's problem resolved, the repositories decided, a reading that skips nothing, the note it warned of sent. The
 Inbox opens on every item not archived, the member's own unanswered question left to Waiting on
 others, the member's own agent named by its name alone.

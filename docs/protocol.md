@@ -610,7 +610,8 @@ wire carries only what was sent, so words the member took out never reach a read
 | `suggestion` | choice: the suggested prompt or the current one, picked blind (Prompt suggestions, below) | the member, on Post | the suggestion's judges |
 | `join` | choice: confirm or revoke, default revoke (Invites) | the node | the member alone |
 | `paused` | choice: Unpause or Stay paused, default Stay paused | the node | the member alone |
-| `note_ready`, `could_not_run`, `pause_coming` | notice, each saying only what the digest line it replaces says | the node | the member alone |
+| `note_ready`, `pause_coming` | notice, each saying only what the digest line it replaces says | the node | the member alone |
+| `could_not_run` | notice: "Digestif could not run today.", its detail why in the member's words and then where it happened; raised once the date is over with no note, its last try failed, or when a note could not be checked or sent, told once for each problem and settled once the problems it told of close; its `path` the nightly note's log, `/settings/note-log` | the node | the member alone, and local |
 | `repositories` | notice | the node | the member alone, and local |
 | `folder_access` | notice: "Digestif cannot open <folder>, where <n> of your session projects are", one per folder (Folder access, docs/design.md) | the node | the member alone, and local |
 | `skipped_projects` | notice: how many projects the newest reading did not read, and each folder it could not judge with why, leaving out a folder a `folder_access` notice already tells of | the node | the member alone, and local |
@@ -619,7 +620,7 @@ wire carries only what was sent, so words the member took out never reach a read
 
 **A local item is never on the wire.** Local is a property of the subject, fixed in the node's
 code and never set per item: `repositories`, `folder_access`, `skipped_projects`,
-`inbox_agent_failed` and `send_invite` are the local subjects, because their words could name what
+`could_not_run`, `inbox_agent_failed` and `send_invite` are the local subjects, because their words could name what
 is on the member's machine or, for `send_invite`, carry an invite code. A node never appends a
 local item, never writes a `decision` on one and never carries one in a digest.
 
@@ -1015,14 +1016,16 @@ is Read and stays on the Inbox page only.
   digest carries its title, which says only a count (`1 new repository waits for you on your
   machine.`), with `page` and no link. A `folder_access` notice's own title names its folder, so the
   digest carries it under a title its subject fixes, `Digestif cannot read some of your sessions on
-  your machine.`, which names nothing.
+  your machine.`, which names nothing. A `could_not_run` notice says why in its `detail` alone, and
+  the digest carries it as `Digestif could not run today. Open it on your machine to see why.`
 - **A notice that needs the member says where and what** (DIG-355). Each of the node's notices that
   expects the member to act, `repositories`, `note_ready`, `could_not_run` and `pause_coming`, is an
   Inbox item whose `path` holds the page on the member's machine where they act (Settings,
-  Repositories for `repositories`, the Feed for a note and for a run that could not) and whose
-  `detail` holds one line of instruction (`Decide whether Digestif may read it. Nothing is read until
-  you say so.`). Both are fixed by the subject and never carry a name, a path or the kind of a
-  failure. A notice raised before it carried a `detail` reads the line its subject fixes. Only the
+  Repositories for `repositories`, the Feed for a note, Settings, Nightly note log for a run that
+  could not) and whose `detail` holds one line of instruction (`Decide whether Digestif may read it.
+  Nothing is read until you say so.`). Both are fixed by the subject and never carry a name, a path or
+  the kind of a failure, except that a `could_not_run`'s `detail` opens with why, and it is local for
+  that (DIG-484). A notice raised before it carried a `detail` reads the line its subject fixes. Only the
   member's own node's notice carries a `path`; a node notice indexed from a peer carries none. The
   digest entry is unchanged. The Inbox shows `path` as **Open on your machine** when it is read on
   the node's own machine, and anywhere else as the page's label with `address`, the node's own URL
@@ -1070,9 +1073,9 @@ is Read and stays on the Inbox page only.
 A node writes a digest in every stage, Onboarding and Paused included, and only on a day with an
 Inbox item or a section in it. **What the digest said On your machine is a notice from the node**:
 new repositories waiting (local), a note ready to approve (`note_ready`), a run that could not
-(`could_not_run`) and a pause coming (`pause_coming`), each raised once, on the day it happens, in
+(`could_not_run`, local) and a pause coming (`pause_coming`), each raised once, on the day it happens, in
 the words the line had, each saying only what the circle could already know (a count and never a
-name; never the kind of failure). **Came in** and **Went out** give each note one line, its
+name; never the kind of failure, which a `could_not_run` says on the machine alone). **Came in** and **Went out** give each note one line, its
 author and the note's first line of content, the line the Feed previews, never a bare heading: a
 note holding only headings reads `an empty note.`, and a status note says what its status means.
 The **On your machine** section keeps the lines that are not

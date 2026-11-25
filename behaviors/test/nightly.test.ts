@@ -256,7 +256,10 @@ test("a context that cannot be read fails the try: nothing is written, checked a
   assert.deepEqual(r, { status: "failed", date: "2026-10-30", message: "the Rules, Learnings and deny list could not be read: rules: The operation was aborted due to timeout" });
   assert.deepEqual(recorded(), [], "no note is handed over, approved or not");
   assert.ok(!existsSync(join(dir, "harness.log")), "the writer never runs");
-  assert.ok(problems().includes("report --job write_version --kind failed"), problems().join("\n"));
+  assert.ok(
+    problems().some((p) => p.startsWith("report --job write_version --kind failed --detail try 1 of 3 ended at the write step: the Rules, Learnings and deny list could not be read")),
+    problems().join("\n"),
+  );
   assert.equal((await readState(stateDir))?.attempts?.count, 1, "a try of the date is spent, and the node runs it again");
 
   const ok = await hookRun("2026-10-30", "2026-10-30T03:40:00", [selection().sources[0]], { context: async () => ({ brief: "B", rules: "R", learnings: "", deny: [] }) });
@@ -389,8 +392,12 @@ test("a failing writer or hand-over is retried, at most three times a date, and 
   assert.equal(recorded().length, 0, "no failed tick: the problem record says it");
   assert.deepEqual(
     problems().filter((p) => p.startsWith("report")),
-    [...Array(MAX_ATTEMPTS - 1).fill("report --job write_version --kind failed"), "report --job write_version --kind failed --detail gave up after 3 tries, the last ended at the write step"],
-    "each try is a problem in writing, never the run's own words",
+    [
+      "try 1 of 3 ended at the write step: the writer ended with empty",
+      "try 2 of 3 ended at the write step: the writer ended with empty",
+      "gave up after 3 tries, the last ended at the write step: the writer ended with empty",
+    ].map((d) => `report --job write_version --kind failed --detail ${d}`),
+    "each try is a problem in writing that says where and why (DIG-484)",
   );
   assert.equal((await nightly(opts("2026-10-29T04:00:00"))).status, "gave_up");
   assert.equal(problems().filter((p) => p.startsWith("report")).length, MAX_ATTEMPTS);
@@ -447,7 +454,7 @@ test("a writer the budget stopped is a failed try reported as out_of_budget", as
   assert.equal(recorded().length, 0, "nothing is handed over");
   assert.deepEqual(
     problems().filter((p) => p.startsWith("report")),
-    ["report --job write_version --kind out_of_budget"],
+    ["report --job write_version --kind out_of_budget --detail try 1 of 3 ended at the write step: the writer reached its budget of $2"],
   );
 });
 

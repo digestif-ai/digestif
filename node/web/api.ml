@@ -991,19 +991,45 @@ module Problems = struct
     | "signing_refused" -> "The check at signing refused the note."
     | _ -> "The note could not be written."
 
-  (* ISS-85467: the member's words for a problem in reading the circle, the Inbox agent's run: what
-     kind of failure, then the error the run reported, as it said it. *)
-  let agent_sentence (p : P.problem) =
-    let kind =
-      match p.kind with
-      | "signed_out" | "out_of_budget" -> sentence p
-      | "model_unavailable" ->
-          "The model was unavailable, or its answer could not be used."
-      | _ -> "The run failed."
-    in
+  (* What kind of failure, then where it happened, as the run said it. *)
+  let with_detail kind (p : P.problem) =
     match p.p_detail with
     | Some d when String.trim d <> "" -> kind ^ " " ^ String.trim d
     | _ -> kind
+
+  (* ISS-85467: the member's words for a problem in reading the circle, the Inbox agent's run: what
+     kind of failure, then the error the run reported, as it said it. *)
+  let agent_sentence (p : P.problem) =
+    with_detail
+      (match p.kind with
+      | "signed_out" | "out_of_budget" -> sentence p
+      | "model_unavailable" ->
+          "The model was unavailable, or its answer could not be used."
+      | _ -> "The run failed.")
+      p
+
+  (* DIG-484: the member's words for a problem in writing, checking or sending a note, built the
+     same way. A detail that is a phrase, as the top of Feed ends its line with it, reads here as
+     the sentence it is. *)
+  let note_sentence (p : P.problem) =
+    let kind =
+      match (p.kind, p.job) with
+      | "failed", ("pii_check" | "rules_check") ->
+          "The note's checks could not finish."
+      | "failed", "send" -> "The note could not be sent."
+      | _ -> sentence p
+    in
+    let as_sentence d =
+      let d = String.capitalize_ascii (String.trim d) in
+      if d = "" || List.mem d.[String.length d - 1] [ '.'; '!'; '?' ] then d
+      else d ^ "."
+    in
+    with_detail kind { p with p_detail = Option.map as_sentence p.p_detail }
+
+  (* Every open problem on a note's job, the newest report first. *)
+  let open_note_problems log =
+    P.open_ log
+    |> List.filter (fun (p : P.problem) -> List.mem p.job P.note_jobs)
 
   (* The one function every job calls. A problem in writing, checking or sending a note is also an
      entry of that note's Log, unless [logged] says the job wrote a more particular entry itself. *)
@@ -4968,6 +4994,56 @@ module Inbox_agent = struct
             let n = List.length ls in
             List.filteri (fun i _ -> i >= n - log_lines) ls)
 
+  (* DIG-484: the nightly note's log, the page a could_not_run notice opens: every open problem on a
+     note's job, then the node's log of the nightly, behaviors/nightly.log, with the newest date's
+     own log, which the nightly keeps in its state directory, in the order of the time each line
+     starts with; a line with none follows the one before it. *)
+  let note_log_lines c =
+    let dir = Filename.concat c.node.dir "behaviors" in
+    let runs = Filename.concat dir "nightly/logs" in
+    let newest =
+      (match Sys.readdir runs with
+        | names -> Array.to_list names
+        | exception Sys_error _ -> [])
+      |> List.filter (fun n ->
+          String.starts_with ~prefix:"nightly-" n
+          && String.ends_with ~suffix:".log" n)
+      |> List.fold_left max ""
+    in
+    let stamped path =
+      let at = ref 0.0 in
+      List.map
+        (fun line ->
+          (match String.index_opt line ' ' with
+          | Some i ->
+              Option.iter
+                (fun t -> at := t)
+                (Time_fmt.to_unix (String.sub line 0 i))
+          | None -> ());
+          (!at, line))
+        (tail path)
+    in
+    let all =
+      stamped (Filename.concat dir "nightly.log")
+      @ if newest = "" then [] else stamped (Filename.concat runs newest)
+    in
+    let n = List.length all in
+    List.stable_sort (fun (a, _) (b, _) -> compare a b) all
+    |> List.filteri (fun i _ -> i >= n - log_lines)
+    |> List.map snd
+
+  let note_log c =
+    ok
+      (`Assoc
+         [
+           ( "failures",
+             `List
+               (List.map
+                  (fun p -> str (Problems.note_sentence p))
+                  (Problems.open_note_problems (log c))) );
+           ("lines", `List (List.map str (note_log_lines c)));
+         ])
+
   let run_log c =
     ok
       (`Assoc
@@ -8180,6 +8256,7 @@ let route c ~meth ~path ~query ~body =
   | meth, "items" :: rest -> Prompts.route_items c ~meth ~rest ~body
   | "GET", [ "settings"; "inbox_agent" ] -> Inbox_agent.get c
   | "GET", [ "settings"; "inbox_agent"; "log" ] -> Inbox_agent.run_log c
+  | "GET", [ "settings"; "note_log" ] -> Inbox_agent.note_log c
   | "PUT", [ "settings"; "inbox_agent" ] -> Inbox_agent.put c body
   | "DELETE", [ "settings"; "inbox_agent" ] -> Inbox_agent.reset c
   | "DELETE", [ "settings"; "inbox_agent"; "practices"; id ] ->

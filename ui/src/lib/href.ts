@@ -45,6 +45,8 @@ export const href = {
   inboxAgent: (): string => '/settings/inbox-agent',
   inboxAgentEdit: (): string => '/settings/inbox-agent/edit',
   inboxAgentLog: (): string => '/settings/inbox-agent/log',
+  /** The nightly note's log, and why the last note could not be written, checked or sent (DIG-484). */
+  noteLog: (): string => '/settings/note-log',
   noteTimeEdit: (): string => '/settings/note-time',
   digestEdit: (): string => '/settings/digest',
   quietHours: (): string => '/settings/quiet-hours',

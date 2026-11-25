@@ -45,7 +45,7 @@ import {
   type SuggestionSummary,
   Voice
 } from '#generated/ai-digestif-digestif-node.ts';
-import { INBOX_DEFAULT, INBOX_LOG, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
+import { INBOX_DEFAULT, INBOX_LOG, NOTE_LOG, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
 import { MockApprovals } from './approvals.ts';
 import { MockItems } from './items.ts';
 import { feedThreads } from '#lib/threads.ts';
@@ -530,6 +530,7 @@ export class MockNode {
       ['GET', 'settings/agent/check', () => withFound(this.agentCheck(), (k) => ok(k))],
       ['GET', 'settings/inbox_agent', () => withFound(s.agent, () => ok(this.inboxPrompt()))],
       ['GET', 'settings/inbox_agent/log', () => ok({ lines: INBOX_LOG })],
+      ['GET', 'settings/note_log', () => ok(NOTE_LOG)],
       [
         'PUT',
         'settings/inbox_agent',

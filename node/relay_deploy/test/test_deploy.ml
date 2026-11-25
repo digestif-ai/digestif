@@ -1,6 +1,7 @@
 (* The deploy pass (docs/releases.md, The deploy step), against a fake Cloudflare account, a fake
    relay and a clock that moves only when the pass sleeps: verify, migrations, upload, deploy,
-   health check, kept or rolled back, pending, a refused token, and the digest lines. *)
+   health check, kept or rolled back, pending, a refused token, a refusal that is not the token's,
+   and the digest lines. *)
 
 open Digestif_core
 module O = Digestif_relay_deploy.Operate
@@ -120,6 +121,8 @@ type world = {
   mutable served : (string * string option) list;
   mutable fail : string option;  (** a path prefix answering [fail_status] *)
   mutable fail_status : int;
+  mutable fail_code : int;
+  mutable fail_message : string;
   mutable fail_migration : bool;
   mutable one_file_buckets : bool;
       (** the assets session puts each file in a bucket of its own *)
@@ -129,11 +132,16 @@ type world = {
   mutable sleeps : int;
   mutable migration_tag : string option;
       (** the newest Durable Object migration the Worker has applied *)
+  mutable script_refusal : (int * int * string) option;
+      (** the status, code and message a script upload is refused with *)
   mutable scripts : int;  (** script uploads Cloudflare took *)
   mutable rollback_refused : bool;
       (** Cloudflare refuses a deployment of a version older than a migration *)
   mutable circle_reads : string list;
       (** the url of every GET /v0/circle the pass sent, newest first *)
+  mutable older : string list;
+      (** Worker versions on a relay release older than 0.1.76: they answer GET
+          /v0/version and 404 at GET /v0/relay and at a circle's address *)
 }
 
 let world () =
@@ -147,6 +155,8 @@ let world () =
     served = [ ("ver-now", Some "0.1.0"); ("ver-new", Some "0.2.0") ];
     fail = None;
     fail_status = 503;
+    fail_code = 7500;
+    fail_message = "no";
     fail_migration = false;
     one_file_buckets = false;
     buckets = 0;
@@ -154,9 +164,11 @@ let world () =
     clock = 1000.;
     sleeps = 0;
     migration_tag = None;
+    script_refusal = None;
     scripts = 0;
     rollback_refused = false;
     circle_reads = [];
+    older = [];
   }
 
 let answer result =
@@ -171,21 +183,27 @@ let answer result =
              ]);
     }
 
-let refuse status =
+let refuse ?(code = 7500) ?(message = "no") status =
   Ok
     {
       Relay_client.status;
-      body = {|{"success":false,"errors":[{"code":7500,"message":"no"}]}|};
+      body =
+        Printf.sprintf
+          {|{"success":false,"errors":[{"code":%d,"message":"%s"}]}|} code
+          message;
     }
 
+(* Cloudflare's answer to a token it does not take. *)
+let refuse_token () = refuse ~code:10000 ~message:"Authentication error" 403
+let failing w = refuse ~code:w.fail_code ~message:w.fail_message w.fail_status
 let starts_with ~prefix s = String.starts_with ~prefix s
 
 let cloudflare w : Cf.transport =
  fun ~meth ~path ~token:t ~body ->
-  if t <> token then refuse 401
+  if t <> token then refuse_token ()
   else
     match w.fail with
-    | Some p when starts_with ~prefix:p path -> refuse w.fail_status
+    | Some p when starts_with ~prefix:p path -> failing w
     | _ -> (
         let script = "/accounts/acct/workers/scripts/digestif-relay" in
         match (meth, path) with
@@ -329,10 +347,10 @@ let annotation j k =
 let form w : Cf.form_transport =
  fun ~meth ~path ~token:t ~parts ->
   match w.fail with
-  | Some p when starts_with ~prefix:p path -> refuse w.fail_status
+  | Some p when starts_with ~prefix:p path -> failing w
   | _ ->
       if path = "/accounts/acct/workers/assets/upload?base64=true" then
-        if t <> "upload-jwt" then refuse 401
+        if t <> "upload-jwt" then refuse_token ()
         else (
           List.iter
             (fun (p : Cf.part) ->
@@ -352,7 +370,7 @@ let form w : Cf.form_transport =
               })
       else if path = "/accounts/acct/workers/scripts/digestif-relay/versions"
       then (
-        if t <> token then refuse 401
+        if t <> token then refuse_token ()
         else
           let meta =
             List.find (fun (p : Cf.part) -> p.name = "metadata") parts
@@ -369,7 +387,10 @@ let form w : Cf.form_transport =
       else if
         meth = "PUT" && path = "/accounts/acct/workers/scripts/digestif-relay"
       then (
-        if t <> token then refuse 401
+        if t <> token then refuse_token ()
+        else if w.script_refusal <> None then
+          let status, code, message = Option.get w.script_refusal in
+          refuse ~code ~message status
         else
           let meta =
             List.find (fun (p : Cf.part) -> p.name = "metadata") parts
@@ -404,15 +425,37 @@ let address (n : Node.t) =
       (String.length Keys.sha256_prefix)
       (String.length root - String.length Keys.sha256_prefix)
 
-(* The fake relay serves the home circle at its address only: an unprefixed GET /v0/circle has no
-   route, as on a relay that dropped the unprefixed routes (DES-271). *)
+(* The fake relay serves the unsigned GET /v0/version, and the home circle at its address only: an
+   unprefixed GET /v0/circle has no route, as on a relay that dropped the unprefixed routes
+   (DES-271). A Worker version in [w.older] answers GET /v0/version alone. *)
 let relay w (n : Node.t) : Relay_client.transport =
  fun ~meth:_ ~url:u ~headers:_ ~body:_ ->
   if String.ends_with ~suffix:"/v0/circle" u then
     w.circle_reads <- u :: w.circle_reads;
+  let served = List.assoc_opt w.serving w.served in
   if u = url ^ "/app/" then Ok { Relay_client.status = 200; body = "<html>" }
+  else if u = url ^ "/v0/version" then
+    match served with
+    | Some v ->
+        Ok
+          {
+            Relay_client.status = 200;
+            body =
+              Yojson.Safe.to_string
+                (`Assoc
+                   (match v with
+                   | Some v -> [ ("relay_version", `String v) ]
+                   | None -> []));
+          }
+    | None -> Ok { Relay_client.status = 503; body = "{}" }
+  else if List.mem w.serving w.older then
+    Ok
+      {
+        Relay_client.status = 404;
+        body = {|{"code":"malformed","message":"no route"}|};
+      }
   else if u = address n ^ "/v0/circle" then
-    match List.assoc_opt w.serving w.served with
+    match served with
     | Some (Some v) ->
         Ok
           {
@@ -615,6 +658,52 @@ let a_failed_rollback_leads_until_the_relay_answers () =
   ignore (pass w n bytes m);
   Alcotest.(check int) "cleared" 0 (List.length (D.lead_lines n ~now:0.))
 
+(* A relay older than 0.1.76 answers GET /v0/version and 404 at GET /v0/relay and at
+   /c/<root hex>/v0/circle. The pass reads it on GET /v0/version. *)
+let rolls_back_to_a_relay_older_than_0_1_76 () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.older <- [ "ver-now" ];
+  w.served <- [ ("ver-now", Some "0.1.0"); ("ver-new", None) ];
+  (match pass w n bytes m with
+  | [ D.Rolled_back { to_; _ } ] -> Alcotest.(check string) "to" "0.1.0" to_
+  | os ->
+      Alcotest.failf "%s" (String.concat "; " (List.map D.outcome_to_string os)));
+  Alcotest.(check (list string))
+    "deployed, then deployed the old version back" [ "ver-new"; "ver-now" ]
+    w.deployed;
+  Alcotest.(check int)
+    "no lead line: the rollback is good" 0
+    (List.length (D.lead_lines n ~now:0.))
+
+let recognises_a_relay_older_than_0_1_76_deployed_by_hand () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.older <- [ "ver-now" ];
+  w.served <- [ ("ver-now", Some "0.2.0") ];
+  Alcotest.(check int)
+    "deploys nothing to a relay already on it" 0
+    (List.length (pass w n bytes m));
+  Alcotest.(check (list string)) "deployed nothing" [] w.deployed;
+  Alcotest.(check (option string))
+    "records it" (Some "0.2.0") (record n).reported_version
+
+let a_lead_line_clears_on_a_relay_older_than_0_1_76 () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.served <- [ ("ver-now", None); ("ver-new", None) ];
+  (match pass w n bytes m with
+  | [ D.Rollback_failed _ ] -> ()
+  | os ->
+      Alcotest.failf "%s" (String.concat "; " (List.map D.outcome_to_string os)));
+  Alcotest.(check int) "a lead line" 1 (List.length (D.lead_lines n ~now:0.));
+  (* The operator rolls back by hand to a Worker older than 0.1.76. *)
+  w.older <- [ "ver-now" ];
+  w.served <- [ ("ver-now", Some "0.1.0") ];
+  w.serving <- "ver-now";
+  ignore (pass w n bytes m);
+  Alcotest.(check int) "cleared" 0 (List.length (D.lead_lines n ~now:0.))
+
 let a_failure_before_the_deploy_is_pending () =
   let n = operator_node () and w = world () in
   let m, bytes = bundle "0.2.0" in
@@ -660,6 +749,8 @@ let a_refused_token_waits_for_a_new_one () =
   let m, bytes = bundle "0.2.0" in
   w.fail <- Some "/accounts/acct/d1";
   w.fail_status <- 403;
+  w.fail_code <- 10000;
+  w.fail_message <- "Authentication error";
   (match pass w n bytes m with
   | [ D.Token_refused _ ] -> ()
   | os ->
@@ -669,6 +760,168 @@ let a_refused_token_waits_for_a_new_one () =
   match texts (D.digest_lines n ~now:0.) with
   | [ t ] -> Alcotest.(check bool) t true (contains t "digestif relay operate")
   | l -> Alcotest.failf "lines: %s" (String.concat " | " l)
+
+(* Every code that says the token itself is wrong stops until operate stores a new one, whichever of
+   401 and 403 carries it; operate then deploys with the new token. *)
+let operate_stores_a_new_token_after_a_refusal () =
+  List.iter
+    (fun (status, code) ->
+      let n = operator_node () and w = world () in
+      let m, bytes = bundle "0.2.0" in
+      w.fail <- Some "/accounts/acct/workers/scripts/digestif-relay";
+      w.fail_status <- status;
+      w.fail_code <- code;
+      (match pass w n bytes m with
+      | [ D.Token_refused _ ] -> ()
+      | os ->
+          Alcotest.failf "%d %d: %s" status code
+            (String.concat "; " (List.map D.outcome_to_string os)));
+      Alcotest.(check bool) "waits" true (record n).token_refused;
+      w.fail <- None;
+      Alcotest.(check int)
+        "not retried" 0
+        (List.length (pass ~now:1e9 w n bytes m));
+      ok
+        (O.store n ~url
+           ~existing:(Some (record n))
+           ~serving:"ver-now" ~reported:(Some "0.1.0")
+           {
+             O.account_id = "acct";
+             worker = "digestif-relay";
+             database_id = "db-1";
+             token;
+           });
+      match pass ~now:1e9 w n bytes m with
+      | [ D.Deployed _ ] -> ()
+      | os ->
+          Alcotest.failf "%d %d: %s" status code
+            (String.concat "; " (List.map D.outcome_to_string os)))
+    [ (401, 1000); (403, 9109); (403, 10000); (401, 10001) ]
+
+(* The sentence Cloudflare answers with code 10063. *)
+let subdomain_message = "You need a workers.dev subdomain in order to proceed."
+
+(* Tell every line the digest holds, as a digest going out does. *)
+let tell_lines n =
+  let lines = D.digest_lines n ~now:0. in
+  List.iter (fun (l : Digestif_relay_deploy.Line.t) -> l.tell ()) lines;
+  texts lines
+
+let pending_outcome = function
+  | [ D.Pending { retry_at; _ } ] -> retry_at
+  | os ->
+      Alcotest.failf "%s" (String.concat "; " (List.map D.outcome_to_string os))
+
+(* An account with no workers.dev subdomain refuses a script upload 403 10063: pending with its step
+   and cause, the token kept, one digest line naming what to do, and deployed by a retry with the
+   same token once the account has one. *)
+let an_account_without_a_subdomain_is_pending () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle ~bundle_json:store_bundle_json "0.2.0" in
+  w.script_refusal <- Some (403, 10063, subdomain_message);
+  Alcotest.(check (float 0.1))
+    "ten minutes" 1600.
+    (pending_outcome (pass ~now:1000. w n bytes m));
+  let r = record n in
+  let p = Option.get r.pending in
+  Alcotest.(check string) "the step" "deploy" p.step;
+  Alcotest.(check bool) p.why true (contains p.why "10063 You need");
+  Alcotest.(check bool) "not the token's" false (contains p.why "token");
+  Alcotest.(check bool) "the token is not refused" false r.token_refused;
+  Alcotest.(check (option string))
+    "the token is kept" (Some token)
+    (ok (O.token n));
+  (match tell_lines n with
+  | [ t ] ->
+      List.iter
+        (fun s -> Alcotest.(check bool) (s ^ " in: " ^ t) true (contains t s))
+        [
+          "0.2.0";
+          "dinners.test";
+          "account acct";
+          "workers.dev subdomain";
+          "Open Workers and Pages";
+          "10063";
+        ];
+      Alcotest.(check bool) t false (contains t "relay operate")
+  | l -> Alcotest.failf "lines: %s" (String.concat " | " l));
+  Alcotest.(check int)
+    "waits for its retry" 0
+    (List.length (pass ~now:1500. w n bytes m));
+  Alcotest.(check (float 0.1))
+    "doubled" 2900.
+    (pending_outcome (pass ~now:1700. w n bytes m));
+  Alcotest.(check (list string)) "said once" [] (tell_lines n);
+  (* A try that fails some other way between does not make it news again. *)
+  w.fail <- Some "/accounts/acct/d1";
+  ignore (pending_outcome (pass ~now:3000. w n bytes m));
+  w.fail <- None;
+  ignore (pending_outcome (pass ~now:10000. w n bytes m));
+  Alcotest.(check (list string)) "still said once" [] (tell_lines n);
+  w.script_refusal <- None;
+  (match pass ~now:1e6 w n bytes m with
+  | [ D.Deployed _ ] -> ()
+  | os ->
+      Alcotest.failf "%s" (String.concat "; " (List.map D.outcome_to_string os)));
+  Alcotest.(check int) "by the script upload" 1 w.scripts;
+  Alcotest.(check bool) "pending cleared" true ((record n).pending = None)
+
+(* A line about a cause that has passed is not told after the deploy. *)
+let an_untold_pending_line_goes_with_the_deploy () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle ~bundle_json:store_bundle_json "0.2.0" in
+  w.script_refusal <- Some (403, 10063, subdomain_message);
+  ignore (pending_outcome (pass w n bytes m));
+  w.script_refusal <- None;
+  ignore (pass ~now:1e6 w n bytes m);
+  Alcotest.(check (list string))
+    "only the deploy"
+    [ "Deployed relay 0.2.0 to dinners.test." ]
+    (tell_lines n)
+
+(* A 401 or 403 whose code says nothing of the token is never called a token refusal: pending, with
+   Cloudflare's message in the digest, at any step (a migration included, which is not refused for
+   good). *)
+let an_unknown_403_is_pending () =
+  List.iter
+    (fun (status, path) ->
+      let n = operator_node () and w = world () in
+      let m, bytes = bundle "0.2.0" in
+      w.fail <- Some path;
+      w.fail_status <- status;
+      w.fail_code <- 10999;
+      w.fail_message <- "Something new";
+      ignore (pending_outcome (pass ~now:1000. w n bytes m));
+      Alcotest.(check bool) "the token stands" false (record n).token_refused;
+      (match tell_lines n with
+      | [ t ] ->
+          Alcotest.(check bool) t true (contains t "10999 Something new");
+          Alcotest.(check bool) t false (contains t "token")
+      | l -> Alcotest.failf "lines: %s" (String.concat " | " l));
+      ignore (pending_outcome (pass ~now:1700. w n bytes m));
+      Alcotest.(check (list string)) "said once" [] (tell_lines n);
+      w.fail <- None;
+      match pass ~now:1e6 w n bytes m with
+      | [ D.Deployed _ ] -> ()
+      | os ->
+          Alcotest.failf "%s"
+            (String.concat "; " (List.map D.outcome_to_string os)))
+    [
+      (403, "/accounts/acct/d1");
+      (401, "/accounts/acct/workers/scripts/digestif-relay/versions");
+      (403, "/accounts/acct/workers/assets/upload");
+    ]
+
+(* The asset upload carries its session's token, so its refusal is not the deploy token's. *)
+let a_refused_session_token_is_pending () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.fail <- Some "/accounts/acct/workers/assets/upload";
+  w.fail_status <- 401;
+  w.fail_code <- 10000;
+  w.fail_message <- "Authentication error";
+  ignore (pending_outcome (pass w n bytes m));
+  Alcotest.(check bool) "the token stands" false (record n).token_refused
 
 let a_failed_migration_is_refused_for_good () =
   let n = operator_node () and w = world () in
@@ -912,12 +1165,29 @@ let () =
             rolls_back_a_failed_health_check;
           Alcotest.test_case "a failed rollback leads until the relay answers"
             `Quick a_failed_rollback_leads_until_the_relay_answers;
+          Alcotest.test_case "rolls back to a relay older than 0.1.76" `Quick
+            rolls_back_to_a_relay_older_than_0_1_76;
+          Alcotest.test_case
+            "recognises a relay older than 0.1.76 deployed by hand" `Quick
+            recognises_a_relay_older_than_0_1_76_deployed_by_hand;
+          Alcotest.test_case "a lead line clears on a relay older than 0.1.76"
+            `Quick a_lead_line_clears_on_a_relay_older_than_0_1_76;
           Alcotest.test_case "a failure before the deploy is pending" `Quick
             a_failure_before_the_deploy_is_pending;
           Alcotest.test_case "a bundle that does not match is pending" `Quick
             a_bundle_that_does_not_match_is_pending;
           Alcotest.test_case "a refused token waits for a new one" `Quick
             a_refused_token_waits_for_a_new_one;
+          Alcotest.test_case "operate stores a new token after a refusal" `Quick
+            operate_stores_a_new_token_after_a_refusal;
+          Alcotest.test_case "an account without a subdomain is pending" `Quick
+            an_account_without_a_subdomain_is_pending;
+          Alcotest.test_case "an untold pending line goes with the deploy"
+            `Quick an_untold_pending_line_goes_with_the_deploy;
+          Alcotest.test_case "an unknown 403 is pending" `Quick
+            an_unknown_403_is_pending;
+          Alcotest.test_case "a refused session token is pending" `Quick
+            a_refused_session_token_is_pending;
           Alcotest.test_case "a failed migration is refused for good" `Quick
             a_failed_migration_is_refused_for_good;
           Alcotest.test_case "not due" `Quick not_due;

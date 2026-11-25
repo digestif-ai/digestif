@@ -214,6 +214,7 @@ const PATH_LABEL: Partial<Record<ItemSubject, string>> = {
   [ItemSubject.Repositories]: 'Choose on Settings, Repositories',
   [ItemSubject.NoteReady]: 'Open the waiting note',
   [ItemSubject.PauseComing]: 'Open the waiting note',
+  [ItemSubject.CouldNotRun]: "Open the nightly note's log",
   [ItemSubject.Suggestion]: "Pick tonight's version on your waiting note",
   [ItemSubject.InvitesHalted]: 'Open what lifts it'
 };
