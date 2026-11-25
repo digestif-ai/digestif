@@ -328,9 +328,10 @@ test("a source that spends a third of the deadline is abandoned, named with its 
   ];
   // Every reading of the wall clock is two seconds of awake time: 2000 lines are far past a third of 30 minutes.
   let t = at("2026-10-30T03:21:00").getTime();
-  const r = await hookRun("2026-10-30", "2026-10-30T03:21:00", sources, { wall: () => (t += 2000), deadline: new Date(t + 30 * 60_000) });
+  // The run's home is its own, so the file is named as the nightly shortens it whatever TMPDIR is.
+  const r = await hookRun("2026-10-30", "2026-10-30T03:21:00", sources, { home: dir, wall: () => (t += 2000), deadline: new Date(t + 30 * 60_000) });
   assert.equal(r.status, "posted");
-  assert.ok(problems().includes(`report --job source --kind source_failed --source Claude Code sessions --detail past its share of the deadline reading ${transcript}`), problems().join("\n"));
+  assert.ok(problems().includes("report --job source --kind source_failed --source Claude Code sessions --detail past its share of the deadline reading ~/sessions/s.jsonl"), problems().join("\n"));
   const d = digests()[0]!;
   assert.ok(d.includes("Fix the docs build") && !d.includes("Prompt "), "the note is the git source's");
   const ends = JSON.parse(readFileSync(recorded()[0]!.args[recorded()[0]!.args.indexOf("--ends") + 1]!, "utf8")) as Record<string, unknown>;
