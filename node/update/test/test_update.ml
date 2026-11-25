@@ -7443,6 +7443,113 @@ let test_signing_job_install_pieces () =
     [ "com.roman.digestif-sign" ]
     (Signing_job.sign_on_assignment_jobs ~dir)
 
+(* The launcher at its fixed path is written once per launcher source: a release rebuilt from the
+   same source leaves the bytes macOS keyed a grant to, and a change to the source replaces them.
+   DIG-492 *)
+let check_str = Alcotest.(check string)
+
+let test_launcher_written_once_per_source () =
+  let dir = temp_dir () in
+  let ensure ?(macos = true) ~bytes ~source () =
+    match Launcher.ensure ~macos ~bytes ~source dir with
+    | Ok o -> o
+    | Error e -> Alcotest.fail e
+  in
+  let said = function
+    | Launcher.Installed -> "installed"
+    | Unchanged -> "unchanged"
+    | Not_used -> "not used"
+  in
+  let check what expected got = check_str what (said expected) (said got) in
+  check "not macOS" Not_used (ensure ~macos:false ~bytes:"a" ~source:"s1" ());
+  Alcotest.(check (option string))
+    "nothing installed off macOS" None
+    (Launcher.installed ~macos:false dir);
+  check "no embedded bytes" Not_used (ensure ~bytes:"" ~source:"s1" ());
+  Alcotest.(check (option string))
+    "none installed yet" None
+    (Launcher.installed ~macos:true dir);
+  check "the first write" Installed (ensure ~bytes:"build-1" ~source:"s1" ());
+  check_str "its bytes" "build-1" (State.read_file (Launcher.path dir));
+  Alcotest.(check (option string))
+    "installed, at the fixed path"
+    (Some (Launcher.path dir))
+    (Launcher.installed ~macos:true dir);
+  check "another build of the same source" Unchanged
+    (ensure ~bytes:"build-2" ~source:"s1" ());
+  check_str "keeps the first bytes" "build-1"
+    (State.read_file (Launcher.path dir));
+  check "a changed source" Installed (ensure ~bytes:"build-3" ~source:"s2" ());
+  check_str "replaces them" "build-3" (State.read_file (Launcher.path dir));
+  Sys.remove (Launcher.source_path dir);
+  check "a digest that is missing" Installed
+    (ensure ~bytes:"build-4" ~source:"s2" ());
+  Sys.remove (Launcher.path dir);
+  check "a launcher that is missing" Installed
+    (ensure ~bytes:"build-5" ~source:"s2" ());
+  check_str "is written again" "build-5" (State.read_file (Launcher.path dir))
+
+(* The launcher a macOS node binary embeds is the one ../../launcher builds, and it holds a source
+   digest whatever the system. *)
+let test_launcher_embeds_its_build () =
+  Alcotest.(check int) "a source digest" 32 (String.length Launcher_data.source);
+  if Keystore.is_macos () then
+    Alcotest.(check bool)
+      "the launcher's bytes" true
+      (Launcher_data.bytes
+      = State.read_file "../../launcher/digestif_launcher.exe")
+  else check_str "no bytes off macOS" "" Launcher_data.bytes
+
+let launcher_exe = "../../launcher/digestif_launcher.exe"
+
+let launcher_status argv =
+  let pid =
+    Unix.create_process launcher_exe
+      (Array.of_list (launcher_exe :: argv))
+      Unix.stdin Unix.stdout Unix.stderr
+  in
+  (pid, fun () -> snd (Unix.waitpid [] pid))
+
+(* The launcher spawns its arguments and exits with their status; with nothing to run it says
+   how it is used. *)
+let test_launcher_exits_with_its_child () =
+  let status argv = (snd (launcher_status argv)) () in
+  Alcotest.(check bool)
+    "the child's exit" true
+    (status [ "/bin/sh"; "-c"; "exit 3" ] = Unix.WEXITED 3);
+  Alcotest.(check bool)
+    "a clean exit" true
+    (status [ "/bin/sh"; "-c"; "exit 0" ] = Unix.WEXITED 0);
+  Alcotest.(check bool) "no command" true (status [] = Unix.WEXITED 64);
+  Alcotest.(check bool)
+    "a command that is not there" true
+    (status [ "/nonexistent/digestif" ] = Unix.WEXITED 127)
+
+(* A SIGTERM to the launcher, which is how launchd stops the job, reaches the child, and the
+   launcher reports the child's own exit. The child is the launcher's, not a grandchild: it
+   records its parent's pid, which is the launcher's. *)
+let test_launcher_forwards_sigterm () =
+  let dir = temp_dir () in
+  let ready = Filename.concat dir "ready" in
+  let script =
+    Printf.sprintf
+      "trap 'echo $PPID > %s.ppid; exit 7' TERM; touch %s; while :; do sleep \
+       0.05; done"
+      ready ready
+  in
+  let pid, wait = launcher_status [ "/bin/sh"; "-c"; script ] in
+  let deadline = Unix.gettimeofday () +. 10. in
+  while (not (Sys.file_exists ready)) && Unix.gettimeofday () < deadline do
+    Unix.sleepf 0.02
+  done;
+  Alcotest.(check bool) "the child started" true (Sys.file_exists ready);
+  Unix.kill pid Sys.sigterm;
+  Alcotest.(check bool)
+    "the child's exit on SIGTERM" true
+    (wait () = Unix.WEXITED 7);
+  check_str "the child's parent is the launcher" (string_of_int pid)
+    (String.trim (State.read_file (ready ^ ".ppid")))
+
 let () =
   let t name f = Alcotest.test_case name `Quick f in
   Ci_alcotest.run "digestif-update"
@@ -7546,6 +7653,12 @@ let () =
             test_holding_skips_release_without_web_ui;
           t "the web UI check reads web/embed's page"
             test_web_ui_marker_is_the_placeholder;
+          t "the launcher is written once per source"
+            test_launcher_written_once_per_source;
+          t "the launcher embedded is its build" test_launcher_embeds_its_build;
+          t "the launcher exits with its child"
+            test_launcher_exits_with_its_child;
+          t "the launcher forwards SIGTERM" test_launcher_forwards_sigterm;
           t "a local release with other behaviors is restaged"
             test_local_release_restages_other_behaviors;
           t "state roundtrip" test_state_roundtrip;

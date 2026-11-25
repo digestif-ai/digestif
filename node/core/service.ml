@@ -66,10 +66,15 @@ let xml_escape s =
   Buffer.contents b
 
 (* [env] is set in the service beside PATH: the machine's service carries DIGESTIF_CIRCLES when
-   the shell that installed it named one, so its supervisor finds the circles that shell does. *)
-let launchd_plist ?(command = [ "run" ]) ?(env = []) ~exe ~dir ~log_dir ~path ()
-    =
-  let args = (exe :: command) @ [ "--data-dir"; dir ] in
+   the shell that installed it named one, so its supervisor finds the circles that shell does.
+   [launcher], when the node has installed one (Launcher), is the program launchd starts, with the
+   node's command as its arguments: macOS keys a privacy grant to the program launchd starts, and
+   the launcher sits at one path its bytes rarely leave. DIG-492 *)
+let launchd_plist ?launcher ?(command = [ "run" ]) ?(env = []) ~exe ~dir
+    ~log_dir ~path () =
+  let args =
+    Option.to_list launcher @ (exe :: command) @ [ "--data-dir"; dir ]
+  in
   String.concat "\n"
     ([
        {|<?xml version="1.0" encoding="UTF-8"?>|};
@@ -208,7 +213,7 @@ let legacy ~fixed_path dir =
         runs_dir ~contents dir || runs_dir ~contents (Node.canonical_dir dir)
     | exception Sys_error _ -> false
 
-let launchd_plan ?command ?env ~exe ~dir ~path () =
+let launchd_plan ?launcher ?command ?env ~exe ~dir ~path () =
   let name = label_of dir in
   let file = launchd_path name in
   let domain = "gui/" ^ string_of_int (Unix.getuid ()) in
@@ -218,7 +223,8 @@ let launchd_plan ?command ?env ~exe ~dir ~path () =
   let old = if legacy ~fixed_path:fixed dir then [ label ] else [] in
   {
     path = file;
-    contents = launchd_plist ?command ?env ~exe ~dir ~log_dir:dir ~path ();
+    contents =
+      launchd_plist ?launcher ?command ?env ~exe ~dir ~log_dir:dir ~path ();
     load = [ [| "/bin/launchctl"; "bootstrap"; domain; file |] ];
     unload = List.map bootout (old @ [ name ]);
     loaded = List.map probe (old @ [ name ]);
@@ -245,8 +251,10 @@ let systemd_plan ?command ?env ~exe ~dir ~path () =
     retire = (if old = [] then [] else [ fixed ]);
   }
 
-let plan ?command ?env ~exe ~dir ~path () =
-  if Keystore.is_macos () then launchd_plan ?command ?env ~exe ~dir ~path ()
+(* [launcher] applies to launchd alone: systemd keeps no decision keyed to a program's path. *)
+let plan ?launcher ?command ?env ~exe ~dir ~path () =
+  if Keystore.is_macos () then
+    launchd_plan ?launcher ?command ?env ~exe ~dir ~path ()
   else systemd_plan ?command ?env ~exe ~dir ~path ()
 
 let run_all cmds =

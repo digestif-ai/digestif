@@ -2158,6 +2158,37 @@ let service_unit_data_dir () =
     "a file naming none" None
     (Service.data_dir_of ~contents:"[Service]\nExecStart=/x/digestif run\n")
 
+(* On macOS a node with its launcher installed has launchd start the launcher, with the
+   supervisor's command as its arguments, so the program macOS keys a grant to is the launcher's
+   fixed path; the data directory is read back as before. DIG-492 *)
+let service_through_launcher () =
+  let dir = "/Users/x/Library/Application Support/Digestif" in
+  let plist =
+    Service.launchd_plist
+      ~launcher:(dir ^ "/launcher/Digestif")
+      ~command:[ "supervise" ]
+      ~exe:(dir ^ "/good/bin/digestif")
+      ~dir ~log_dir:dir ~path:"/bin" ()
+  in
+  Alcotest.(check bool)
+    "the launcher first, then the supervisor" true
+    (Astring_contains.contains plist
+       ("<key>ProgramArguments</key>\n  <array>\n    <string>" ^ dir
+      ^ "/launcher/Digestif</string>\n    <string>" ^ dir
+      ^ "/good/bin/digestif</string>\n    <string>supervise</string>"));
+  Alcotest.(check (option string))
+    "the data dir" (Some dir)
+    (Service.data_dir_of ~contents:plist);
+  let direct =
+    Service.launchd_plist ~command:[ "supervise" ]
+      ~exe:(dir ^ "/good/bin/digestif")
+      ~dir ~log_dir:dir ~path:"/bin" ()
+  in
+  Alcotest.(check bool)
+    "with none, the supervisor" true
+    (Astring_contains.contains direct
+       ("<array>\n    <string>" ^ dir ^ "/good/bin/digestif</string>"))
+
 let service_per_node_units () =
   with_temp_home @@ fun home ->
   let second = Filename.concat home "digestif/second" in
@@ -2799,6 +2830,8 @@ let () =
           Alcotest.test_case "a reopened log" `Quick log_reopen;
           Alcotest.test_case "service files" `Quick service_files;
           Alcotest.test_case "service refresh" `Quick service_refresh;
+          Alcotest.test_case "service through its launcher" `Quick
+            service_through_launcher;
           Alcotest.test_case "service per data directory" `Quick
             service_per_data_directory;
           Alcotest.test_case "service waits for unload" `Quick

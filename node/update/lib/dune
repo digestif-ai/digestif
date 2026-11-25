@@ -48,3 +48,33 @@
   (with-stdout-to
    %{targets}
    (echo "()"))))
+
+; The macOS service's launcher (../../launcher), embedded with a digest of its source so the node
+; writes it to its fixed path only when that source changes (launcher.ml). It is a macOS program:
+; on any other system the node embeds no bytes, and the digest alone. DIG-492
+
+(rule
+ (targets launcher_data.ml)
+ (enabled_if
+  (= %{system} macosx))
+ (deps
+  ../../launcher/digestif_launcher.exe
+  (:source ../../launcher/digestif_launcher.ml ../../launcher/dune))
+ (action
+  (with-stdout-to
+   %{targets}
+   (run
+    ../../launcher/embed/embed.exe
+    ../../launcher/digestif_launcher.exe
+    %{source}))))
+
+(rule
+ (targets launcher_data.ml)
+ (enabled_if
+  (<> %{system} macosx))
+ (deps
+  (:source ../../launcher/digestif_launcher.ml ../../launcher/dune))
+ (action
+  (with-stdout-to
+   %{targets}
+   (run ../../launcher/embed/embed.exe - %{source}))))

@@ -1736,6 +1736,17 @@ let circle_node_ops ~machine ~stand_in (base : U.Supervisor.ops) :
     log = (fun l -> Printf.printf "%s supervise: %s\n%!" (Time_fmt.now ()) l);
   }
 
+(* This binary's launcher at the node's fixed path (Launcher), when the one there was built from
+   other source. A launcher that cannot be written leaves the service starting the supervisor
+   directly, as before there was one. *)
+let ensure_launcher dir =
+  match U.Launcher.ensure dir with
+  | Ok U.Launcher.Installed ->
+      Printf.printf "%s service: installed the launcher %s\n%!"
+        (Time_fmt.now ()) (U.Launcher.path dir)
+  | Ok (Unchanged | Not_used) -> ()
+  | Error e -> Printf.eprintf "%s service: %s\n%!" (Time_fmt.now ()) e
+
 (* The service's process (Supervisor): the last healthy release's binary, running the current one,
    and under the machine's service every circle folder's node beside it (Circle_nodes). *)
 let supervise =
@@ -1752,6 +1763,9 @@ let supervise =
           (* The commands on PATH name good, so they follow every release it keeps; each start
              moves an install's older link onto it (Cli_links). *)
           U.Cli_links.link_default ~dir ();
+          (* The supervisor is always a release that was healthy, so it is the one that writes the
+             launcher; the node's next start names it in the plist (refresh_service). *)
+          ensure_launcher dir;
           let on_trial = function
             | U.Supervisor.Healthy v ->
                 Printf.printf "%s supervise: %s is healthy\n%!"
@@ -2896,7 +2910,10 @@ let service_dir dir =
 
 (* The service runs the supervisor from the last healthy release (docs/releases.md). The machine's
    service carries the DIGESTIF_CIRCLES of the shell that installed it, so its supervisor runs the
-   circle folders that shell names. *)
+   circle folders that shell names. On macOS, once the node has installed its launcher, launchd
+   starts the launcher and the launcher the supervisor, so a privacy grant holds across releases
+   (Launcher). A plan only reads whether one is there: the supervisor, always a release that was
+   healthy, and `service install` write it, never a release on trial. DIG-492 *)
 let service_plan dir =
   let dir = service_dir dir in
   let env =
@@ -2904,7 +2921,7 @@ let service_plan dir =
     | Some c when c <> "" && Node.is_standard dir -> [ ("DIGESTIF_CIRCLES", c) ]
     | _ -> []
   in
-  Service.plan
+  Service.plan ?launcher:(U.Launcher.installed dir)
     ~exe:(U.Layout.binary_in (U.Layout.good_link dir))
     ~command:[ "supervise" ] ~env ~dir
     ~path:(Option.value (Sys.getenv_opt "PATH") ~default:"/usr/bin:/bin")
@@ -3625,6 +3642,7 @@ let service_print =
    folder's node is run by the machine's service, so for one of those it is the machine's. *)
 let install_service dir behaviors =
   let name = adopt (service_dir dir) behaviors in
+  ensure_launcher (service_dir dir);
   let p = service_plan dir in
   Result.map (fun () -> (name, p.path)) (Service.install p)
 

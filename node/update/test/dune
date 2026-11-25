@@ -2,6 +2,7 @@
  (name test_update)
  (deps
   ../bin/main.exe
+  ../../launcher/digestif_launcher.exe
   keychain/adopt.exe
   ../../web/embed/embed.ml
   (env_var CI_ALCOTEST_LISTS)
