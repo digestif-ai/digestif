@@ -127,9 +127,11 @@ branch_commit() {
 }
 branch_commit "the channel"
 
-# The version that reads main: its tree holds release/index.json, with no releases.
+# The version that reads main: its tree holds release/index.json, with no releases. The list is
+# main's own with what it names taken out, since a real publish lists versions in it.
 mkdir -p "$repo/release"
-cp "$root/release/index.json" "$repo/release/index.json"
+jq '.releases = [] | .revocations = [] | del(.recalls, .signers)' "$root/release/index.json" \
+  >"$repo/release/index.json"
 commit "the release list on main"
 tag v0.2.0
 
