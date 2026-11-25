@@ -189,6 +189,10 @@ the deployment holds. `--dry-run` prints that plan
 and touches nothing. Run `wrangler login` as
 the account's holder first (or set `CLOUDFLARE_API_TOKEN` in the shell, never in a file).
 
+The account needs a `workers.dev` subdomain, a relay on a custom domain included: without one
+Cloudflare refuses the upload of a release that carries a Durable Object migration (403, code
+10063). Opening Workers and Pages once in the account's Cloudflare dashboard creates it.
+
 1. Generate the relay's X25519 key: `node scripts/keygen.mjs` prints `RELAY_SEALING_KEY=…` (the
    secret, base64url raw private key) and `public=x25519:…` (the `encryption_key` of the `relay`
    message). Set the secret with `npx wrangler secret put RELAY_SEALING_KEY --env <environment>`,

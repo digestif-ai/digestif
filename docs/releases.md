@@ -1343,7 +1343,10 @@ again with the same body, which makes this node its operator from the next sync.
 for the same relay replaces the token; naming another relay is refused until
 `digestif relay operate --remove <url>` deletes the token and the record. The token is a Cloudflare
 custom API token on the relay's own account, with `Workers Scripts: Edit` and `D1: Edit`, and
-reaches `curl` only in a config file on stdin (`curl -K -`), never on an argv.
+reaches `curl` only in a config file on stdin (`curl -K -`), never on an argv. The account needs a
+`workers.dev` subdomain, whatever address the relay serves at: Cloudflare refuses the upload of a
+release that carries a Durable Object migration without one. Opening Workers and Pages once in the
+account's dashboard creates it; the token checks do not read it.
 
 **`digestif relay status`** prints the newest relay release, the record, who the circle reads as
 the operator, the deployed version, a pending step and its retry time, and refused versions, never
@@ -1398,8 +1401,17 @@ listed twice refuses the bundle for good.
 A step failing before the deploy changes nothing the relay serves. A download, a bundle whose bytes
 do not match, or Cloudflare not answering or answering 5xx is kept as pending in
 `relay-deploy.json` with its step and cause, and tried again on the update pass's backoff (ten
-minutes, doubling, at most a day). A 401 or 403 is a digest line naming `digestif relay operate`,
-once, and nothing is tried until that command stores a new token. A migration D1 refuses is refused
+minutes, doubling, at most a day).
+
+What Cloudflare refuses is read from its error code, never from the HTTP status alone:
+
+| Cloudflare answers | The node |
+|---|---|
+| a 401 or 403 whose code says the token is wrong, expired or lacks a permission (1000, 9109, 10000, 10001) | puts a digest line naming `digestif relay operate`, once, and tries nothing until that command stores a new token |
+| code 10063, the account has no `workers.dev` subdomain | keeps the step pending and retries it on the backoff; a digest line, once per release, names the account id and says to open Workers and Pages in it |
+| a 401 or 403 of any other code, or refusing an asset upload (which carries its session's token, not the deploy token) | keeps the step pending and retries it on the backoff; a digest line, once per release, carries Cloudflare's message |
+
+A migration D1 refuses is refused
 for good, and so is a bundle whose sha256 matches but that cannot be deployed as it stands (it does
 not unpack, its migrations are not the manifest's, it has no `bundle.json`, module or `app/`): a
 later pass would meet the same bytes. Each digest line goes out once; `digestif relay status` shows
