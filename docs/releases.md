@@ -195,7 +195,12 @@ thing a member loses: `digestif update pin <version>` works only for a listed ve
 lapse, and a node that was off for months folds the signer-set chain link by link. A recall goes
 with its version's list entry.
 
-**The release list is the one record of what is published.** No GitHub release is marked Latest.
+**The release list is the one record of what is published.** No reader chooses a version by GitHub's
+Latest mark but a relay older than the one that renders `install.sh` (its tag holds no
+`relay/src/install-render.ts`), which answers `https://digestif.io/install.sh` from
+`releases/latest/download/install.sh`. So `publish` reads the deployed relay's version and marks the
+version Latest only while that relay is one, or its version cannot be read; once a relay that
+renders is deployed, no release is marked Latest.
 `publish` still clears the prerelease flag, which then says only that the release's files are final
 because a list entry points at them: `drop` refuses to delete such a release, and `candidate` skips a
 version already sent on. Every reader that picks a version (the `digestif-update` `ci/release.sh`
@@ -560,7 +565,8 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
    take-back the branch holds that main lacks. It lists the version on the `channel` branch too
    only when no version the branch names that reads main is unrecalled (The channel branch, for
    nodes older than the move). Then
-   it clears the release's prerelease flag, marking no release Latest. From then on members' nodes
+   it clears the release's prerelease flag, marking the release Latest only while the deployed relay
+   reads that mark (The channel). From then on members' nodes
    take it on their next update pass, and the relay's `https://digestif.io/install.sh` offers it
    (below).
 
@@ -1169,8 +1175,7 @@ read-only token while every dependency's install scripts run:
    version for the first);
 6. in a second job, `publish`, that installs nothing and runs no code from the tree, attests the
    bundle and the manifest and leaves a **draft** GitHub release `relay-v<version>` holding them,
-   created and edited with `--latest=false`. No release is ever Latest: the release list on main is
-   the one record of what is published (The channel). Running it again on the same tag
+   created and edited with `--latest=false`. No relay release is ever Latest (The channel). Running it again on the same tag
    replaces the draft's files and drops any signature beside them.
 
 **The bundle**, `digestif-relay-<version>.tar.gz`: `worker/index.js` and `worker/index.js.map`

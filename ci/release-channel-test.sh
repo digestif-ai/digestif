@@ -67,6 +67,12 @@ EOF
 chmod 755 "$bin/gh"
 export PATH="$bin:$PATH"
 
+# The deployed relay as `publish` reads it: 0.1.75 proxies the release GitHub marks Latest, and
+# 0.1.76 renders install.sh from the release list (its tag holds relay/src/install-render.ts).
+relay_version() { printf '{"relay_version":"%s"}' "$1" >"$tmp/relay-version.json"; }
+export DIGESTIF_RELAY_VERSION_URL="file://$tmp/relay-version.json"
+relay_version 0.1.76
+
 git init --quiet --bare --initial-branch=main "$tmp/origin.git"
 repo="$tmp/repo"
 git init --quiet --initial-branch=main "$repo"
@@ -135,6 +141,12 @@ jq '.releases = [] | .revocations = [] | del(.recalls, .signers)' "$root/release
 commit "the release list on main"
 tag v0.2.0
 
+tag relay-v0.1.75
+mkdir -p "$repo/relay/src"
+echo '// renders' >"$repo/relay/src/install-render.ts"
+commit "the relay renders install.sh"
+tag relay-v0.1.76
+
 # While main's list names nothing, `channel` names nothing.
 expect "" "$(release channel)" "an empty list"
 
@@ -149,7 +161,7 @@ expect signers/abc.json "$(main_index | jq -r '.signers[0].document')" "the bran
 expect revocations/k.json "$(main_index | jq -r '.revocations[0].document')" "the branch's revocation"
 git -C "$tmp/origin.git" cat-file -e main:release/signers/abc.sig.json || fail "the signer-set change's signatures"
 git -C "$tmp/origin.git" cat-file -e channel:0.2.0/manifest.sig.json || fail "the branch's copy of 0.2.0"
-grep -q -- '--prerelease=false --latest=false' "$GH_LOG" || fail "publish marked a release Latest"
+grep -q -- '--prerelease=false --latest=false' "$GH_LOG" || fail "publish marked a release Latest under a relay that renders"
 for c in main channel; do
   expect "Digestif release <release@digestif.invalid>" \
     "$(git -C "$tmp/origin.git" log -1 --format='%an <%ae>' "$c")" "the author of $c"
@@ -167,7 +179,10 @@ branch_commit "the second signature"
 
 commit "more code"
 tag v0.2.1
+# A deployed relay that proxies Latest has the version marked Latest. DIG-471
+relay_version 0.1.75
 release publish --version 0.2.1 >/dev/null
+grep -q -- 'v0.2.1 .*--prerelease=false --latest=true' "$GH_LOG" || fail "publish left Latest behind a relay that proxies it"
 expect "0.2.0 0.2.1" "$(main_versions)" "main after 0.2.1"
 expect "0.1.1 0.2.0" "$(branch_versions)" "the branch after 0.2.1: it names 0.2.0, which reads main"
 expect 2 "$(git -C "$tmp/origin.git" show main:release/signers/abc.sig.json | jq '.signatures | length')" \
@@ -176,7 +191,11 @@ expect 2 "$(git -C "$tmp/origin.git" show main:release/signers/abc.sig.json | jq
 # And main alone again: the branch is left after the hop.
 commit "even more code"
 tag v0.2.2
+# So has one whose version cannot be read.
+rm "$tmp/relay-version.json"
 release publish --version 0.2.2 >/dev/null
+grep -q -- 'v0.2.2 .*--prerelease=false --latest=true' "$GH_LOG" || fail "publish left Latest behind an unread relay"
+relay_version 0.1.76
 expect "0.2.0 0.2.1 0.2.2" "$(main_versions)" "main after 0.2.2"
 expect "0.1.1 0.2.0" "$(branch_versions)" "the branch is left after the hop"
 
@@ -197,6 +216,7 @@ branch_commit "recall the hop versions"
 commit "a fix"
 tag v0.2.3
 release publish --version 0.2.3 >/dev/null
+grep -q -- 'v0.2.3 .*--prerelease=false --latest=false' "$GH_LOG" || fail "publish marked 0.2.3 Latest under a relay that renders"
 expect "0.1.1 0.2.0 0.2.3" "$(branch_versions)" "the branch after a recall of its hop version"
 expect "0.2.0 0.2.1" "$(main_index | jq -r '[ .recalls[].version ] | join(" ")')" "main takes the recalls"
 
