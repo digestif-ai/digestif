@@ -46,7 +46,7 @@ type record = {
       (** The Cloudflare Worker version a failed deploy goes back to: the one
           serving at setup, then the one serving before each deploy. *)
   reported_version : string option;
-      (** The relay release the relay last reported on GET /v0/circle, absent
+      (** The relay release the relay last reported on GET /v0/version, absent
           for a Worker built before relay releases. *)
   pending : pending option;
   refused : refused list;
@@ -298,27 +298,15 @@ let home_address (n : Node.t) ~url =
   | Some root -> Ok (Relay_client.circle_address url ~root)
   | None -> Error "this node holds no circle root"
 
-(* The relay release a relay reports: GET /v0/relay, unsigned (docs/protocol.md, Hosted circles), and,
-   from a Worker built before relays hosted many circles, which has no such route, the signed
-   GET /v0/circle at the home circle's address. None from a Worker built before relay releases. *)
-let reported_version transport (n : Node.t) ~url =
-  match Relay_client.relay_info transport ~base:url with
-  | Ok i -> Ok i.relay_version
-  | Error _ -> (
-      let* key = Node.device_key n in
-      let* address = home_address n ~url in
-      match Relay_client.circle transport ~base:address ~key with
-      | Error e ->
-          Error
-            ("the relay at " ^ url ^ " did not answer: "
-            ^ Relay_client.error_to_string e)
-      | Ok j -> (
-          match j with
-          | `Assoc f -> (
-              match List.assoc_opt "relay_version" f with
-              | Some (`String v) -> Ok (Some v)
-              | _ -> Ok None)
-          | _ -> Ok None))
+(* The relay release a relay reports, on the unsigned GET /v0/version (Relay_client.version), which
+   every supported relay release answers. None from a Worker that reports no version. *)
+let reported_version transport ~url =
+  match Relay_client.version transport ~base:url with
+  | Ok v -> Ok v
+  | Error e ->
+      Error
+        ("the relay at " ^ url ^ " did not answer GET /v0/version: "
+        ^ Relay_client.error_to_string e)
 
 (* Store the deploy token and the deployment record for [url], keeping what the deploy pass learned
    from an [existing] record for the same relay. *)
@@ -441,7 +429,7 @@ let operate ?(cloudflare = Cloudflare.curl) ?(transport = Relay_client.curl)
     | _ -> Ok ()
   in
   let* serving = check_token cloudflare s in
-  let* reported = reported_version transport n ~url in
+  let* reported = reported_version transport ~url in
   let* () = store n ~url ~existing ~serving ~reported s in
   let* claimed =
     match (Fold.relay_operator f url, identity n) with

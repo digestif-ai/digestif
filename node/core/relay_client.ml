@@ -339,6 +339,25 @@ let relay_info transport ~base =
       Error (Refused (status, parse_errors body))
   | Ok { status; body } -> Error (Unexpected (status, body))
 
+(* GET /v0/version, unsigned (docs/protocol.md, Relay version): the relay release the relay at
+   [base] runs, the one read the deploy pass and digestif relay operate make of it
+   (docs/releases.md, Relay releases). It is unprefixed and asks no key, so it answers alike on
+   every relay release from relay-v0.1.1, whether or not the relay hosts many circles. None from an
+   unstamped Worker, and from a Worker older than relay-v0.1.1, which has no such route and
+   answers 404. [base] may be a circle's address there; the read goes to the relay's base url. *)
+let version transport ~base =
+  match
+    request transport ~base:(relay_base base) ~key:None ~meth:"GET"
+      ~path:"/v0/version" ()
+  with
+  | Error e -> Error e
+  | Ok { status = 200; body } ->
+      json_or 200 body (function
+        | `Assoc _ as j -> Some (to_str (field "relay_version" j))
+        | _ -> None)
+  | Ok { status = 404; _ } -> Ok None
+  | Ok { status; body } -> Error (Unexpected (status, body))
+
 (* A circle's address a relay does not host yet (docs/protocol.md, Hosted circles): a relay the root
    lists that refused the founding, until digestif relay add sends it the root. Never a fault. *)
 let not_hosted = function
