@@ -1420,16 +1420,6 @@ let signer_run ~api ~once =
       say_stamped ("digestif-update signer run: " ^ e);
       1
 
-(* Whether the login Keychain holds an item for [service], asked of `security` without reading the
-   item's data, so nothing prompts. *)
-let keychain_has service =
-  match
-    Proc.run ~timeout:30.
-      [| "security"; "find-generic-password"; "-s"; service |]
-  with
-  | Ok { code = 0; _ } -> true
-  | _ -> false
-
 let copy_file ~src ~dst =
   let bytes = In_channel.with_open_bin src In_channel.input_all in
   let tmp = dst ^ ".partial" in
@@ -1477,14 +1467,14 @@ let signer_install () =
     if not (Sys.file_exists pinned) then copy_file ~src:self ~dst:pinned;
     let signers = signers_now () in
     let* key =
-      if keychain_has Keychain.release_key_service then Ok ""
+      if Keychain.holds Keychain.release_key_service then Ok ""
       else
         let* pasted = Sign_next.read_hidden () in
         let* key, _ = Signing_job.check_key ~signers pasted in
         Ok key
     in
     let* token =
-      let has = keychain_has Keychain.signer_token_service in
+      let has = Keychain.holds Keychain.signer_token_service in
       let prompt =
         if has then
           "Paste your signer token, or press Enter to keep the one in the \
@@ -1565,37 +1555,12 @@ let signer_adopt () =
       else Error "signer adopt is run by signer install, as the pinned copy"
     in
     let* h = Signing_job.handover_of_string (In_channel.input_all stdin) in
-    let given v service = if v <> "" then Ok v else keychain_value service in
-    let* printed = given h.key Keychain.release_key_service in
-    let* key, pub = Signing_job.check_key ~signers:(signers_now ()) printed in
-    let* token =
-      Result.bind
-        (given h.token Keychain.signer_token_service)
-        Signing_job.check_token
-    in
     let account = Option.value (Sys.getenv_opt "USER") ~default:"digestif" in
-    let* () =
-      Result.map_error
-        (fun e ->
-          e
-          ^ ". The Keychain may no longer hold the release key: run signer \
-             install again and paste it from your password manager when it \
-             asks")
-        (Keychain.store ~service:Keychain.release_key_service ~account
-           ~label:"Digestif release key" key)
-    in
-    let* () =
-      Keychain.store ~service:Keychain.signer_token_service ~account
-        ~label:"Digestif signer token" token
-    in
-    let* back = keychain_value Keychain.release_key_service in
-    let* back_token = keychain_value Keychain.signer_token_service in
-    if back = key && back_token = token then (
-      Printf.printf
-        "The Keychain's %s and %s items now trust %s alone (key %s).\n"
-        Keychain.release_key_service Keychain.signer_token_service self pub;
-      Ok ())
-    else Error "the Keychain answered other values than were stored"
+    let* pub = Signing_job.adopt ~signers:(signers_now ()) ~account h in
+    Printf.printf
+      "The Keychain's %s and %s items now trust %s alone (key %s).\n"
+      Keychain.release_key_service Keychain.signer_token_service self pub;
+    Ok ()
   with
   | Ok () -> 0
   | Error e -> exit_err ("signer adopt: " ^ e)

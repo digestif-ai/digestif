@@ -7303,6 +7303,101 @@ let test_signing_job_outsider_key () =
   | _ -> Alcotest.fail "an outsider's key signed");
   Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None)
 
+(* A HOME whose login Keychain is a fresh one of the test's own, unlocked: `security` and the
+   Keychain calls of a program run under it read and write that Keychain alone. *)
+let keychain_home () =
+  let home = temp_dir () in
+  let env = [ "HOME=" ^ home ] in
+  let keychains = Filename.concat home "Library/Keychains" in
+  Sign_next.mkdir_p keychains;
+  Sign_next.mkdir_p (Filename.concat home "Library/Preferences");
+  let security args =
+    match
+      Proc.run ~timeout:60. ~env (Array.of_list ("/usr/bin/security" :: args))
+    with
+    | Ok r -> r
+    | Error e -> Alcotest.fail ("security: " ^ e)
+  in
+  let keychain = Filename.concat keychains "login.keychain-db" in
+  let made = security [ "create-keychain"; "-p"; "pw"; keychain ] in
+  Alcotest.(check int) ("create-keychain: " ^ made.stderr) 0 made.code;
+  let default = security [ "default-keychain" ] in
+  Alcotest.(check bool)
+    ("the default Keychain is the test's: " ^ default.stdout)
+    true
+    (Layout.contains ~sub:home default.stdout);
+  (env, security)
+
+let keychain_adopt ~env ?(args = []) handover =
+  match
+    Proc.run ~timeout:60. ~env
+      ~stdin:(Signing_job.handover_to_string handover)
+      (Array.of_list ("keychain/adopt.exe" :: Keys.public mike :: args))
+  with
+  | Ok r -> r
+  | Error e -> Alcotest.fail ("adopt: " ^ e)
+
+let on_a_mac f () = if Keystore.is_macos () then f ()
+
+(* An item another program created: `security` trusts itself alone on an item it adds. *)
+let add_foreign security ~account service =
+  let r : Proc.result =
+    security
+      [ "add-generic-password"; "-s"; service; "-a"; account; "-w"; "old" ]
+  in
+  Alcotest.(check int) ("add-generic-password: " ^ r.stderr) 0 r.code
+
+(* adopt replaces items another program created, however many, and reads its own back silently; a
+   second adopt, handed nothing, keeps them. *)
+let test_signing_job_adopts_foreign_items () =
+  let env, security = keychain_home () in
+  add_foreign security ~account:"one" Keychain.release_key_service;
+  add_foreign security ~account:"two" Keychain.release_key_service;
+  add_foreign security ~account:"one" Keychain.signer_token_service;
+  let adopted what handover =
+    let r = keychain_adopt ~env handover in
+    Alcotest.(check int) (what ^ ": " ^ r.stderr) 0 r.code;
+    Alcotest.(check string) what (Keys.public mike) (String.trim r.stdout)
+  in
+  adopted "replaced"
+    { Signing_job.key = Keys.encode_secret mike; token = "dsg_x" };
+  adopted "kept" { Signing_job.key = ""; token = "" };
+  List.iter
+    (fun service ->
+      let remove () =
+        (security [ "delete-generic-password"; "-s"; service ]).code
+      in
+      Alcotest.(check int) (service ^ ": one item") 0 (remove ());
+      Alcotest.(check int) (service ^ ": only one") 44 (remove ()))
+    [ Keychain.release_key_service; Keychain.signer_token_service ]
+
+(* An item that could not be replaced: the line the error names removes it, and the install after it
+   takes the pasted key. With none left, the error says to run install again and names no line. *)
+let test_signing_job_adopt_advice () =
+  let env, security = keychain_home () in
+  let handover =
+    { Signing_job.key = Keys.encode_secret mike; token = "dsg_x" }
+  in
+  let line = Keychain.remove_command Keychain.release_key_service in
+  add_foreign security ~account:"one" Keychain.release_key_service;
+  let refused = keychain_adopt ~env ~args:[ "refuse" ] handover in
+  Alcotest.(check int) "refused" 1 refused.code;
+  Alcotest.(check bool)
+    ("names the line: " ^ refused.stderr)
+    true
+    (Layout.contains ~sub:line refused.stderr);
+  (match Proc.run ~timeout:60. ~env [| "/bin/sh"; "-c"; line |] with
+  | Ok r -> Alcotest.(check int) ("the line: " ^ r.stderr) 0 r.code
+  | Error e -> Alcotest.fail e);
+  let gone = keychain_adopt ~env ~args:[ "refuse" ] handover in
+  Alcotest.(check bool)
+    ("nothing to remove: " ^ gone.stderr)
+    true
+    (Layout.contains ~sub:"no longer holds" gone.stderr
+    && not (Layout.contains ~sub:line gone.stderr));
+  let adopted = keychain_adopt ~env handover in
+  Alcotest.(check int) ("adopted: " ^ adopted.stderr) 0 adopted.code
+
 let test_signing_job_install_pieces () =
   let p =
     Signing_job.plist ~pinned:"/Users/m/.digestif/signer/digestif-update-0.4.1"
@@ -7500,6 +7595,10 @@ let () =
           t "a published version" test_signing_job_published;
           t "an outsider's key" test_signing_job_outsider_key;
           t "install's pieces" test_signing_job_install_pieces;
+          t "adopt replaces another program's items"
+            (on_a_mac test_signing_job_adopts_foreign_items);
+          t "adopt's advice unblocks install"
+            (on_a_mac test_signing_job_adopt_advice);
         ] );
       ( "sign --next",
         [
