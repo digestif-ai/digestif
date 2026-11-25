@@ -5,7 +5,7 @@
 #
 # One run: build the phone app and bundle the Worker stamped with the version, test the built
 # module itself (the bytes the signers sign, not the source), refuse a migration that is not
-# additive, pack the bundle, write the manifest with `digestif-update relay-manifest`, and leave a
+# additive and a release out of the order between relay releases, pack the bundle, write the manifest with `digestif-update relay-manifest`, and leave a
 # DRAFT GitHub release relay-v<version> holding the bundle and manifest.json, each attested by this
 # workflow (GitHub artifact attestations, which `sign --next` checks). A step that fails
 # leaves no draft and no manifest, so nothing partial can be signed. The release is never Latest:
@@ -98,6 +98,12 @@ jobs:
           else
             ci/relay-migrations.sh --since ""
           fi
+
+      # A Durable Object migration step is released alone and a needed commit is live first. `relay
+      # tag` asks the same before it tags, so this stops only a tag a person pushed: run it again
+      # once the relays serve what it names.
+      - name: the order between relay releases
+        run: ci/release.sh relay order --at "$GITHUB_SHA"
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

@@ -1,0 +1,18 @@
+# The order the relay line keeps between its releases (docs/releases.md, Order between relay
+# releases), read by `ci/release.sh relay tag` and `ci/release.sh relay order`. One entry per line,
+# blank lines and lines starting with # ignored:
+#
+#   relay URL      a relay whose GET /v0/version says what it serves; a release that must wait for
+#                  an earlier one waits for every relay named here
+#   served X.Y.Z   every relay named here serves this relay release or a newer one. What a release up
+#                  to this one carries is live, so no relay is asked about it
+#   needs COMMIT   the full id of a commit of main every relay must serve before any release holding
+#                  this line is tagged. A change that depends on an earlier one being live on the
+#                  relays adds its line in its own pull request, with why after the id
+#
+# Adding a `needs` line, raise `served` to what the relays serve and drop the lines it answers. This
+# file is in no release path, so an edit alone cuts no release.
+
+relay https://dinners.digestif.io
+relay https://dinners.rcherkasov.workers.dev
+served 0.1.76

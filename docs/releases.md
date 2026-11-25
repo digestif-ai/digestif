@@ -1148,8 +1148,9 @@ signer set with the same tools, and deployed by each relay's operator's node (DE
 `relay-v0.1.0`. A relay tag never names a node version and a node tag never names a relay version.
 Platform creates a rollout for each commit on `main`, and after preflight that rollout's job tags it
 and asks `ci/release.sh relay tag --sha <commit>` beside `ci/release.sh changed`: when
-`ci/release.sh relay changed` answers `changed` it tags the next relay patch and pushes it, and a
-minor or major relay version is a person's tag. `ci/relay-release-paths`, in `ci/release-paths`'s
+`ci/release.sh relay changed` answers `changed` and the order allows it (Order between relay
+releases) it tags the next relay patch and pushes it, and a minor or major relay version is a
+person's tag. `ci/relay-release-paths`, in `ci/release-paths`'s
 format, names what a bundle is built from: `relay/src`, `relay/migrations`, the relay's package
 files, the top level of `relay/wrangler.jsonc` (a change inside its `env` object, one deployment's
 settings, cuts nothing), every module outside `relay/src` the Worker bundles, the UI sources
@@ -1162,7 +1163,8 @@ read-only token while every dependency's install scripts run:
 
 1. refuses a migration that is not additive (`ci/relay-migrations.sh`: a `DROP` or `RENAME` in a
    migration the previous relay version did not carry, or a change to one it did), since a
-   rollback replaces the Worker and never the schema;
+   rollback replaces the Worker and never the schema, and a release out of order (`ci/release.sh
+   relay order`, Order between relay releases);
 2. builds the UI and runs the relay's checks and tests;
 3. packs the bundle with `ci/relay-bundle.sh`, which bundles the Worker with
    `wrangler deploy --dry-run --outdir`, defining `RELAY_VERSION_STAMP` as the version so the
@@ -1233,6 +1235,37 @@ its two fields. Every node folds the announcements on every sync against its own
 The announcement carries no instruction to deploy: only an operator's node acts on it, and every
 node judges from it whether a relay is behind. Nodes act on the announcement and never poll the
 channel.
+
+### Order between relay releases
+
+A pull request merges the moment it is ready, and an operator's node deploys the newest announced
+release, skipping any between. So the order two relay changes reach the relays in is kept where a
+relay release is tagged, against what the relays serve (`GET /v0/version` of each relay
+`ci/relay-release-order` names), and never by holding a merge. `ci/release.sh relay tag` keeps two
+rules, and the release build refuses a tag, whoever pushed it, that breaks one (`ci/release.sh relay
+order`):
+
+- **A Durable Object migration step is released alone.** A release carrying a step of
+  `relay/wrangler.jsonc`'s `migrations` some relay has not applied holds one commit past what that
+  relay serves, the one that adds the step, and that commit changes no D1 migration, no shared module
+  and no phone app. What landed before it is released and deployed first, and nothing after it is
+  tagged until every relay serves it, so the version a rollback goes back to differs by the class
+  alone. That the commit routes nothing to the class is its review's to see.
+- **A commit another needs is live first.** A relay change that depends on an earlier one being live
+  (dropping an address once every caller has the new one) adds, in its own pull request, the line
+  `needs <full commit id> <why>` to `ci/relay-release-order`. No release holding that line is tagged
+  until every relay serves one holding that commit.
+
+A held commit exits `relay tag` 3 with the reason, after tagging the newest commit before it that the
+order allows, so earlier work still ships; the relay job asks again until the rest may go. A hold ends
+when the relays serve what it names, or when the held change is reverted on main. A relay that does
+not answer holds too. The file's `served` line names a release every relay is known to serve,
+and a commit that waits on nothing past it asks no relay. A build refused because a person pushed the
+tag early is run again on the same tag once the relays have caught up.
+
+A condition the relays' version does not say (no unprefixed request for 14 days) is not this order's:
+the issue that removes something waits on the issue that reads the condition (`dev issues block`)
+and its pull request is opened once that issue ends, since a pull request that is ready is merged.
 
 ### Signing a relay release
 
@@ -1377,7 +1410,8 @@ nothing is deployed. Otherwise:
    script itself (the call `wrangler deploy` makes), carrying the steps after the applied tag (every
    step when none is applied) with `old_tag` and `new_tag`; that upload serves at once. A Worker on a
    tag the bundle does not list refuses the release for good. A rollback cannot cross a migration,
-   so a release that carries one changes nothing else (relay/README.md, Each circle's store).
+   so a release that carries one changes nothing else, which `ci/release.sh relay tag` and the
+   release build hold it to (Order between relay releases; relay/README.md, Each circle's store).
 5. **Health check.** A signed `GET /v0/circle` at the home circle's address, `<url>/c/<root hex>`,
    answering 200 with the release's `relay_version` and the circle's `root`, and `GET /app/` on the
    relay's base url answering 200, within two minutes of awake time counted in

@@ -357,7 +357,8 @@ D1 keeps the registry of hosted circles (root, when it opened, which circle and 
   `migrations/`; `test/store.test.ts` fails when it is stale.
 - **The binding and the migration tag.** `wrangler.jsonc` binds `CIRCLE_STORE` at its top level and
   in each environment, and lists the migration steps at its top level only. A tag is never edited
-  once released; a new class is a new step with a new tag. `bundle.json` carries both, and the
+  once released; a new class is a new step with a new tag, released alone (docs/releases.md, Order
+  between relay releases). `bundle.json` carries both, and the
   operator's node uploads the Worker script rather than a version for a release whose tag the
   relay has not applied (docs/releases.md, The deploy step).
 
