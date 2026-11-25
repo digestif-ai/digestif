@@ -12,11 +12,12 @@
 // Claude Code records as the user, its compaction summaries, or prompts a program sent through the
 // Agent SDK.
 
-import { createReadStream, realpathSync, type Stats } from "node:fs";
-import { opendir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createReadStream, realpathSync } from "node:fs";
+import { readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
+import { Folders, FolderTimedOut } from "./folders.ts";
 
 /** A prompt the member typed, and when. */
 export interface Prompt {
@@ -347,9 +348,11 @@ export class JudgingFailed extends JudgingCapped {
 }
 
 /**
- * One listing for judging may take at most this many milliseconds: a folder that takes longer
- * cannot be judged, as one past the cap cannot (node/web/sources.ml, max_listing_seconds). A folder
- * on a network volume or one the system is still filling can take minutes to list.
+ * One call judging makes on a folder (a listing, a streaming, a stat) may take at most this many
+ * milliseconds: a folder that takes longer cannot be judged, as one past the cap cannot
+ * (node/web/sources.ml, max_listing_seconds). A folder on a network volume or one the system is
+ * still filling can take minutes to list, and one the system holds back can block for as long as it
+ * likes, so each call is made where it can be abandoned (src/folders.ts, DIG-483).
  */
 export const MAX_LISTING_MS = 2_000;
 
@@ -360,7 +363,6 @@ const TOO_SLOW_TO_LIST = "too slow to list";
  * A folder judging had to list took longer than the per-listing limit, so the project cannot be
  * judged. It is a JudgingFailed, not a cap: a transcript's own path never stands in for it.
  */
-
 export class JudgingTimedOut extends JudgingFailed {
   constructor(folder: string, ms: number) {
     super(folder, { code: TOO_SLOW_TO_LIST });
@@ -376,27 +378,46 @@ const worse = (kept: JudgingCapped | undefined, e: JudgingCapped): JudgingCapped
 export const SLOW_JUDGEMENT_MS = 2_000;
 
 /**
- * The entries of a folder for judging, read one by one: JudgingCapped when it has more than `max`
- * (the rest are not read) or JudgingTimedOut past the per-listing limit, an empty list when it is not there, and JudgingFailed when it cannot be read (DIG-295, DIG-413). No explicit close:
- * an opendir that fails leaves no handle, and `for await` closes the directory when the loop
- * returns early or an iteration throws.
+ * A folder that blocked a call has spent its limit: nothing at or under it is looked at again in this
+ * reading, so one blocked folder costs one limit however many projects are inside it (DIG-483).
  */
-async function judgedNames(dir: string, j: Judging): Promise<string[]> {
-  const found: string[] = [];
+function refuseBlocked(path: string, j: Judging): void {
+  if (j.seen.blocked.size === 0) return;
+  for (let d = path; ; d = dirname(d)) {
+    if (j.seen.blocked.has(d)) throw new JudgingTimedOut(d, j.maxListingMs);
+    if (dirname(d) === d) return;
+  }
+}
+
+/**
+ * Up to `max` entries of a folder for judging and whether it has more: JudgingTimedOut past the
+ * per-listing limit, no entries when it is not there, and JudgingFailed when it cannot be read
+ * (DIG-295, DIG-413).
+ */
+async function readFolder(dir: string, max: number, j: Judging): Promise<{ names: string[]; over: boolean }> {
+  refuseBlocked(dir, j);
+  j.onListing?.(dir);
   const began = j.clock();
+  let read: { names: string[]; over: boolean };
   try {
-    for await (const e of await opendir(dir)) {
-      if (found.length >= j.maxEntries) throw new JudgingCapped(dir, j.maxEntries);
-      // The listing's own clock is read every hundred entries, as the node reads it.
-      if (found.length % 100 === 0 && j.clock() - began > j.maxListingMs) throw new JudgingTimedOut(dir, j.maxListingMs);
-      found.push(e.name);
-    }
+    read = await j.folders.list(dir, max, j.maxListingMs);
   } catch (e) {
-    if (e instanceof JudgingCapped) throw e;
-    if (isAbsent(e)) return [];
+    if (e instanceof FolderTimedOut) {
+      if (!e.started) j.seen.blocked.add(dir);
+      throw new JudgingTimedOut(dir, j.maxListingMs);
+    }
+    if (isAbsent(e)) return { names: [], over: false };
     throw new JudgingFailed(dir, e);
   }
-  return found;
+  if (!read.over && j.clock() - began > j.maxListingMs) throw new JudgingTimedOut(dir, j.maxListingMs);
+  return read;
+}
+
+/** The entries of a folder for judging: JudgingCapped when it has more than the cap. */
+async function judgedNames(dir: string, j: Judging): Promise<string[]> {
+  const { names, over } = await readFolder(dir, j.maxEntries, j);
+  if (over) throw new JudgingCapped(dir, j.maxEntries);
+  return names;
 }
 
 /**
@@ -444,9 +465,11 @@ interface Seen {
    * here, never false (DIG-413).
    */
   verdicts: Map<string, Promise<boolean>>;
+  /** Folders a call blocked on until its limit, with nothing of them read. */
+  blocked: Set<string>;
 }
 
-const newSeen = (): Seen => ({ listings: new Map(), encoded: new Map(), streamed: new Map(), dirs: new Map(), present: new Map(), verdicts: new Map() });
+const newSeen = (): Seen => ({ listings: new Map(), encoded: new Map(), streamed: new Map(), dirs: new Map(), present: new Map(), verdicts: new Map(), blocked: new Set() });
 
 function once<T>(m: Map<string, Promise<T>>, key: string, read: () => Promise<T>): Promise<T> {
   let v = m.get(key);
@@ -459,38 +482,49 @@ function once<T>(m: Map<string, Promise<T>>, key: string, read: () => Promise<T>
 
 /** judgedNames, read once per folder per reading, a cap included: it is not listed again (DIG-413). */
 const listed = (dir: string, j: Judging): Promise<string[]> =>
-  once(j.seen.listings, dir, () => {
-    j.onListing?.(dir);
-    return judgedNames(dir, j);
-  });
+  once(j.seen.listings, dir, () => judgedNames(dir, j));
 
-/** A stat for judging: absent is false, and a path that cannot be looked at is JudgingFailed, not gone. */
-async function judgedStat(p: string): Promise<Stats | undefined> {
+/**
+ * A stat for judging: undefined when the path is absent, and a path that cannot be looked at is
+ * JudgingFailed, not gone. One that takes longer than the per-listing limit is JudgingTimedOut on
+ * `folder`, the folder the call was blocked in.
+ */
+async function judgedStat(p: string, j: Judging, folder = p): Promise<{ dir: boolean } | undefined> {
+  refuseBlocked(p, j);
   try {
-    return await stat(p);
+    return { dir: await j.folders.isDirectory(p, j.maxListingMs) };
   } catch (e) {
+    if (e instanceof FolderTimedOut) {
+      j.seen.blocked.add(folder);
+      throw new JudgingTimedOut(folder, j.maxListingMs);
+    }
     if (isAbsent(e)) return undefined;
     throw new JudgingFailed(p, e);
   }
 }
 
-const isJudgedDir = (p: string, j: Judging): Promise<boolean> => once(j.seen.dirs, p, async () => (await judgedStat(p))?.isDirectory() === true);
+const isJudgedDir = (p: string, j: Judging): Promise<boolean> => once(j.seen.dirs, p, async () => (await judgedStat(p, j))?.dir === true);
 
-const judgedExists = (p: string, j: Judging): Promise<boolean> => once(j.seen.present, p, async () => (await judgedStat(p)) !== undefined);
+/** Whether a folder holds an entry of this name. */
+const judgedHolds = (dir: string, name: string, j: Judging): Promise<boolean> =>
+  once(j.seen.present, join(dir, name), async () => (await judgedStat(join(dir, name), j, dir)) !== undefined);
+
+/** A folder's entries by their encoded names, sorted under each. */
+function byEncodedName(names: string[]): Map<string, string[]> {
+  const m = new Map<string, string[]>();
+  for (const name of names.slice().sort()) {
+    const e = encodedPath(name);
+    if (e === "") continue;
+    const same = m.get(e);
+    if (same === undefined) m.set(e, [name]);
+    else same.push(name);
+  }
+  return m;
+}
 
 /** A folder's children by their encoded names (node/web/sources.ml, all_children); JudgingCapped past the cap. */
 const encodedChildren = (dir: string, j: Judging): Promise<Map<string, string[]>> =>
-  once(j.seen.encoded, dir, async () => {
-    const m = new Map<string, string[]>();
-    for (const child of (await listed(dir, j)).slice().sort()) {
-      const e = child.replace(/[^a-zA-Z0-9]/g, "-");
-      if (e === "") continue;
-      const same = m.get(e);
-      if (same === undefined) m.set(e, [child]);
-      else same.push(child);
-    }
-    return m;
-  });
+  once(j.seen.encoded, dir, async () => byEncodedName(await listed(dir, j)));
 
 /**
  * The most entries the decoding streams from one folder past the listing cap: past this the folder
@@ -498,29 +532,13 @@ const encodedChildren = (dir: string, j: Judging): Promise<Map<string, string[]>
  */
 export const MAX_STREAMED_ENTRIES = 100_000;
 
-/** Every child of a folder past the listing cap by encoded name, streamed once per reading with the budget checked every thousand entries. */
+/** Every child of a folder past the listing cap by encoded name, streamed once per reading within the per-listing limit. */
 const streamedChildren = (dir: string, j: Judging): Promise<Map<string, string[]>> =>
   once(j.seen.streamed, dir, async () => {
-    j.onListing?.(dir);
-    const m = new Map<string, string[]>();
-    let n = 0;
-    try {
-      for await (const e of await opendir(dir)) {
-        if (++n % 1000 === 0) checkBudget(j);
-        if (n > j.maxStreamed) throw new JudgingCapped(dir, j.maxStreamed);
-        const enc = e.name.replace(/[^a-zA-Z0-9]/g, "-");
-        if (enc === "") continue;
-        const same = m.get(enc);
-        if (same === undefined) m.set(enc, [e.name]);
-        else same.push(e.name);
-      }
-    } catch (e) {
-      if (e instanceof JudgingCapped || e instanceof ReadingOverran) throw e;
-      if (isAbsent(e)) return new Map<string, string[]>();
-      throw new JudgingFailed(dir, e);
-    }
-    for (const v of m.values()) v.sort();
-    return m;
+    const { names, over } = await readFolder(dir, j.maxStreamed, j);
+    checkBudget(j);
+    if (over) throw new JudgingCapped(dir, j.maxStreamed);
+    return byEncodedName(names);
   });
 
 /**
@@ -651,6 +669,28 @@ function holdsFinancialRecords(dir: string, j: Judging): Promise<boolean> {
 }
 
 /**
+ * Whether the home directory holds financial records, for a project at it or in a repository that is
+ * it: at its top level, or one level down in a child whose name reads as finance, the rule for a
+ * folder directly under home. No other child of it is listed (node/web/sources.ml, home_holds_records).
+ */
+function homeHoldsRecords(home: string, j: Judging): Promise<boolean> {
+  return once(j.seen.verdicts, `home:${home}`, async () => {
+    if (await topHoldsRecords(home, j)) return true;
+    let capped: JudgingCapped | undefined;
+    for (const n of (await listed(home, j)).filter((n) => !n.startsWith(".") && readsAsFinance(n))) {
+      try {
+        if (await topHoldsRecords(join(home, n), j)) return true;
+      } catch (e) {
+        if (!(e instanceof JudgingCapped)) throw e;
+        capped = worse(capped, e);
+      }
+    }
+    if (capped !== undefined) throw capped;
+    return false;
+  });
+}
+
+/**
  * The directory a transcript was started in: the cwd on its first record that carries one, read
  * from its first lines only (node/web/sources.ml, transcript_cwd).
  */
@@ -718,9 +758,11 @@ interface Judging {
   seen: Seen;
   budget: Budget | undefined;
   tempRoots: string[];
+  /** Where every listing, streaming and stat of judging is made. */
+  folders: Folders;
   /** A folder listed to more entries than this cannot be judged (JudgingCapped). */
   maxEntries: number;
-  /** A folder whose listing takes longer than this many milliseconds cannot be judged (JudgingTimedOut). */
+  /** A folder that keeps a listing, a streaming or a stat longer than this many milliseconds cannot be judged (JudgingTimedOut). */
   maxListingMs: number;
   /** The clock a listing is timed by, epoch milliseconds. */
   clock: () => number;
@@ -754,7 +796,7 @@ function booksOneLevelDown(dir: string, j: Judging): Promise<boolean> {
       const d = join(dir, n);
       // A child past the cap or unreadable does not hide books in a sibling: it is thrown only when none showed any (DIG-413).
       try {
-        if (await judgedExists(join(d, ".git"), j)) continue;
+        if (await judgedHolds(d, ".git", j)) continue;
         if (await topHoldsRecords(d, j)) return true;
       } catch (e) {
         if (!(e instanceof JudgingCapped)) throw e;
@@ -771,25 +813,27 @@ function booksOneLevelDown(dir: string, j: Judging): Promise<boolean> {
  * it, or a folder enclosing it, strictly below `home` (the root outside home). Each enclosing folder
  * is tested at its top level, and one outside the repository around the path one level down as
  * well, one directly under home only when its name reads as finance. A path that no longer exists
- * is judged by the folders around it that still do (node/web/sources.ml, financial_path). A path
- * under a system temp root is judged by itself and its repository only, and the walk never lists a
+ * is judged by the folders around it that still do (node/web/sources.ml, financial_path). Home itself,
+ * as the path or the repository around it, is judged by homeHoldsRecords, and nothing encloses a path
+ * at home. A path under a system temp root is judged by itself and its repository only, and the walk never lists a
  * temp root or a folder above one (DIG-295).
  */
 async function financialPath(path: string, home: string, j: Judging): Promise<boolean> {
   const boundary = home.length > 1 && path.startsWith(home + "/") ? home : "/";
   // A project named for a temp root itself is judged as holding none, without listing the root.
   if (j.tempRoots.includes(path)) return false;
-  if ((await isJudgedDir(path, j)) && (await holdsFinancialRecords(path, j))) return true;
+  const holds = (d: string): Promise<boolean> => (d === home ? homeHoldsRecords(d, j) : holdsFinancialRecords(d, j));
+  if ((await isJudgedDir(path, j)) && (await holds(path))) return true;
   let repo: string | undefined;
   for (let d = path; ; d = dirname(d)) {
-    if (await judgedExists(join(d, ".git"), j)) {
+    if (await judgedHolds(d, ".git", j)) {
       repo = d;
-      if (await holdsFinancialRecords(d, j)) return true;
+      if (await holds(d)) return true;
       break;
     }
     if (dirname(d) === d) break;
   }
-  if (underAny(path, j.tempRoots)) return false;
+  if (path === home || underAny(path, j.tempRoots)) return false;
   const inRepo = (d: string) => repo !== undefined && (d === repo || d.startsWith(repo + "/"));
   for (let up = dirname(path), d = path; up !== d && up !== boundary; d = up, up = dirname(up)) {
     if (underAny(up, j.tempRoots)) break;
@@ -812,10 +856,13 @@ async function financialPath(path: string, home: string, j: Judging): Promise<bo
  */
 export const FINANCIAL_MARK = ".digestif-financial";
 
-async function rememberFinancial(dir: string): Promise<void> {
+/** The mark as it is now: it is written and removed during the reading, so it is never kept as judged paths are. */
+const isMarked = async (dir: string, j: Judging): Promise<boolean> => (await judgedStat(join(dir, FINANCIAL_MARK), j, dir)) !== undefined;
+
+async function rememberFinancial(dir: string, j: Judging): Promise<void> {
   const mark = join(dir, FINANCIAL_MARK);
   try {
-    if ((await judgedStat(mark)) !== undefined) return;
+    if (await isMarked(dir, j)) return;
   } catch {
     return; // A mark that cannot be looked at is not overwritten.
   }
@@ -869,7 +916,7 @@ async function financialProject(
   if (excused !== undefined && cwds === 0) capped = excused;
   try {
     if (await anyFinancialPath(paths, home, j)) {
-      await rememberFinancial(dir);
+      await rememberFinancial(dir, j);
       return true;
     }
   } catch (e) {
@@ -878,7 +925,7 @@ async function financialProject(
   }
   // No path showed books and one could not be judged: no verdict, the mark left as it is (DIG-413).
   // A mark that cannot be looked at is JudgingFailed, not no mark.
-  const marked = (await judgedStat(join(dir, FINANCIAL_MARK))) !== undefined;
+  const marked = await isMarked(dir, j);
   if (capped !== undefined) {
     // A project the mark already skips, with a path gone, is skipped on that and not reported as capped.
     if (marked && paths.size > 0) for (const path of paths) if (!(await isJudgedDir(path, j))) return true;
@@ -900,8 +947,8 @@ async function financialProject(
  * throws JudgingCapped and keeps no verdict (DIG-413).
  */
 async function noteFinancial(root: string, dir: string, home: string, j: Judging): Promise<void> {
-  if ((await judgedStat(join(dir, FINANCIAL_MARK))) !== undefined) return;
-  if (await anyFinancialPath((await decodeProjectDir(root, basename(dir), j)).paths, home, j)) await rememberFinancial(dir);
+  if (await isMarked(dir, j)) return;
+  if (await anyFinancialPath((await decodeProjectDir(root, basename(dir), j)).paths, home, j)) await rememberFinancial(dir, j);
 }
 
 /**
@@ -952,7 +999,7 @@ export interface JudgingOptions {
   maxJudgedEntries?: number;
   /** The most entries the decoding streams from one folder past the cap; defaults to MAX_STREAMED_ENTRIES. For tests. */
   maxStreamedEntries?: number;
-  /** A folder whose listing takes longer than this many milliseconds cannot be judged; defaults to MAX_LISTING_MS. */
+  /** A folder that keeps a listing, a streaming or a stat longer than this many milliseconds cannot be judged; defaults to MAX_LISTING_MS. */
   maxListingMs?: number;
   /**
    * The system temp roots decoding against the real root never lists; defaults to
@@ -1001,7 +1048,7 @@ export interface SkipRoot {
  * /tmp-scratch beside /tmp). A root that is the home directory or encloses it is no root at all:
  * every project would be under it (a TMPDIR set to the home directory).
  */
-export async function skipRoots(o: { factoryRoots: string[]; tempRoots: string[]; home: string }): Promise<SkipRoot[]> {
+export async function skipRoots(o: { factoryRoots: string[]; tempRoots: string[]; home: string; list: (dir: string) => Promise<string[]> }): Promise<SkipRoot[]> {
   const out: SkipRoot[] = [];
   for (const [reason, roots] of [["factory", o.factoryRoots], ["temp", o.tempRoots]] as const) {
     for (const raw of roots) {
@@ -1011,7 +1058,7 @@ export async function skipRoots(o: { factoryRoots: string[]; tempRoots: string[]
       const parent = dirname(root);
       let siblings: string[] = [];
       try {
-        siblings = await readdir(parent);
+        siblings = await o.list(parent);
       } catch {
         // A parent that cannot be listed shows no look-alikes.
       }
@@ -1057,7 +1104,7 @@ export async function sessionFiles(
   budget?: Budget,
   options: JudgingOptions = {},
 ): Promise<string[]> {
-  return (await sessionFilesAt(path, root, since, home, budget, options)).map((f) => f.file);
+  return inReading(async (reading) => (await sessionFilesAt(path, root, since, home, budget, options, reading)).map((f) => f.file));
 }
 
 /**
@@ -1068,9 +1115,20 @@ interface Reading {
   seen: Seen;
   toldOf: Set<string>;
   systemRoots: string[];
+  folders: Folders;
 }
 
-const newReading = (): Reading => ({ seen: newSeen(), toldOf: new Set(), systemRoots: systemTempRoots() });
+const newReading = (): Reading => ({ seen: newSeen(), toldOf: new Set(), systemRoots: systemTempRoots(), folders: new Folders() });
+
+/** Runs one reading and lets go of the process it read folders in, however it ended. */
+async function inReading<T>(read: (reading: Reading) => Promise<T>): Promise<T> {
+  const reading = newReading();
+  try {
+    return await read(reading);
+  } finally {
+    reading.folders.close();
+  }
+}
 
 /** sessionFiles, each transcript with its modification time. */
 async function sessionFilesAt(
@@ -1080,7 +1138,7 @@ async function sessionFilesAt(
   home: string,
   budget: Budget | undefined,
   options: JudgingOptions,
-  reading: Reading = newReading(),
+  reading: Reading,
 ): Promise<{ file: string; at: number }[]> {
   const order = (fs: { file: string; at: number }[]): { file: string; at: number }[] => fs.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
   if (!(await isDir(path))) return [];
@@ -1095,7 +1153,9 @@ async function sessionFilesAt(
   const maxEntries = options.maxJudgedEntries ?? MAX_JUDGED_ENTRIES;
   const clock = options.clock ?? Date.now;
   const slowMs = options.slowJudgementMs ?? SLOW_JUDGEMENT_MS;
-  const skipping = await skipRoots({ factoryRoots: options.factoryRoots ?? [], tempRoots, home });
+  const maxListingMs = options.maxListingMs ?? MAX_LISTING_MS;
+  const list = async (dir: string): Promise<string[]> => (await reading.folders.list(dir, Number.MAX_SAFE_INTEGER, maxListingMs)).names;
+  const skipping = await skipRoots({ factoryRoots: options.factoryRoots ?? [], tempRoots, home, list });
   // Each project's window is read first, and a project that is not the member's is skipped before
   // judging it or reading a transcript of it. The rest are judged newest first, so a budget that
   // runs out leaves the oldest unjudged.
@@ -1118,11 +1178,12 @@ async function sessionFilesAt(
   active.sort((a, b) => newest(b) - newest(a) || (a.sub < b.sub ? -1 : 1));
   const judging = (sub: string): Judging => ({
     seen,
+    folders: reading.folders,
     budget,
     tempRoots,
     maxEntries,
     maxStreamed: options.maxStreamedEntries ?? MAX_STREAMED_ENTRIES,
-    maxListingMs: options.maxListingMs ?? MAX_LISTING_MS,
+    maxListingMs,
     clock,
     home,
     systemRoots,
@@ -1308,10 +1369,12 @@ export async function sessionsSince(path: string | string[], since: number, unti
         );
     },
   };
-  const listed: { file: string; at: number }[] = [];
   // One reading across every path: a folder two paths' projects reach is listed and told of once.
-  const reading = newReading();
-  for (const p of typeof path === "string" ? [path] : path) listed.push(...(await sessionFilesAt(p, "/", since, home, options.budget, judging, reading)));
+  const listed = await inReading(async (reading) => {
+    const found: { file: string; at: number }[] = [];
+    for (const p of typeof path === "string" ? [path] : path) found.push(...(await sessionFilesAt(p, "/", since, home, options.budget, judging, reading)));
+    return found;
+  });
   const listing = [...new Map(listed.map((f) => [f.file, f])).values()].sort(newestFirst);
   const files = listing.map((f) => f.file);
   const line = skippedLine(skipped);

@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { holdAwake } from "./awake.ts";
 import { checkEdits, type Edit } from "./edits.ts";
+import { endNow } from "./end.ts";
 import type { SourceProgress } from "./extract.ts";
 import { countFailureSync, failedDetail, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, nodeQuestions, reportProblemSync, type NightlyOptions } from "./nightly.ts";
 import { recordFields, type Source, type SourceKind } from "./sources.ts";
@@ -282,7 +283,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       } catch {
         /* best effort */
       }
-      process.exit(143);
+      endNow(143);
     }
     try {
       const count = countFailureSync(stateDir, h.localDate);
@@ -296,7 +297,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
     } catch {
       /* the log is best effort; the exit is not */
     }
-    process.exit(143);
+    endNow(143);
   });
   // Idle sleep would pause the run mid-step; hold it off for the run's length.
   holdAwake();
@@ -354,10 +355,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
 
 /** The check hook: both checks over each edit, then Learnings from each checked one (src/edits.ts). */
 async function runCheckHook(h: Handoff, config: HookConfig): Promise<number> {
-  process.once("SIGTERM", () => {
-    killHarnesses();
-    process.exit(143);
-  });
+  process.once("SIGTERM", () => endNow(143));
   holdAwake();
   try {
     const context = await fetchContext(h.api);

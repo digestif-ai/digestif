@@ -3967,6 +3967,10 @@ let verdict_name = function
   | Clean -> "clean"
   | Unjudged -> "unjudged"
 
+(* Judging's folder calls made in this process, through a test's own opendir and readdir. *)
+let read_here ?opendir ?readdir () ~seconds:_ call =
+  Folder_reader.perform ?opendir ?readdir call
+
 (* DIG-349: the temp root, entry cap, give-up and time rules of the behaviors reader (DIG-295,
    DIG-361). The fixtures sit under the default temp folder, so each judging names its own temp
    roots. A decoding through the real root streams the folders it meets and keeps only the children
@@ -4070,12 +4074,14 @@ let judging_rules () =
       let flaky =
         {
           (judging ~max_entries:100 ()) with
-          Sources.readdir =
-            (fun h ->
-              incr calls;
-              if !calls > 3 then
-                raise (Unix.Unix_error (Unix.EIO, "readdir", ""))
-              else Unix.readdir h);
+          Sources.ask =
+            read_here
+              ~readdir:(fun h ->
+                incr calls;
+                if !calls > 3 then
+                  raise (Unix.Unix_error (Unix.EIO, "readdir", ""))
+                else Unix.readdir h)
+              ();
         }
       in
       Alcotest.(check bool)
@@ -4242,7 +4248,10 @@ let judging_fail_closed () =
   let refusing err =
     {
       (judging ()) with
-      Sources.opendir = (fun _ -> raise (Unix.Unix_error (err, "opendir", "")));
+      Sources.ask =
+        read_here
+          ~opendir:(fun _ -> raise (Unix.Unix_error (err, "opendir", "")))
+          ();
     }
   in
   let entries j =
@@ -4391,7 +4400,7 @@ let judging_fail_closed () =
     {
       (judging ~max_entries:100 ()) with
       Sources.clock = (fun () -> !now);
-      opendir = tick_open;
+      ask = read_here ~opendir:tick_open ();
       reading_seconds;
       deadline = ref infinity;
     }
@@ -4515,13 +4524,13 @@ let judging_round_three () =
     Out_channel.with_open_bin (at p) ignore
   in
   let gave = ref [] in
-  let judging ?(max_entries = 5) ?(opendir = Unix.opendir) () =
+  let judging ?(max_entries = 5) ?opendir () =
     {
       (Sources.default_judging ()) with
       Sources.temp_roots = [];
       max_entries;
       max_streamed = 100;
-      opendir;
+      ask = read_here ?opendir ();
       gave_up = (fun r d -> gave := (reason_name r, d) :: !gave);
     }
   in
@@ -4819,8 +4828,8 @@ let judging_round_three () =
       Alcotest.(check bool)
         "a mark that is a symlink loop cannot be judged" true
         (cannot (fun () ->
-             Sources.stat_exists ~memo:(Hashtbl.create 8) (judging ())
-               (Filename.concat loop Sources.financial_mark)));
+             Sources.stat_exists ~memo:(Hashtbl.create 8) (judging ()) loop
+               Sources.financial_mark));
       write_file
         (Filename.concat loop "s.jsonl")
         [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "r1n/b_plain") ];
@@ -5003,16 +5012,17 @@ let sessions_corpus_case ~max_entries c =
           max_entries;
           max_streamed = max_int;
           clock = (fun () -> !now);
-          opendir =
-            (fun d ->
-              let h = Unix.opendir d in
-              if List.mem d slow then slow_handles := h :: !slow_handles;
-              h);
-          readdir =
-            (fun h ->
-              if List.memq h !slow_handles then
-                now := !now +. (5. *. Sources.max_listing_seconds);
-              Unix.readdir h);
+          ask =
+            read_here
+              ~opendir:(fun d ->
+                let h = Unix.opendir d in
+                if List.mem d slow then slow_handles := h :: !slow_handles;
+                h)
+              ~readdir:(fun h ->
+                if List.memq h !slow_handles then
+                  now := !now +. (5. *. Sources.max_listing_seconds);
+                Unix.readdir h)
+              ();
           gave_up = (fun _ _ -> ());
           on_deadline = ignore;
         }
@@ -5048,6 +5058,144 @@ let sessions_corpus () =
           (sessions_corpus_case ~max_entries c))
     cases
 
+(* This program as a folder reader whose listing of one folder blocks before its first entry, in the
+   kernel and for good: it opens a FIFO nobody writes to. [log] gets its pid each time. *)
+let blocking_reader_flag = "--blocking-folder-reader"
+
+let blocking_reader folder fifo log =
+  Folder_reader.serve
+    ~opendir:(fun d ->
+      if d = folder then begin
+        Out_channel.with_open_gen [ Open_append; Open_creat ] 0o600 log
+          (fun oc -> Printf.fprintf oc "%d\n" (Unix.getpid ()));
+        Unix.close (Unix.openfile fifo [ Unix.O_RDONLY ] 0)
+      end;
+      Unix.opendir d)
+    ();
+  exit 0
+
+let () =
+  match Sys.argv with
+  | [| _; flag; folder; fifo; log |] when flag = blocking_reader_flag ->
+      blocking_reader folder fifo log
+  | _ -> ()
+
+(* A root with a home, and the projects directory's one transcript of each named project. *)
+let blocked_fixture names =
+  let root = fixture () in
+  let at p = Filename.concat root p in
+  Node.mkdir_p (at "home");
+  List.iter
+    (fun n ->
+      Node.mkdir_p (at ("projects/" ^ n));
+      write_file
+        (at ("projects/" ^ n ^ "/s.jsonl"))
+        [ {|{"type":"user","message":{"role":"user","content":"A prompt"}}|} ])
+    names;
+  (root, at)
+
+(* [f] with home at [h] and a judging whose folder reads block on [folder]. It is given the judging,
+   what it gave up on, and the pids that blocked. *)
+let reading_blocked ~root ~folder f =
+  let at p = Filename.concat root p in
+  let fifo = at "block.fifo" and log = at "block.log" in
+  List.iter (fun p -> if Sys.file_exists p then Sys.remove p) [ fifo; log ];
+  Unix.mkfifo fifo 0o600;
+  let pool =
+    Folder_reader.pool
+      [| Sys.executable_name; blocking_reader_flag; folder; fifo; log |]
+  in
+  let gave = ref [] in
+  let j =
+    {
+      (Sources.default_judging ()) with
+      Sources.temp_roots = [];
+      system_roots = [];
+      ask = Folder_reader.ask pool;
+      gave_up = (fun r d -> gave := (reason_name r, d) :: !gave);
+    }
+  in
+  let pids () =
+    if Sys.file_exists log then
+      In_channel.with_open_bin log In_channel.input_all
+      |> String.split_on_char '\n'
+      |> List.filter_map int_of_string_opt
+    else []
+  in
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" (at "home");
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
+    (fun () -> f j gave pids pool)
+
+(* DIG-483: a listing that blocks before its first entry gives up as too slow at its limit, costs that
+   once however many projects reach the folder, and the project beside them is judged. *)
+let judging_abandons_a_blocked_folder () =
+  let root, at =
+    blocked_fixture [ "-home-cloud-a"; "-home-cloud-b"; "-home-code-app" ]
+  in
+  List.iter
+    (fun d -> Node.mkdir_p (at d))
+    [ "home/cloud/a"; "home/cloud/b"; "home/code/app" ];
+  reading_blocked ~root ~folder:(at "home/cloud") (fun j gave pids pool ->
+      let began = Unix.gettimeofday () in
+      let files = Sources.session_files ~root ~judging:j (at "projects") in
+      let took = Unix.gettimeofday () -. began in
+      Alcotest.(check (list string))
+        "the project beside it is read"
+        [ at "projects/-home-code-app/s.jsonl" ]
+        files;
+      Alcotest.(check int) "both projects in it are not" 2 !(j.unjudged);
+      Alcotest.(check (list (pair string string)))
+        "it gave up once, as too slow"
+        [ ("listing time", at "home/cloud") ]
+        !gave;
+      Alcotest.(check int) "it cost one limit" 1 (List.length (pids ()));
+      Alcotest.(check bool)
+        (Printf.sprintf "within a few seconds (%.1f)" took)
+        true
+        (took < 4. *. Sources.max_listing_seconds);
+      (* The child that blocked was killed, and is reaped when another starts. *)
+      let pid = List.hd (pids ()) in
+      let rec gone n =
+        Folder_reader.reap pool;
+        match Unix.kill pid 0 with
+        | exception Unix.Unix_error (ESRCH, _, _) -> true
+        | () ->
+            n > 0
+            && begin
+              Unix.sleepf 0.05;
+              gone (n - 1)
+            end
+      in
+      Alcotest.(check bool) "the child that blocked is gone" true (gone 100))
+
+(* DIG-483: a project at home is judged by home's top level, and one level down only in a child whose
+   name reads as finance: no other child of home is listed. *)
+let judging_home_lists_no_child () =
+  let root, at = blocked_fixture [ "-home" ] in
+  List.iter (fun d -> Node.mkdir_p (at d)) [ "home/cloud"; "home/finance" ];
+  let read folder =
+    reading_blocked ~root ~folder (fun j _ pids _ ->
+        let listed = ref [] in
+        let j =
+          { j with Sources.on_listing = (fun d -> listed := d :: !listed) }
+        in
+        let files = Sources.session_files ~root ~judging:j (at "projects") in
+        (List.length files, List.length (pids ()), !listed))
+  in
+  let files, blocks, listed = read (at "home/cloud") in
+  Alcotest.(check (pair int int))
+    "a child not named for finance is never opened" (1, 0) (files, blocks);
+  Alcotest.(check (list string))
+    "home's only listed child is the one named for finance"
+    [ at "home/finance" ]
+    (List.filter (fun d -> Filename.dirname d = at "home") listed);
+  let files, blocks, _ = read (at "home/finance") in
+  Alcotest.(check (pair int int))
+    "one named for finance is, so a block there skips the project" (0, 1)
+    (files, blocks)
+
 (* A folder capped in an earlier listing of the reading that then refuses to open is given up for
    the refusal, not the cap, every time a decoding meets it: a cap beside a resolved branch can be
    excused by a transcript's path, a refusal never is. *)
@@ -5067,13 +5215,15 @@ let judging_refusal_keeps_its_reason () =
       Sources.temp_roots = [];
       system_roots = [];
       max_entries = 5;
-      opendir =
-        (fun d ->
-          if d = x then (
-            incr opens;
-            if !opens > 1 then
-              raise (Unix.Unix_error (Unix.EACCES, "opendir", d)));
-          Unix.opendir d);
+      ask =
+        read_here
+          ~opendir:(fun d ->
+            if d = x then (
+              incr opens;
+              if !opens > 1 then
+                raise (Unix.Unix_error (Unix.EACCES, "opendir", d)));
+            Unix.opendir d)
+          ();
       gave_up = (fun _ _ -> ());
     }
   in
@@ -15939,6 +16089,10 @@ let () =
             (cleaned judging_home_under_temp);
           Alcotest.test_case "judging: the sessions corpus" `Quick
             (cleaned sessions_corpus);
+          Alcotest.test_case "judging: a blocked folder is abandoned" `Quick
+            judging_abandons_a_blocked_folder;
+          Alcotest.test_case "judging: home lists no child" `Quick
+            judging_home_lists_no_child;
           Alcotest.test_case "judging: a refusal keeps its reason" `Quick
             (cleaned judging_refusal_keeps_its_reason);
           Alcotest.test_case "machine scan: cannot judge" `Quick

@@ -40,7 +40,7 @@ let default_probe =
   { opendir = Unix.opendir; readdir = Unix.readdir; closedir = Unix.closedir }
 
 (* Whether macOS refuses [dir]: one opendir and one readdir, as the judging listings read a folder
-   (Sources.with_dir), and no more of it. A folder that is not there, or fails otherwise, is not
+   (Folder_reader.list), and no more of it. A folder that is not there, or fails otherwise, is not
    refused: only a missing permission is what this check tells of. *)
 let refused probe dir =
   match probe.opendir dir with

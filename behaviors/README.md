@@ -8,6 +8,8 @@ runs the `.ts` files directly. Nothing here calls the network or a model.
 |---|---|
 | `bin/extract.ts` | The `extract` command: the record from the chosen sources (#55) |
 | `src/extract.ts`, `src/sessions.ts`, `src/git.ts` | The extraction library behind it |
+| `src/folders.ts`, `src/folder-reader.ts` | The child process that lists and stats the folders `src/sessions.ts` judges, killed when a call blocks past its limit |
+| `src/end.ts` | Ending a hook on SIGTERM with a file system call blocked |
 | `src/sources.ts` | The node's `source` and `sources_form` models (`spec/digestif-node.json`) |
 | `src/record.ts` | Where each source starts and ends, the first note's reach and the oldest-first record limit |
 | `bin/screen.ts` | The `screen` command: the PII detectors over a note on stdin, a JSON verdict (#57) |
@@ -82,7 +84,8 @@ nightly run hands those over with the note, and approval moves each source there
   conversation and is not read. Under the projects directory, a project that holds financial
   records, sits inside a repository that does, or sits under a folder below home with one at its
   top level or in a subfolder that is not a repository (a folder directly under home only when its
-  name reads as finance, such as `~/finance`) is skipped. A project is judged by the paths its name decodes to and by the `cwd` its
+  name reads as finance, such as `~/finance`) is skipped. Home itself, as the project or the repository
+  around it, is judged by its top level and by those of its folders whose names read as finance. A project is judged by the paths its name decodes to and by the `cwd` its
   transcripts record, which is read for that and never extracted. A project once seen to hold
   them keeps a `.digestif-financial` file in its project directory, which the node writes and
   reads too, and stays skipped while any of its paths is gone, so moving or deleting the whole
@@ -422,8 +425,8 @@ When `DIGESTIF_HOOK` is set, `nightly.ts` takes no flags and:
   `harness` and `agent` together, the agent the member chose. Absent, the defaults apply (`claude`
   on PATH, the brief and rules from the API);
 - on SIGTERM (the node's deadline) kills the harness's whole process group, counts the try, writes
-  `killed by SIGTERM at <step> (try n/3)` to the run log and exits 143; the node sends SIGKILL 30
-  seconds later. No step starts within 60 seconds of the deadline, counted in awake time from the
+  `killed by SIGTERM at <step> (try n/3)` to the run log and exits 143, at once whatever
+  file system call is blocked (`src/end.ts`); the node sends SIGKILL 30 seconds later. No step starts within 60 seconds of the deadline, counted in awake time from the
   time left at the start: the run is a failure (exit 1), logged;
 - exits 0 when the date is over (posted, quiet, refused, signed out, handed over unchecked, or the
   third failed try), 1 when it failed and the node's next pass should try again.
@@ -470,7 +473,7 @@ This story reads and records; it calls no model.
   first, or `state.json` is unreadable (the cursor stays, so the next run reads again); 2 for a context it
   refuses, an `api` that is not the node's loopback address included. `deadline` is measured in time the machine
   is awake: a sleep moves it later by as long (`src/awake.ts`, as the nightly). On SIGTERM, the node's
-  deadline, it ends every child process it started, then exits.
+  deadline, it ends every child process it started, then exits 143 (`src/end.ts`).
 - `buildReadPrompt` is the builder for the later stories' model calls: it includes `prompts/always-on.md`
   (read from `ALWAYS_ON_FILE` in `src/writer.ts`, never copied) and refuses a template without
   `{{always_on_rules}}`.

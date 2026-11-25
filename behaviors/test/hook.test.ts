@@ -11,6 +11,7 @@ import { NIGHTLY_WAITING, writeProgress } from "../src/hook.ts";
 import { MAX_ATTEMPTS, nightly } from "../src/nightly.ts";
 import type { Source } from "../src/sources.ts";
 import { fetchContext } from "../src/writer.ts";
+import { blocked, type Blocked } from "./blocked.ts";
 import { noLoopback } from "./loopback.ts";
 import { assertGone } from "./processes.ts";
 
@@ -201,6 +202,50 @@ test("SIGTERM mid-run kills the harness's group, logs where, and exits non-zero"
   assert.match(readFileSync(join(own, "logs", "nightly-2026-10-29.log"), "utf8"), /killed by SIGTERM at write \(try 1\/3\)/);
   assert.deepEqual(JSON.parse(readFileSync(join(own, "nightly.json"), "utf8")).attempts, { date: "2026-10-29", count: 1 }, "the deadline spends a try");
   assert.equal(recorded().length, 0);
+});
+
+/** Starts a hook, waits until its reading is blocked, and answers how it ended on SIGTERM and how long that took. */
+async function endBlocked(h: unknown, e: NodeJS.ProcessEnv, isBlocked: () => boolean): Promise<{ code: number | null; signal: string | null; ms: number }> {
+  const child = spawn(process.execPath, [bin], { env: e, stdio: ["pipe", "ignore", "ignore"] });
+  child.stdin.end(JSON.stringify(h));
+  const closed = new Promise<{ code: number | null; signal: string | null }>((r) => child.on("close", (code, signal) => r({ code, signal })));
+  const until = Date.now() + 10_000;
+  while (!isBlocked() && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(isBlocked(), "the hook blocked");
+  const began = Date.now();
+  child.kill("SIGTERM");
+  // The node's SIGKILL, 30 seconds after its SIGTERM, cut to what a test can wait.
+  const grace = setTimeout(() => child.kill("SIGKILL"), 15_000);
+  const r = await closed;
+  clearTimeout(grace);
+  return { ...r, ms: Date.now() - began };
+}
+
+for (const hook of ["nightly", "revise"]) {
+  test(`SIGTERM ends the ${hook} hook with 143 while a folder read is blocked (DIG-483)`, async () => {
+    const projects = join(dir, "projects");
+    mkdirSync(projects);
+    const b: Blocked = blocked(dir, projects);
+    try {
+      const sources = [{ id: "claude-code", kind: "claude_code", label: "Claude Code sessions", paths: [projects], yields: [] }];
+      const revise = hook === "revise" ? { revise: { note_id: "sha256:n1", sources: ["Changelog"] } } : {};
+      const r = await endBlocked(handoff({ hook, sources, ...revise }), env({ ...b.env, DIGESTIF_HOOK: hook }), () => b.pids().length > 0);
+      assert.deepEqual([r.code, r.signal], [143, null], `in ${r.ms} ms`);
+      assert.match(readFileSync(join(own, "logs", "nightly-2026-10-29.log"), "utf8"), /killed by SIGTERM at read/);
+    } finally {
+      b.release();
+    }
+  });
+}
+
+test("SIGTERM ends the check hook with 143 while a file read is blocked (DIG-483)", async () => {
+  const rules = join(dir, "rules.fifo");
+  execFileSync("mkfifo", [rules]);
+  writeFileSync(join(own, "config.json"), JSON.stringify({ harness, rules }));
+  // Its rules are read right after it starts holding the machine awake.
+  let at = 0;
+  const r = await endBlocked(handoff({ hook: "check", edits: [] }), env({ DIGESTIF_HOOK: "check" }), () => Date.now() - (at ||= Date.now()) > 1_500);
+  assert.deepEqual([r.code, r.signal], [143, null], `in ${r.ms} ms`);
 });
 
 test("a day whose third try is the deadline reports a problem that says where, so the Inbox can tell the member (DIG-361)", async () => {
