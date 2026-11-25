@@ -148,6 +148,7 @@
 
 <SettingsSection title="Note time" change={href.noteTimeEdit()} testid="settings-note-time">
   <p class="text-sm">{noteTime(data.noteTime.time)} <span class="dg-muted">{data.noteTime.time_zone}</span></p>
+  <p class="mt-1 text-sm"><a class="dg-link" href={href.noteLog()} data-testid="settings-note-log">Log</a></p>
 </SettingsSection>
 
 <SettingsSection title="Digest" change={href.digestEdit()} testid="settings-digest">

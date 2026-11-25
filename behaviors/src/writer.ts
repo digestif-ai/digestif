@@ -91,7 +91,8 @@ export type WriteResult =
   | { status: "hung"; quietMs: number }
   /** The member's agent account reached its usage limit; `reset` says when it lifts, when the agent said. */
   | { status: "usage_limited"; reset?: UsageReset; message: string }
-  | { status: "failed"; message: string };
+  /** `why` is the message without what the agent said, which stays in the run's log. */
+  | { status: "failed"; message: string; why: string };
 
 /**
  * The problem kind a harness run that gave no answer is reported as (nightly.ts ProblemKind): no
@@ -619,7 +620,10 @@ export async function askHarness(system: string, input: string, options: Harness
     const cmd = harnessCommand(agent, system, input, options.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD, catalog, tools);
     const r = await run(harness, cmd.args, cmd.stdin, cwd, quietMs, options.now ?? Date.now);
     if (r.hung) return { status: "hung", quietMs };
-    if (r.spawnError !== undefined) return { status: "failed", message: `cannot run the harness: ${r.spawnError}` };
+    if (r.spawnError !== undefined) {
+      const message = `cannot run the harness: ${r.spawnError}`;
+      return { status: "failed", message, why: message };
+    }
     const result = answerOf(agent, r.code, r.stdout);
     const said = result?.text ?? "";
     if (isSignedOut(r.code === 0 && result?.isError ? 1 : r.code, said + "\n" + r.stderr)) return { status: "signed_out" };
@@ -630,7 +634,7 @@ export async function askHarness(system: string, input: string, options: Harness
         return { status: "usage_limited", ...limited, message: `${agentName(agent)}'s usage limit was reached: ${(said.trim() || r.stderr.trim()).slice(0, 300)}` };
       }
       const why = (said.trim() || result?.subtype || r.stderr.trim()).slice(0, 300);
-      return { status: "failed", message: `the harness exited ${r.code}: ${why}` };
+      return { status: "failed", message: `the harness exited ${r.code}: ${why}`, why: `the harness exited ${r.code}` };
     }
     const note = said.trim();
     return note === "" ? { status: "empty" } : { status: "note", note };

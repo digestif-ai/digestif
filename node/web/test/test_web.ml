@@ -1236,14 +1236,12 @@ let digest_lines () =
        ~job:"rules_check" ~kind:"model_unavailable" ());
   Alcotest.(check bool)
     "could not run" true
-    (List.mem
-       "Digestif could not run today. Open it on your machine to see why."
-       (texts ()));
+    (List.mem "Digestif could not run today." (texts ()));
   Alcotest.(check bool)
     "the kind stays here" false
     (List.exists (fun l -> contains l "model") (texts ()));
   Alcotest.(check (option string))
-    "could not run points at the Feed" (Some "/feed")
+    "could not run points at the nightly note's log" (Some "/settings/note-log")
     (Item.notice_page "could_not_run");
   tell ();
   ignore
@@ -3434,7 +3432,7 @@ let behavior_revise () =
          ~source:"Changelog" ())
   in
   let settle () =
-    Behaviors.settle_nightly ~now ~say:ignore log run "exited 0"
+    Behaviors.settle_nightly ~now ~dir:n.dir ~say:ignore log run "exited 0"
   in
   let spawned at = List.map fst (Behaviors.after_pass ~now:at t ~stored:0) in
   let note = ok (Api.submit_note_text n "Worked on: the fetcher.") in
@@ -7474,7 +7472,7 @@ let ask_agent_prompt_and_stop () =
       Alcotest.(check bool) what true (contains prompt needle))
     [
       ( "the member's step",
-        "What the member does there: Open it to see why Digestif could not run."
+        "What the member does there: Open the log to see where the run failed."
       );
       ("the agent is told not to open", "Do not open anything: you cannot.");
       ("where and how to act", "Say where the member should act and how");
@@ -14817,9 +14815,12 @@ let inbox_node_notices_clear () =
   Alcotest.(check string)
     "New while the problem is open" "new"
     (s "status" (item failed));
-  Alcotest.(check string) "could not run: page" "/feed" (s "path" (item failed));
   Alcotest.(check string)
-    "could not run: what to do" "Open it to see why Digestif could not run."
+    "could not run: page" "/settings/note-log"
+    (s "path" (item failed));
+  Alcotest.(check string)
+    "could not run: why, and where to read more"
+    "The model was unavailable. Open the log to see where the run failed."
     (s "detail" (item failed));
   Store.Problems.resolve log ~job:"rules_check" ();
   L.raise_notices n ~now:real;
@@ -14913,6 +14914,196 @@ let inbox_agent_failed_notice () =
   Alcotest.(check int)
     "a new streak, a new notice" 1
     (List.length (List.filter (fun i -> member "done" i = `Null) (failed ())))
+
+(* DIG-484: a failed nightly run is told once, on the date's last try, with why. A try with another
+   to come raises nothing, a later success leaves nothing, and a run ended at its deadline says so
+   and the step its own report names. The notice is local, and its page shows the failure. *)
+let could_not_run_last_try () =
+  let n = demo () in
+  let log = n.Node.log in
+  let c = session n in
+  let call = call n c in
+  let module L = Digest_lines in
+  Log.exec log "DELETE FROM ui_problems" [];
+  Store.Stages.set log "active";
+  Log.exec log "DELETE FROM config WHERE key = ?"
+    [ Log.s Behaviors.k_last_date ];
+  let day0 = Unix.gettimeofday () in
+  let date = Behaviors.local_date day0 in
+  L.raise_notices n ~now:day0;
+  let raised () =
+    list (snd (call "items?limit=200"))
+    |> List.filter (fun i ->
+        s "subject" i = "could_not_run" && member "done" i = `Null)
+  in
+  let run ?terminated ?(date = date) started : Behaviors.running =
+    {
+      hook = Nightly;
+      pid = 0;
+      started;
+      date;
+      session = None;
+      awake = 0.;
+      seen = started;
+      terminated;
+      exited = None;
+    }
+  in
+  let settle ?terminated ?date ~at status =
+    Behaviors.settle_nightly ~now:at ~dir:n.dir ~say:ignore log
+      (run ?terminated ?date (at -. 10.))
+      status;
+    L.raise_notices n ~now:at
+  in
+  let told what k = Alcotest.(check int) what k (List.length (raised ())) in
+  let open_detail () =
+    (Option.get (Behaviors.writing_problem log)).Store.Problems.p_detail
+  in
+  (* Try 1 fails, try 2 posts. *)
+  settle ~at:day0 "exited 1";
+  told "a try with another to come" 0;
+  Alcotest.(check (option string))
+    "the problem is still written, and says why"
+    (Some "The run stopped before it finished (exited 1).") (open_detail ());
+  let posted = ok (Api.submit_note_text n "Worked on: the tests.") in
+  ignore posted;
+  settle ~at:(day0 +. 60.) "exited 0";
+  told "a later success leaves none" 0;
+  (* The next day: three tries, the last ended at its deadline while writing. *)
+  let day1 = day0 +. 86400. in
+  let d1 = Behaviors.local_date day1 in
+  let dir = Filename.concat n.dir "behaviors/nightly" in
+  Node.mkdir_p dir;
+  settle ~date:d1 ~at:day1 "exited 1";
+  settle ~date:d1 ~at:(day1 +. 60.) "exited 1";
+  told "two tries failed" 0;
+  let progress = Filename.concat dir "progress.json" in
+  let write json =
+    Out_channel.with_open_bin progress (fun oc -> output_string oc json);
+    Unix.utimes progress (day1 +. 115.) (day1 +. 115.)
+  in
+  write {|{"step":"checking","run_step":"hand over","sources":["Git"]}|};
+  settle ~date:d1 ~terminated:(day1 +. 119.) ~at:(day1 +. 120.) "exited 143";
+  let id =
+    match raised () with
+    | [ i ] -> s "id" i
+    | l -> Alcotest.failf "one notice, got %d" (List.length l)
+  in
+  let item () = snd (call ("items/" ^ enc id)) in
+  Alcotest.(check string)
+    "its title" "Digestif could not run today."
+    (s "title" (item ()));
+  Alcotest.(check string)
+    "why, then where"
+    "The note could not be written. The run was ended at its 30 minute \
+     deadline, while handing the note over. Open the log to see where the run \
+     failed."
+    (s "detail" (item ()));
+  Alcotest.(check bool) "local" true (member "local" (item ()) = `Bool true);
+  Alcotest.(check string) "its page" "/settings/note-log" (s "path" (item ()));
+  (match list (member "failures" (snd (call "settings/note_log"))) with
+  | [ `String f ] ->
+      Alcotest.(check string)
+        "the page shows the failure"
+        "The note could not be written. The run was ended at its 30 minute \
+         deadline, while handing the note over."
+        f
+  | _ -> Alcotest.fail "one failure on the page");
+  L.raise_notices n ~now:(day1 +. 300.);
+  told "exactly one" 1;
+  Store.Problems.resolve log ~job:"write_version" ();
+  L.raise_notices n ~now:(day1 +. 310.);
+  told "settled once the problem closes" 0;
+  (* The run's own report stands unless the node ended it, and a reading says its source and file. *)
+  let day2 = day0 +. (2. *. 86400.) in
+  let d2 = Behaviors.local_date day2 in
+  Out_channel.with_open_bin progress (fun oc ->
+      output_string oc
+        {|{"step":"reading","run_step":"read","sources":[],"reading":{"source":"Claude Code sessions","file":"/a/b.jsonl"}}|});
+  Unix.utimes progress day2 day2;
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (day2 -. 1.))
+       ~job:"write_version" ~kind:"failed" ~detail:"try 1 of 3 ended" ());
+  settle ~date:d2 ~terminated:day2 ~at:day2 "exited 143";
+  Alcotest.(check (option string))
+    "at its deadline, where it was reading"
+    (Some
+       "The run was ended at its 30 minute deadline, while reading Claude Code \
+        sessions, in /a/b.jsonl.")
+    (open_detail ());
+  Alcotest.(check int)
+    "the same try, counted once" 1
+    (Option.get (Behaviors.writing_problem log)).count;
+  (* A report from an earlier run names no step. *)
+  Alcotest.(check (option string))
+    "stale" None
+    (Behaviors.reported_step ~dir:n.dir ~started:(day2 +. 500.));
+  told "not told on the first try" 0;
+  (* The date passes with a try still owed: it is over with no note. *)
+  Behaviors.close_passed_date log ~now:(day2 +. 60.);
+  L.raise_notices n ~now:(day2 +. 60.);
+  told "the date is not over" 0;
+  Behaviors.close_passed_date log ~now:(day2 +. 86400.);
+  L.raise_notices n ~now:(day2 +. 86400.);
+  told "the date passed" 1;
+  Store.Problems.resolve log ~job:"write_version" ();
+  (* Signed out ends the date at once; a usage limit does not. *)
+  let day4 = day0 +. (4. *. 86400.) in
+  let d4 = Behaviors.local_date day4 in
+  L.raise_notices n ~now:day4;
+  let report at kind =
+    ignore
+      (Store.Problems.report log ~at:(Time_fmt.of_unix at) ~job:"write_version"
+         ~kind ())
+  in
+  report (day4 -. 1.) "model_unavailable";
+  settle ~date:d4 ~at:day4 Behaviors.nightly_waiting;
+  told "held by the usage limit" 0;
+  report (day4 +. 59.) "signed_out";
+  settle ~date:d4 ~at:(day4 +. 60.) "exited 0";
+  told "signed out ends the date" 1;
+  Alcotest.(check bool)
+    "and says so" true
+    (contains
+       (s "detail" (snd (call ("items/" ^ enc (s "id" (List.hd (raised ())))))))
+       "Your coding agent is signed out.")
+
+(* DIG-484: the nightly note's log: the node's lines and the newest date's run log, by time. *)
+let nightly_note_log () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let lines () =
+    List.map
+      (function `String l -> l | _ -> "")
+      (list (member "lines" (snd (call "settings/note_log"))))
+  in
+  Alcotest.(check (list string)) "no log yet" [] (lines ());
+  let dir = Filename.concat n.Node.dir "behaviors" in
+  let logs = Filename.concat dir "nightly/logs" in
+  Node.mkdir_p logs;
+  let write path text =
+    Out_channel.with_open_bin path (fun oc -> output_string oc text)
+  in
+  write
+    (Filename.concat dir "nightly.log")
+    "2026-11-25T12:00:00.000Z digestif: spawn x\n\
+     a line with no time\n\
+     2026-11-25T12:30:00.000Z digestif: exited 143\n";
+  write (Filename.concat logs "nightly-2026-11-24.log") "old\n";
+  write
+    (Filename.concat logs "nightly-2026-11-25.log")
+    "2026-11-25T12:29:59.000Z killed by SIGTERM at write (try 1/3)\n";
+  Alcotest.(check (list string))
+    "by time, the newest date's alone"
+    [
+      "2026-11-25T12:00:00.000Z digestif: spawn x";
+      "a line with no time";
+      "2026-11-25T12:29:59.000Z killed by SIGTERM at write (try 1/3)";
+      "2026-11-25T12:30:00.000Z digestif: exited 143";
+    ]
+    (lines ())
 
 (* ISS-85467: Settings, Inbox agent, Log: the read behavior's log, its last lines, oldest first. *)
 let inbox_agent_log () =
@@ -15271,19 +15462,24 @@ let inbox_node_items_and_digest () =
     (Store.Problems.report log
        ~at:(Time_fmt.of_unix (real -. 1.))
        ~job:"rules_check" ~kind:"model_unavailable" ());
+  ignore (Store.Notes.add log ~status:"waiting" "Worked on: the digest.");
   L.raise_notices n ~now:real;
   let raised = node_items () in
-  Alcotest.(check int) "two notices raised" (before + 2) (List.length raised);
+  Alcotest.(check int) "three notices raised" (before + 3) (List.length raised);
   let notice subject = List.find (fun i -> s "subject" i = subject) raised in
   let repos = notice "repositories" and failed = notice "could_not_run" in
   Alcotest.(check string) "a notice" "notice" (s "kind" failed);
   Alcotest.(check string) "New" "new" (s "status" failed);
   Alcotest.(check string)
-    "its words are the digest line's"
-    "Digestif could not run today. Open it on your machine to see why."
-    (s "title" failed);
+    "its title" "Digestif could not run today." (s "title" failed);
   let failed_id = s "id" failed in
-  (match (Option.get (Log.find log failed_id)).signed with
+  (* DIG-484: its words say why, so it is kept on this machine and never signed. *)
+  Alcotest.(check bool)
+    "could not run is never signed" true
+    (Log.find log failed_id = None);
+  (* A notice that names nothing is sealed to the member alone. *)
+  let ready_id = s "id" (notice "note_ready") in
+  (match (Option.get (Log.find log ready_id)).signed with
   | { envelope = { kind = "item"; _ }; body = Some body } ->
       Alcotest.(check bool)
         "sealed, to the member alone" true
@@ -15317,14 +15513,21 @@ let inbox_node_items_and_digest () =
   | Page { label = "Read the draft"; url } ->
       Alcotest.(check string) "its page" ("PAGE/" ^ s "id" draft) url
   | _ -> Alcotest.fail "a draft links to its page");
-  (match (entry failed_id).action with
+  (match (entry ready_id).action with
   | Acknowledge { keys = [ _ ] } -> ()
   | _ -> Alcotest.fail "a notice carries Acknowledge, sealed to the member");
   Alcotest.(check string)
     "from the node" "Notice from your node" (entry failed_id).line;
-  (match (entry (s "id" repos)).action with
-  | Page _ -> ()
-  | _ -> Alcotest.fail "a local notice has no envelope to acknowledge");
+  List.iter
+    (fun id ->
+      match (entry id).action with
+      | Page _ -> ()
+      | _ -> Alcotest.fail "a local notice has no envelope to acknowledge")
+    [ s "id" repos; failed_id ];
+  Alcotest.(check string)
+    "the digest's title says no reason"
+    "Digestif could not run today. Open it on your machine to see why."
+    (entry failed_id).title;
   Alcotest.(check bool)
     "Read stays off it" false
     (List.exists
@@ -15339,9 +15542,9 @@ let inbox_node_items_and_digest () =
   ignore
     (ok
        (Node.write n ~kind:"decision"
-          (Digestif_mail.Ask.pick_body ~keys:[ enc_key.public ] ~item:failed_id
+          (Digestif_mail.Ask.pick_body ~keys:[ enc_key.public ] ~item:ready_id
              ~option:Digestif_mail.Ask.acknowledge)));
-  let _, f = call ("items/" ^ enc failed_id) in
+  let _, f = call ("items/" ^ enc ready_id) in
   Alcotest.(check (pair string bool))
     "acknowledged from the email: read and archived" ("read", true)
     (s "status" f, member "archived_at" f <> `Null);
@@ -15660,6 +15863,9 @@ let () =
           Alcotest.test_case "the Inbox: a failed Inbox agent run" `Quick
             inbox_agent_failed_notice;
           Alcotest.test_case "the Inbox agent's log" `Quick inbox_agent_log;
+          Alcotest.test_case "could not run: told on the last try, with why"
+            `Quick could_not_run_last_try;
+          Alcotest.test_case "the nightly note's log" `Quick nightly_note_log;
           Alcotest.test_case "the Inbox: the node checks folder access" `Quick
             folder_access_notice;
           Alcotest.test_case "the projects a reading skipped" `Quick

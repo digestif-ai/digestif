@@ -592,35 +592,131 @@ let revise_due (log : Log.t) ~now =
           None
       | labels -> if now >= r.next_at then Some (r.note_id, labels) else None)
 
-let settle_nightly ?(now = Unix.gettimeofday ()) ~say (log : Log.t) r status =
+(* The nightly's own report of where it is: progress.json, in its state directory. *)
+let progress_file dir = Filename.concat dir "behaviors/nightly/progress.json"
+
+(* The step the run [started] then was in, in the member's words, from its own report; None when the
+   report is an earlier run's or cannot be read. [run_step] is the pipeline's step; a behavior that
+   does not write it says the note page's [step]. *)
+let reported_step ~dir ~started =
+  let file = progress_file dir in
+  match
+    if (Unix.stat file).st_mtime < started -. 1. then None
+    else Some (Yojson.Safe.from_file file)
+  with
+  | exception
+      ( Unix.Unix_error _ | Sys_error _ | Yojson.Json_error _
+      | Yojson.Safe.Util.Type_error _ ) ->
+      None
+  | Some (`Assoc f) -> (
+      let text name fields =
+        match List.assoc_opt name fields with
+        | Some (`String s) -> Some s
+        | _ -> None
+      in
+      let reading () =
+        match List.assoc_opt "reading" f with
+        | Some (`Assoc r) -> (
+            match (text "source" r, text "file" r) with
+            | Some s, Some file -> Printf.sprintf "reading %s, in %s" s file
+            | Some s, None -> "reading " ^ s
+            | None, _ -> "reading your sources")
+        | _ -> "reading your sources"
+      in
+      match
+        Option.fold ~none:(text "step" f) ~some:Option.some (text "run_step" f)
+      with
+      | Some ("read" | "reading") -> Some (reading ())
+      | Some "close questions" -> Some "closing answered questions"
+      | Some ("write" | "writing") -> Some "writing the note"
+      | Some ("check" | "checking") -> Some "checking the note"
+      | Some "hand over" -> Some "handing the note over"
+      | _ -> None)
+  | Some _ | None -> None
+
+(* A run ended at its deadline, or one that stopped without saying why, in the member's words. *)
+let nightly_failure ~dir r status =
+  if r.terminated <> None then
+    Printf.sprintf "The run was ended at its %.0f minute deadline%s."
+      (timeout r.hook /. 60.)
+      (match reported_step ~dir ~started:r.started with
+      | Some step -> ", while " ^ step
+      | None -> "")
+  else Printf.sprintf "The run stopped before it finished (%s)." status
+
+(* DIG-484: [date]'s last try has failed and it is over with no note, so the problems in writing
+   open now are told (Digest_lines.could_not_run). *)
+let no_note (log : Log.t) ~now =
+  Store.set_config log Store.k_nightly_no_note_at (Time_fmt.of_unix now)
+
+let writing_problem ?since (log : Log.t) =
+  List.find_opt
+    (fun (p : Store.Problems.problem) ->
+      p.job = "write_version"
+      && match since with Some t -> p.last_seen_at >= t | None -> true)
+    (Store.Problems.open_ log)
+
+(* A run that exits 0 has ended its date with a note, with nothing to say (both record a tick and
+   close the problem), or with a failure it reported that no other try mends, the agent signed out
+   or its own tries spent. *)
+let ended_without_note (log : Log.t) r =
+  writing_problem log <> None
+  &&
+  match Store.ticks log ~limit:1 with
+  | [ t ] -> t.t_at < Time_fmt.of_unix r.started
+  | _ -> true
+
+(* A date that passed with a try still owed, the machine asleep or the agent's usage limit past
+   midnight, is over with no note. [k_failures] names it. *)
+let close_passed_date (log : Log.t) ~now =
+  match
+    Option.map (String.split_on_char ' ') (Log.get_config log k_failures)
+  with
+  | Some (d :: _) when d < local_date now ->
+      if writing_problem log <> None then no_note log ~now;
+      Log.unset_config log k_failures
+  | _ -> ()
+
+let count_failures (log : Log.t) ~date n =
+  Log.set_config log k_failures (Printf.sprintf "%s %d" date n)
+
+let settle_nightly ?(now = Unix.gettimeofday ()) ~dir ~say (log : Log.t) r
+    status =
   if status = "exited 0" then begin
+    if (not (date_handled log r.date)) && ended_without_note log r then
+      no_note log ~now;
     handle_date log r.date;
     arm_revise ~now log r
   end
-  else if status = nightly_waiting then
+  else if status = nightly_waiting then begin
+    (* No try of the date, which stays owed. *)
+    if not (date_handled log r.date) then
+      count_failures log ~date:r.date (failures log ~date:r.date);
     say
       "the agent's usage limit holds the run; the next pass tries again, not \
        counted"
+  end
   else if not (date_handled log r.date) then begin
     let n = failures log ~date:r.date + 1 in
-    (* A run that said why (the agent signed out, the model down) reported it itself. *)
-    let said_why =
-      let since = Time_fmt.of_unix r.started in
-      List.exists
-        (fun (p : Store.Problems.problem) ->
-          p.job = "write_version" && p.last_seen_at >= since)
-        (Store.Problems.open_ log)
-    in
-    if not said_why then
-      ignore
-        (Store.Problems.report log ~at:(Time_fmt.of_unix now)
-           ~job:"write_version" ~kind:"failed" ());
+    (* A run that said why (the agent signed out, the model down) reported it itself, except that a
+       run ended at its deadline cannot tell that from the node stopping: the node says so. *)
+    (match writing_problem ~since:(Time_fmt.of_unix r.started) log with
+    | None ->
+        ignore
+          (Store.Problems.report log ~at:(Time_fmt.of_unix now)
+             ~job:"write_version" ~kind:"failed"
+             ~detail:(nightly_failure ~dir r status)
+             ())
+    | Some p when r.terminated <> None ->
+        Store.Problems.say log p.p_id ~detail:(nightly_failure ~dir r status)
+    | Some _ -> ());
     if n >= max_tries then begin
+      no_note log ~now;
       handle_date log r.date;
       say (Printf.sprintf "%d runs failed; %s is over" n r.date)
     end
     else begin
-      Log.set_config log k_failures (Printf.sprintf "%s %d" r.date n);
+      count_failures log ~date:r.date n;
       say
         (Printf.sprintf "run %d of %d failed; the next pass tries again" n
            max_tries)
@@ -721,7 +817,8 @@ let reap ?(now = Unix.gettimeofday ()) t =
       say t r.hook "%s" status;
       if r.hook = Nightly then Store.clear_nightly_running t.node.log;
       if r.hook = Nightly then
-        settle_nightly ~now ~say:(say t Nightly "%s") t.node.log r status;
+        settle_nightly ~now ~dir:t.node.dir ~say:(say t Nightly "%s") t.node.log
+          r status;
       (* A revise run's retry ends once nothing is left for it (revise_due). *)
       if r.hook = Revise then ignore (revise_due t.node.log ~now);
       (* A draft reply the run was handed and did not write has failed (ISS-83154). *)
@@ -781,6 +878,8 @@ let nightly_run_wanted t =
    most once at a time. *)
 let after_pass ?(now = Unix.gettimeofday ()) t ~stored:_ =
   let log = t.node.log in
+  (* A try that runs past midnight is still a try of its date. *)
+  if not (is_running t Nightly) then close_passed_date log ~now;
   let requested = Store.nightly_run_requested log in
   let nightly = (requested || nightly_due log ~now) && nightly_can_start t in
   if

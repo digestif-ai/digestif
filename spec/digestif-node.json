@@ -608,7 +608,7 @@
         },
         {
           "name": "could_not_run",
-          "description": "A run that could not: the node's notice."
+          "description": "The day's last try at a note failed, or a note could not be checked or sent: the node's notice, its detail the reason in the member's words, its page the nightly note's log. Local: never sent, mailed or shown off the machine; the digest carries it under a title that names no reason."
         },
         {
           "name": "pause_coming",
@@ -3637,6 +3637,21 @@
         }
       ]
     },
+    "note_log": {
+      "description": "The nightly note's log (DIG-484): why the last note could not be written, checked or sent, then what the node and each run of the nightly wrote as they went.",
+      "fields": [
+        {
+          "name": "failures",
+          "type": "[string]",
+          "description": "Each open problem in writing, checking or sending a note, newest first, in the member's words and then where it happened. Empty while none is open."
+        },
+        {
+          "name": "lines",
+          "type": "[string]",
+          "description": "The last 200 lines of behaviors/nightly.log and of the newest date's own run log, together, oldest first."
+        }
+      ]
+    },
     "approval_signer": {
       "description": "One row of an approval's Signatures: a key whose signature it needs.",
       "fields": [
@@ -5657,6 +5672,20 @@
           "responses": {
             "200": {
               "type": "inbox_agent_log"
+            }
+          }
+        }
+      ]
+    },
+    "note_log": {
+      "path": "/api/v0/settings/note_log",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The nightly note's log, for the member to read on their own machine.",
+          "responses": {
+            "200": {
+              "type": "note_log"
             }
           }
         }

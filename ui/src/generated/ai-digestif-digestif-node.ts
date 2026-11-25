@@ -1219,6 +1219,16 @@ export interface NoteEditForm {
 }
 
 /**
+ * The nightly note's log (DIG-484): why the last note could not be written, checked or sent, then what the node and each run of the nightly wrote as they went.
+ */
+export interface NoteLog {
+  /** Each open problem in writing, checking or sending a note, newest first, in the member's words and then where it happened. Empty while none is open. */
+  failures: string[];
+  /** The last 200 lines of behaviors/nightly.log and of the newest date's own run log, together, oldest first. */
+  lines: string[];
+}
+
+/**
  * A note the run has not handed over: the first note from the setup chat starting it, which the note page shows until its first version arrives.
  */
 export interface NoteProgress {
@@ -2105,6 +2115,11 @@ export interface UpdateNamesOptions {
 }
 
 export interface GetNodeStatusOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetNoteLogOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -4244,6 +4259,29 @@ export class ApiClient {
 
       if (response.status === 200) {
         return await Util.mustParse<NodeStatus>(response, 'NodeStatus');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getNoteLog(context: CallContext, params?: GetNoteLogOptions): Promise<NoteLog> {
+    return context.recorder.call(context, 'GET /api/v0/settings/note_log', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/note_log`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<NoteLog>(response, 'NoteLog');
       }
 
       throw new ApiException(response, `Request failed with status ${response.status}`);
