@@ -90,12 +90,13 @@ export function reportProblemSync(bin: string, job: ProblemJob, kind: ProblemKin
 }
 
 /**
- * What the problem record says of a date given up on: the step the last try ended at and, when it
- * was reading, the source. The member reads it in the Inbox (DIG-361), so it is plain words with no
- * path and nothing of the record.
+ * What the problem record says of a failed try: the step it ended at, the source when it was reading,
+ * and why, in code's words; the date's last try says it was the last. The member reads it on their own
+ * machine (DIG-361, DIG-484), and nothing the agent wrote is in it.
  */
-export function gaveUpDetail(tries: number, step: string, source?: string): string {
-  return `gave up after ${tries} tries, the last ended at the ${step} step${source === undefined ? "" : `, in ${source}`}`;
+export function failedDetail(tries: number, step: string, source?: string, why?: string): string {
+  const where = `the ${step} step${source === undefined ? "" : `, in ${source}`}${why === undefined ? "" : `: ${why}`}`;
+  return tries >= MAX_ATTEMPTS ? `gave up after ${tries} tries, the last ended at ${where}` : `try ${tries} of ${MAX_ATTEMPTS} ended at ${where}`;
 }
 
 /**
@@ -626,12 +627,12 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   };
   // A failed try is a problem in writing the note, and is retried on the node's next pass (hook mode)
   // or the next firing; the last one ends the date.
-  const fail = async (message: string, kind: ProblemKind = "failed"): Promise<NightlyResult> => {
+  // `why` is the message in code's words; a message that quotes what the agent said has its own.
+  const fail = async (message: string, kind: ProblemKind = "failed", why = message): Promise<NightlyResult> => {
     const count = (st.attempts?.date === date ? st.attempts.count : 0) + 1;
     await saveState(o.stateDir, { ...st, attempts: { date, count } });
     await log(`failed (try ${count}/${MAX_ATTEMPTS}): ${message}`);
-    // The last try says where it ended, so the Inbox's notice has something to show.
-    await report("write_version", kind, undefined, count >= MAX_ATTEMPTS ? gaveUpDetail(count, currentStep, currentStep === "read" ? readingSource : undefined) : undefined);
+    await report("write_version", kind, undefined, failedDetail(count, currentStep, currentStep === "read" ? readingSource : undefined, why));
     if (count < MAX_ATTEMPTS || o.dryRun) return { status: "failed", date, message };
     await log("gave up for the date");
     return { status: "gave_up", date, message };
@@ -784,7 +785,8 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   if (w.status === "usage_limited") return limited(w.reset, w.message);
   if (w.status === "out_of_budget") return fail(`the writer reached its budget of $${o.writer?.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD}`, "out_of_budget");
   if (w.status === "hung") return fail(`the writer wrote nothing for ${Math.round(w.quietMs / 60_000)} minutes of awake time`, "model_unavailable");
-  if (w.status !== "note") return fail(w.status === "failed" ? w.message : `the writer ended with ${w.status}`);
+  if (w.status === "failed") return fail(w.message, "failed", w.why);
+  if (w.status !== "note") return fail(`the writer ended with ${w.status}`);
 
   // 4. Check: the PII check and the Rules check remove what they find, run in turn until each
   //    has passed the current text (src/checks.ts). Nothing is refused or held here: what goes over is

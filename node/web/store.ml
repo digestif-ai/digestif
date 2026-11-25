@@ -710,6 +710,9 @@ module Problems = struct
   (* The jobs a work run is: the status note is could_not_run while one is open. *)
   let work_run_jobs = [ "write_version"; "pii_check"; "rules_check" ]
 
+  (* The jobs that write, check or send a note: a problem opened on one is a run that could not. *)
+  let note_jobs = work_run_jobs @ [ "send" ]
+
   let init (log : Log.t) =
     Log.check log.db
       (Sqlite3.exec log.db
@@ -806,6 +809,12 @@ module Problems = struct
                 Log.s detail;
               ];
             Option.get (find log id))
+
+  (* What an open problem says, replaced: one failure said again in better words is no second
+     failure, so its count and times stay. *)
+  let say (log : Log.t) id ~detail =
+    Log.exec log "UPDATE ui_problems SET detail = ? WHERE id = ?"
+      [ Log.s detail; Log.s id ]
 
   (* The job succeeded: every open problem of it closes. A source job names the source that read,
      so one source's success does not close another's failure. *)
@@ -1529,6 +1538,10 @@ let k_behavior_unset name = "behavior_" ^ name ^ "_unset"
 (* The nightly's local dates (Behaviors): the last one a run handled, and the failed runs of one. *)
 let k_nightly_last_date = "behavior_nightly_last_date"
 let k_nightly_failures = "behavior_nightly_failures"
+
+(* DIG-484: when the nightly last ended a local date with no note, its last try failed. A problem in
+   writing opened by then is told (Digest_lines.could_not_run); one opened since has a try to come. *)
+let k_nightly_no_note_at = "behavior_nightly_no_note_at"
 
 (* Reopens the nightly: no date is handled and no run has failed, so the nightly catch-up owes a
    run today even when today's note was written. ISS-48141 *)
@@ -3920,7 +3933,8 @@ CREATE INDEX IF NOT EXISTS ui_approval_answers_approval ON ui_approval_answers (
         Log.rows log
           ("SELECT DISTINCT approval FROM ui_approval_answers WHERE approval \
             IS NOT NULL AND reply IS NOT NULL AND ("
-          ^ String.concat " OR " (List.map (fun _ -> "instr(reply, ?) > 0") keys)
+          ^ String.concat " OR "
+              (List.map (fun _ -> "instr(reply, ?) > 0") keys)
           ^ ")")
           (List.map Log.s keys)
         |> List.filter_map (function [| h |] -> Some (Log.text h) | _ -> None)

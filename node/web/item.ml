@@ -42,16 +42,19 @@ let subjects =
    the wire, mailed or shown off the machine. *)
 let local_subject = function
   | Some
-      ( "repositories" | "folder_access" | "skipped_projects"
+      ( "repositories" | "folder_access" | "skipped_projects" | "could_not_run"
       | "inbox_agent_failed" | "send_invite" | "review" ) ->
       true
   | _ -> false
 
 (* ISS-81607: the title the digest carries for a local notice whose own title names what is on the
-   machine (a folder), fixed by the subject so the digest counts the notice and names nothing. *)
+   machine (a folder), fixed by the subject so the digest counts the notice and names nothing. A run
+   that could not says why in its detail alone, and its digest title sends the member there. *)
 let off_machine_title = function
   | Some "folder_access" ->
       Some "Digestif cannot read some of your sessions on your machine."
+  | Some "could_not_run" ->
+      Some "Digestif could not run today. Open it on your machine to see why."
   | Some "send_invite" ->
       Some "An invite waits for you to send on your machine."
   | _ -> None
@@ -60,7 +63,8 @@ let off_machine_title = function
    there. Both are fixed by the subject, so neither can name a repository, a path or a failure. *)
 let notice_page = function
   | "repositories" -> Some "/settings/repositories/edit"
-  | "note_ready" | "pause_coming" | "could_not_run" -> Some "/feed"
+  | "note_ready" | "pause_coming" -> Some "/feed"
+  | "could_not_run" -> Some "/settings/note-log"
   | "invites_halted" -> Some "/members"
   | "inbox_agent_failed" -> Some "/settings/inbox-agent/log"
   | _ -> None
@@ -74,7 +78,7 @@ let notice_instruction = function
       Some
         "Remove the revoked admin from their member page, or wait for the \
          release naming the new signers; nothing admits anyone until then."
-  | "could_not_run" -> Some "Open it to see why Digestif could not run."
+  | "could_not_run" -> Some "Open the log to see where the run failed."
   | "inbox_agent_failed" ->
       Some "Open the log to see what the run did before it failed."
   | "pause_coming" ->

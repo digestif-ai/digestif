@@ -295,13 +295,13 @@ test("the first note's page reads each step of the run, by the note's own words"
   const source: Source = { id: "git", kind: "git", label: "Git repositories", paths: [], yields: [], selected: true };
   const read = () => JSON.parse(readFileSync(join(stateDir, "progress.json"), "utf8")) as unknown;
   writeProgress(stateDir, "read", [source]);
-  assert.deepEqual(read(), { step: "reading", sources: ["Git repositories"] });
+  assert.deepEqual(read(), { step: "reading", run_step: "read", sources: ["Git repositories"] });
   writeProgress(stateDir, "write", [source]);
-  assert.deepEqual(read(), { step: "writing", sources: ["Git repositories"] });
+  assert.deepEqual(read(), { step: "writing", run_step: "write", sources: ["Git repositories"] });
   writeProgress(stateDir, "check", [source]);
-  assert.deepEqual(read(), { step: "checking", sources: ["Git repositories"] });
+  assert.deepEqual(read(), { step: "checking", run_step: "check", sources: ["Git repositories"] });
   writeProgress(stateDir, "hand over", [source]);
-  assert.deepEqual(read(), { step: "checking", sources: ["Git repositories"] });
+  assert.deepEqual(read(), { step: "checking", run_step: "hand over", sources: ["Git repositories"] });
   rmSync(stateDir, { recursive: true, force: true });
 });
 

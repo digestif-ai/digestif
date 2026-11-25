@@ -691,6 +691,7 @@ let routes n cookie =
     ("settings/agent/check", "settings/agent/check");
     ("settings/inbox_agent", "settings/inbox_agent");
     ("settings/inbox_agent/log", "settings/inbox_agent/log");
+    ("settings/note_log", "settings/note_log");
     ("items?status", "items?limit=26&status=new&status=read");
     ("items?voice", "items?limit=26&voice=agent");
   ]
