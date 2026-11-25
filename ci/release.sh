@@ -89,11 +89,21 @@
 #       origin/main with the next patch of the newest relay tag (relay-v0.1.0 when there is none),
 #       push it and print it; a tip already relay-tagged prints that tag; otherwise print
 #       `unchanged` and tag nothing. --sha as for build: exits 75 when origin/main is another commit.
+#       When the order between relay releases (`relay order`) holds origin/main back, tags and pushes
+#       the newest commit before it the order allows, if one moved a relay release path, and exits 3
+#       saying what the rest waits for, so the job asks again.
+#   ci/release.sh relay order [--at COMMIT]
+#       Read-only. Whether a relay release of COMMIT (default HEAD) keeps the order between relay
+#       releases (docs/releases.md): every commit its ci/relay-release-order says it needs is served
+#       by every relay, and a Durable Object migration step no relay has applied is alone in it.
+#       Exits 0 when it does, 3 naming what it waits for, what it must be released without or the
+#       relay that did not answer, 1 when the file cannot be read as entries.
 #
-# Exits 0 on success, 1 on a failure, 2 on a usage error, and 75 when main moved under --sha, a
-# candidate or a relay release is not signed yet, a relay release's announcement is held, the test
-# nodes have not said yes or no, or the channel could not be read. Needs git, jq, curl and an
-# authenticated gh with write access to the repository.
+# Exits 0 on success, 1 on a failure, 2 on a usage error, 3 when the order between relay releases
+# holds a relay release, and 75 when main moved under --sha, a candidate or a relay release is not
+# signed yet, a relay release's announcement is held, the test nodes have not said yes or no, or the
+# channel could not be read. Needs git, jq, curl and an authenticated gh with write access to the
+# repository.
 
 set -euo pipefail
 
@@ -107,7 +117,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '2,100p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,107p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -949,8 +959,186 @@ cmd_relay_changed() {
   relay_word "$target"
 }
 
+# ---- the order between relay releases (docs/releases.md) ----
+
+# The entries $2 of ci/relay-release-order at the commit $1, one value per line; nothing for a commit
+# that has no such file. A line that is no entry stops the run.
+order_entries() {
+  local text kind value rest
+  text="$(git -C "$root" show "$1:ci/relay-release-order" 2>/dev/null)" || return 0
+  while read -r kind value rest; do
+    case "$kind" in
+      "" | "#"*) continue ;;
+      relay) [[ "$value" =~ ^(https|file)://. ]] || die "ci/relay-release-order: relay $value is no url" ;;
+      served) valid_version "$value" || die "ci/relay-release-order: served $value is not MAJOR.MINOR.PATCH" ;;
+      needs) [[ "$value" =~ ^[0-9a-f]{40}$ ]] || die "ci/relay-release-order: needs $value is no full commit id" ;;
+      *) die "ci/relay-release-order: $kind is no entry" ;;
+    esac
+    if [ "$kind" = "$2" ]; then echo "${value%/}"; fi
+  done <<<"$text"
+}
+
+# The tags of the Durable Object migration steps relay/wrangler.jsonc lists at a commit, one per line.
+relay_steps() {
+  local top tags
+  top="$(wrangler_top_level "$1")"
+  tags="$(grep -oE '"tag"[[:space:]]*:[[:space:]]*"[^"]+"' <<<"$top" | sed -E 's/.*"([^"]+)"$/\1/' || true)"
+  if [ -z "$tags" ] && grep -qE '"migrations"[[:space:]]*:' <<<"$top"; then
+    die "relay/wrangler.jsonc at $1 lists migrations and no tag this reads"
+  fi
+  printf '%s\n' "$tags"
+}
+
+# Whether the version $1 is older than $2.
+version_older() {
+  local a b i
+  IFS=. read -r -a a <<<"$1"
+  IFS=. read -r -a b <<<"$2"
+  for i in 0 1 2; do
+    [ "${a[$i]}" -eq "${b[$i]}" ] || { [ "${a[$i]}" -lt "${b[$i]}" ] && return 0 || return 1; }
+  done
+  return 1
+}
+
+relay_tag_of() {
+  git -C "$root" rev-parse --verify --quiet "refs/tags/relay-v$1^{commit}" >/dev/null ||
+    die "there is no tag relay-v$1, which $2"
+  echo "relay-v$1"
+}
+
+# The tag of the oldest relay release any relay named at the commit $1 serves; each relay is asked
+# once. Exits 3 when one does not answer: 75 is main moved, to the job that runs `relay tag`.
+served_by_every_relay() {
+  local url version oldest="" relays
+  relays="$(order_entries "$1" relay)" || exit 1
+  [ -n "$relays" ] || die "ci/relay-release-order at $1 names no relay"
+  while IFS= read -r url; do
+    version="$(curl -fsSL --retry 2 --max-time 20 "$url/v0/version" | jq -r '.relay_version // empty')" &&
+      valid_version "$version" || {
+      echo "release.sh: held: could not read the relay release $url serves" >&2
+      exit 3
+    }
+    echo "release.sh: $url serves relay $version" >&2
+    if [ -z "$oldest" ] || version_older "$version" "$oldest"; then oldest="$version"; fi
+  done <<<"$relays"
+  relay_tag_of "$oldest" "a relay serves"
+}
+
+# The commits after $1 up to $2 that moved a relay release path, newest first.
+relay_commits() {
+  local commits c moved
+  commits="$(git -C "$root" rev-list --first-parent "$1..$2")"
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    moved="$(relay_moved "$c^" "$c" 2>/dev/null)" || die "could not read what $c moved"
+    if [ -n "$moved" ]; then echo "$c"; fi
+  done <<<"$commits"
+}
+
+# Why a relay release of the commit $2 does not keep the order, when every relay serves what the
+# tag $1 holds, one reason per line; nothing when it keeps it.
+order_reasons() {
+  local base="$1" commit="$2" need needs old now steps commits moved elsewhere
+  needs="$(order_entries "$commit" needs)" || exit 1
+  while IFS= read -r need; do
+    [ -n "$need" ] || continue
+    git -C "$root" merge-base --is-ancestor "$need" "$commit" 2>/dev/null ||
+      die "ci/relay-release-order at $commit needs $need, which is no commit before it"
+    git -C "$root" merge-base --is-ancestor "$need" "$base" ||
+      echo "it needs $need live on every relay first, and $base does not hold it"
+  done <<<"$needs"
+  old="$(relay_steps "$base")" && now="$(relay_steps "$commit")" || exit 1
+  steps="$(comm -13 <(sort -u <<<"$old") <(sort -u <<<"$now") | tr '\n' ' ')"
+  [ -n "$steps" ] || return 0
+  commits="$(relay_commits "$base" "$commit")" || exit 1
+  if [ "$(grep -c . <<<"$commits")" -ne 1 ]; then
+    echo "Durable Object migration step ${steps% } is released alone, and since $base these commits changed what a relay serves: $(tr '\n' ' ' <<<"$commits")"
+    return 0
+  fi
+  moved="$(relay_moved "$base" "$commit" 2>/dev/null)" || die "could not read what $commit moved"
+  elsewhere="$(grep -vE '^(relay/(src|scripts)/|relay/[^/]+$|ci/|\.github/)' <<<"$moved" | tr '\n' ' ' || true)"
+  [ -z "$elsewhere" ] ||
+    echo "Durable Object migration step ${steps% } is released alone, and its commit also changes $elsewhere"
+}
+
+# Why a relay release of the commit $1 does not keep the order, one reason per line. The `served`
+# line of $2's file answers first and asks no relay: every relay serves that release or a newer one,
+# so an order kept against it is kept. Else the relays $2's file names are asked, once per run.
+order_base=""
+order_check() {
+  local served floor
+  order_why=""
+  if [ -n "$order_base" ]; then
+    order_why="$(order_reasons "$order_base" "$1")" || exit $?
+    return
+  fi
+  served="$(order_entries "$2" served)" || exit $?
+  if [ -z "$served" ]; then
+    [ -z "$(order_entries "$2" needs)" ] || die "ci/relay-release-order at $2 has a needs line and no served line"
+    return
+  fi
+  floor="$(relay_tag_of "$served" "ci/relay-release-order names")" || exit $?
+  order_why="$(order_reasons "$floor" "$1")" || exit $?
+  [ -n "$order_why" ] || return 0
+  order_base="$(served_by_every_relay "$2")" || exit $?
+  order_why="$(order_reasons "$order_base" "$1")" || exit $?
+}
+
+# Exits 3, saying why the order between relay releases holds the commit $1.
+order_held() {
+  echo "release.sh: a relay release of $1 is held by ci/relay-release-order's order:" >&2
+  sed 's/^/release.sh:   /' <<<"$2" >&2
+  exit 3
+}
+
+cmd_relay_order() {
+  local at=HEAD commit
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --at) [ $# -ge 2 ] || usage; at="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  fetch
+  commit="$(git -C "$root" rev-parse --verify --quiet "$at^{commit}")" || die "$at names no commit"
+  order_check "$commit" "$commit"
+  [ -z "$order_why" ] || order_held "$commit" "$order_why"
+  echo "release.sh: a relay release of $commit keeps the order between relay releases" >&2
+}
+
+# Tags the commit $1 with the next relay patch, pushes the tag and says so; sets relay_tagged.
+push_relay_tag() {
+  relay_tagged="relay-v$(relay_next_patch)"
+  git -C "$root" tag "$relay_tagged" "$1"
+  git -C "$root" push --quiet origin "refs/tags/$relay_tagged" || {
+    git -C "$root" tag -d "$relay_tagged" >/dev/null
+    die "could not push $relay_tagged"
+  }
+  echo "release.sh: tagged $1 as $relay_tagged; the Relay release workflow builds its draft" >&2
+}
+
+# The order holds the commit $1 for the reasons $2: tags the newest commit before it, after the
+# newest relay tag, that moved a relay release path and keeps the order, and exits 3.
+tag_before() {
+  local target="$1" why="$2" newest commits c
+  newest="$(newest_relay_tag)"
+  commits=""
+  if [ -n "$newest" ]; then
+    commits="$(relay_commits "$newest" "$target")" || exit $?
+  fi
+  while IFS= read -r c; do
+    [ -n "$c" ] && [ "$c" != "$target" ] || continue
+    order_check "$c" "$target"
+    if [ -z "$order_why" ]; then
+      push_relay_tag "$c"
+      break
+    fi
+  done <<<"$commits"
+  order_held "$target" "$why"
+}
+
 cmd_relay_tag() {
-  local sha target existing tag
+  local sha target existing
   sha="$(sha_option "$@")"
   fetch
   target="$(target_commit "$sha")"
@@ -964,14 +1152,10 @@ cmd_relay_tag() {
     echo unchanged
     return
   fi
-  tag="relay-v$(relay_next_patch)"
-  git -C "$root" tag "$tag" "$target"
-  git -C "$root" push --quiet origin "refs/tags/$tag" || {
-    git -C "$root" tag -d "$tag" >/dev/null
-    die "could not push $tag"
-  }
-  echo "release.sh: tagged origin/main $target as $tag; the Relay release workflow builds its draft" >&2
-  echo "$tag"
+  order_check "$target" "$target"
+  [ -z "$order_why" ] || tag_before "$target" "$order_why"
+  push_relay_tag "$target"
+  echo "$relay_tagged"
 }
 
 cmd_relay() {
@@ -981,6 +1165,7 @@ cmd_relay() {
   case "$sub" in
     changed) cmd_relay_changed "$@" ;;
     tag) cmd_relay_tag "$@" ;;
+    order) cmd_relay_order "$@" ;;
     *) usage ;;
   esac
 }
