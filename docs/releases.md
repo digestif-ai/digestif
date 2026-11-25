@@ -972,7 +972,9 @@ and refuses any other binary. When the Keychain holds no `digestif-release-key` 
 key at a hidden prompt; when it holds one, the pinned copy reads it, and the Keychain asks once:
 answer Allow, never Always Allow. It asks for the signer token Mike issued on the signer's page
 (Enter keeps the one in the Keychain), then runs the pinned copy's `signer adopt`, which writes both
-items back as its own and reads them back silently. It writes
+items back as its own, replacing an item whichever program created it, and reads them back silently.
+When an item cannot be replaced, the error names the `security delete-generic-password` line that
+removes it; `signer install` run after that line asks for the value. It writes
 `~/Library/LaunchAgents/io.digestif.signer.plist`, which runs the pinned copy's `signer run` at login
 and keeps it alive with the PATH `signer install` ran under, and loads it with `launchctl bootstrap`.
 It names every other agent of the signer's whose plist runs `sign --next`, the sign-on-assignment

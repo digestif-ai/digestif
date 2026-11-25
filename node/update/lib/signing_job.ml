@@ -538,6 +538,61 @@ let handover_of_string bytes =
       token = Option.value (str "token" json) ~default:"";
     }
 
+(* What to do about [service]'s value, [what], that could not be stored, by whether the Keychain
+   still holds an item for it: `signer install` asks for a release key only when it holds none, so an
+   item in the way is removed first. *)
+let not_stored ~holds ~service ~what e =
+  (* macOS ends its own messages with a period. *)
+  let e =
+    if String.ends_with ~suffix:"." e then String.sub e 0 (String.length e - 1)
+    else e
+  in
+  if holds service then
+    Printf.sprintf
+      "%s. With your %s at hand in your password manager, remove the item, \
+       then run signer install again and paste it when it asks:\n\
+      \    %s"
+      e what
+      (Keychain.remove_command service)
+  else
+    Printf.sprintf
+      "%s. The Keychain no longer holds your %s: run signer install again and \
+       paste it from your password manager when it asks"
+      e what
+
+(* What the pinned copy does with the handover: each value handed over, or the one already in the
+   Keychain, written back as an item this binary created, so its access list trusts this binary
+   alone, then read back silently. Answers the key's public half. *)
+let adopt ?(store = Keychain.store) ~signers ~account h =
+  let read service =
+    Result.map_error
+      (Keychain.read_error_to_string service)
+      (Keychain.read service)
+  in
+  let given v service = if v <> "" then Ok v else read service in
+  let put ~service ~label ~what data =
+    Result.map_error
+      (not_stored ~holds:Keychain.holds ~service ~what)
+      (store ~service ~account ~label data)
+  in
+  let* printed = given h.key Keychain.release_key_service in
+  let* key, pub = check_key ~signers printed in
+  let* token =
+    Result.bind (given h.token Keychain.signer_token_service) check_token
+  in
+  let* () =
+    put ~service:Keychain.release_key_service ~label:"Digestif release key"
+      ~what:"release key" key
+  in
+  let* () =
+    put ~service:Keychain.signer_token_service ~label:"Digestif signer token"
+      ~what:"signer token" token
+  in
+  let* back = read Keychain.release_key_service in
+  let* back_token = read Keychain.signer_token_service in
+  if back = key && back_token = token then Ok pub
+  else Error "the Keychain answered other values than were stored"
+
 (* Every launchd agent of the signer's own, other than this one, whose plist runs `sign --next`:
    the sign-on-assignment job the signing job replaces. *)
 let sign_on_assignment_jobs ~dir =

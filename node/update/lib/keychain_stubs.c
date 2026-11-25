@@ -82,6 +82,32 @@ CAMLprim value digestif_keychain_read(value v_service)
   CAMLreturn(r);
 }
 
+/* Delete every item of [q], whichever program created it, as the security tool does. SecItemDelete
+   is not used: it refuses (errSecInvalidOwnerEdit) an item whose access list trusts only another
+   program, which is what an item `security` added is. Deleting reads no item's data, so it asks
+   nothing. errSecSuccess once none is left. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static OSStatus delete_all(CFDictionaryRef q)
+{
+  OSStatus st = errSecSuccess;
+  CFMutableDictionaryRef one = CFDictionaryCreateMutableCopy(NULL, 0, q);
+  if (one == NULL) return errSecAllocate;
+  CFDictionarySetValue(one, kSecReturnRef, kCFBooleanTrue);
+  CFDictionarySetValue(one, kSecMatchLimit, kSecMatchLimitOne);
+  for (int i = 0; i < 16 && st == errSecSuccess; i++) {
+    CFTypeRef item = NULL;
+    st = SecItemCopyMatching(one, &item);
+    if (st == errSecSuccess) {
+      st = SecKeychainItemDelete((SecKeychainItemRef)item);
+      CFRelease(item);
+    }
+  }
+  CFRelease(one);
+  return st == errSecItemNotFound ? errSecSuccess : st;
+}
+#pragma clang diagnostic pop
+
 /* Every item of [service] is deleted, then one is added holding [data]. An item added with no
    access of its own trusts exactly the application that added it: this binary. */
 CAMLprim value digestif_keychain_store(value v_service, value v_account, value v_label,
@@ -114,14 +140,9 @@ CAMLprim value digestif_keychain_store(value v_service, value v_account, value v
   CFRelease(a);
   CFRelease(l);
   CFRelease(data);
-  OSStatus st = errSecSuccess;
   caml_enter_blocking_section();
-  /* SecItemDelete on a file keychain removes one match at a time. */
-  for (int i = 0; i < 16; i++) {
-    st = SecItemDelete(q);
-    if (st != errSecSuccess) break;
-  }
-  if (st == errSecItemNotFound || st == errSecSuccess) st = SecItemAdd(attrs, NULL);
+  OSStatus st = delete_all(q);
+  if (st == errSecSuccess) st = SecItemAdd(attrs, NULL);
   caml_leave_blocking_section();
   CFRelease(q);
   CFRelease(attrs);

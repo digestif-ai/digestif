@@ -1,0 +1,8 @@
+; signer adopt under a test's own Keychain (adopt.ml), which test_update.ml runs.
+
+(executable
+ (name adopt)
+ (libraries digestif_update)
+ (foreign_stubs
+  (language c)
+  (names no_prompts_stubs)))
