@@ -30,6 +30,11 @@
       "version": "0.2.16",
       "manifest": "https://github.com/digestif-ai/digestif/releases/download/v0.2.16/manifest.json",
       "signatures": "https://github.com/digestif-ai/digestif/releases/download/v0.2.16/manifest.sig.json"
+    },
+    {
+      "version": "0.2.18",
+      "manifest": "https://github.com/digestif-ai/digestif/releases/download/v0.2.18/manifest.json",
+      "signatures": "https://github.com/digestif-ai/digestif/releases/download/v0.2.18/manifest.sig.json"
     }
   ],
   "revocations": []
