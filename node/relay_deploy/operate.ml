@@ -16,20 +16,22 @@ let token_name = "relay-deploy-token"
 let record_file = "relay-deploy.json"
 let record_path dir = Filename.concat dir record_file
 
+(* A digest line the deploy pass left (Deploy). A [lead] line leads the digest and is carried on
+   every digest until the pass clears it; any other goes out once. *)
+type note = { text : string; lead : bool; told : bool }
+
 (* A deploy step that failed before the relay's Worker was replaced, kept with its cause and tried
    again at [retry_at] (Deploy). [attempts] counts the failed tries of [version], which the backoff
-   doubles on. *)
+   doubles on. [notes] are what the digest says of it: one that went out stays, told, so a later try
+   that meets the same cause does not say it again, and they all go with the pending step. *)
 type pending = {
   step : string;
   why : string;
   retry_at : float;
   version : string;
   attempts : int;
+  notes : note list;
 }
-
-(* A digest line the deploy pass left (Deploy). A [lead] line leads the digest and is carried on
-   every digest until the pass clears it; any other goes out once. *)
-type note = { text : string; lead : bool; told : bool }
 
 (* A relay release this relay will never be deployed again, and why (Deploy). *)
 type refused = { version : string; why : string }
@@ -52,10 +54,22 @@ type record = {
       (** The digest has said this node holds a token for a relay another member
           operates. *)
   token_refused : bool;
-      (** Cloudflare answered 401 or 403 for the token: no deploy is tried until
-          operate stores a new one. *)
+      (** Cloudflare said the token is wrong, expired or lacks a permission: no
+          deploy is tried until operate stores a new one. *)
   notes : note list;
 }
+
+let notes_to_json notes : Yojson.Safe.t =
+  `List
+    (List.map
+       (fun n ->
+         `Assoc
+           [
+             ("text", `String n.text);
+             ("lead", `Bool n.lead);
+             ("told", `Bool n.told);
+           ])
+       notes)
 
 let record_to_json r : Yojson.Safe.t =
   let opt name = function Some v -> [ (name, `String v) ] | None -> [] in
@@ -79,6 +93,7 @@ let record_to_json r : Yojson.Safe.t =
                   ("retry_at", `String (Time_fmt.of_unix p.retry_at));
                   ("version", `String p.version);
                   ("attempts", `Int p.attempts);
+                  ("notes", notes_to_json p.notes);
                 ] );
           ]
       | None -> [])
@@ -92,17 +107,7 @@ let record_to_json r : Yojson.Safe.t =
                r.refused) );
         ("told_not_operator", `Bool r.told_not_operator);
         ("token_refused", `Bool r.token_refused);
-        ( "notes",
-          `List
-            (List.map
-               (fun n ->
-                 `Assoc
-                   [
-                     ("text", `String n.text);
-                     ("lead", `Bool n.lead);
-                     ("told", `Bool n.told);
-                   ])
-               r.notes) );
+        ("notes", notes_to_json r.notes);
       ])
 
 let record_of_json (j : Yojson.Safe.t) : (record, string) result =
@@ -116,6 +121,21 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
   in
   let opt name =
     match field j name with Some (`String s) -> Some s | _ -> None
+  in
+  let notes_of o =
+    match field o "notes" with
+    | Some (`List l) ->
+        List.filter_map
+          (fun x ->
+            match field x "text" with
+            | Some (`String text) ->
+                let b name =
+                  match field x name with Some (`Bool b) -> b | _ -> false
+                in
+                Some { text; lead = b "lead"; told = b "told" }
+            | _ -> None)
+          l
+    | _ -> []
   in
   let ( let* ) = Result.bind in
   let* url = str "url" in
@@ -135,7 +155,8 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
               match field p "attempts" with Some (`Int i) -> i | _ -> 1
             in
             Option.map
-              (fun retry_at -> { step; why; retry_at; version; attempts })
+              (fun retry_at ->
+                { step; why; retry_at; version; attempts; notes = notes_of p })
               (Time_fmt.to_unix at)
         | _ -> None)
     | _ -> None
@@ -153,21 +174,6 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
     | _ -> []
   in
   let flag name = match field j name with Some (`Bool b) -> b | _ -> false in
-  let notes =
-    match field j "notes" with
-    | Some (`List l) ->
-        List.filter_map
-          (fun x ->
-            match field x "text" with
-            | Some (`String text) ->
-                let b name =
-                  match field x name with Some (`Bool b) -> b | _ -> false
-                in
-                Some { text; lead = b "lead"; told = b "told" }
-            | _ -> None)
-          l
-    | _ -> []
-  in
   Ok
     {
       url;
@@ -180,7 +186,7 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
       refused;
       told_not_operator = flag "told_not_operator";
       token_refused = flag "token_refused";
-      notes;
+      notes = notes_of j;
     }
 
 (* The record, or None when this node has none. A file that does not parse is an error, never read

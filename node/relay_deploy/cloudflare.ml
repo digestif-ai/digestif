@@ -79,9 +79,14 @@ let curl : transport =
 
 type error =
   | Unauthorized of int * string
-      (** 401 or 403: the token is wrong, expired or lacks a permission. It is
-          not retried until the token changes (docs/releases.md, The deploy
-          step). *)
+      (** A 401 or 403 whose code says the token is wrong, expired or lacks a
+          permission. It is not retried until the token changes
+          (docs/releases.md, The deploy step). *)
+  | No_subdomain of int * string
+      (** The account has no workers.dev subdomain, which Cloudflare wants
+          before it takes an upload: the account's setup, not the token. *)
+  | Forbidden of int * string
+      (** Any other 401 or 403: nothing in it says the deploy token is wrong. *)
   | Rejected of int * string
       (** A 4xx other than 401 and 403, or a 200 whose envelope says it did not
           succeed: Cloudflare read the request and refused it, so the same
@@ -91,12 +96,41 @@ type error =
   | Failed of string
       (** Anything else: no answer, a 5xx, a body that is not Cloudflare's. *)
 
-let error_to_string = function
-  | Unauthorized (status, m) ->
-      Printf.sprintf "Cloudflare refused the deploy token (%d): %s" status m
-  | Rejected (status, m) ->
-      Printf.sprintf "Cloudflare refused the request (%d): %s" status m
+let error_to_string e =
+  let refused what status m =
+    Printf.sprintf "Cloudflare refused %s (%d)%s" what status
+      (if m = "" then "" else ": " ^ m)
+  in
+  match e with
+  | Unauthorized (status, m) -> refused "the deploy token" status m
+  | No_subdomain (status, m) | Forbidden (status, m) | Rejected (status, m) ->
+      refused "the request" status m
   | Failed m -> m
+
+(* The codes of an envelope's errors. *)
+let codes body =
+  match Yojson.Safe.from_string body with
+  | `Assoc f -> (
+      match List.assoc_opt "errors" f with
+      | Some (`List l) ->
+          List.filter_map
+            (function
+              | `Assoc e -> (
+                  match List.assoc_opt "code" e with
+                  | Some (`Int c) -> Some c
+                  | _ -> None)
+              | _ -> None)
+            l
+      | _ -> [])
+  | _ | (exception _) -> []
+
+(* The codes of a 401 or 403 that says the token itself is wrong, expired or lacks a permission:
+   1000 invalid API token, 9109 invalid access token or not authorized for the resource, 10000
+   authentication error, 10001 unable to authenticate the request. *)
+let token_codes = [ 1000; 9109; 10000; 10001 ]
+
+(* "You need a workers.dev subdomain in order to proceed". *)
+let no_subdomain_code = 10063
 
 (* Cloudflare's envelope: { success, errors: [{code, message}], result }. *)
 let messages body =
@@ -122,11 +156,20 @@ let messages body =
       let b = String.trim body in
       if String.length b > 200 then String.sub b 0 200 ^ "..." else b
 
+(* What a 4xx means, read from the codes it carries: a 401 or 403 is the token's only when one of
+   them says so. *)
+let refusal status body =
+  let codes = codes body and m = messages body in
+  if List.mem no_subdomain_code codes then No_subdomain (status, m)
+  else if status <> 401 && status <> 403 then Rejected (status, m)
+  else if List.exists (fun c -> List.mem c token_codes) codes then
+    Unauthorized (status, m)
+  else Forbidden (status, m)
+
 let call (t : transport) ~token ~meth ~path =
   match t ~meth ~path ~token ~body:None with
   | Error e -> Error (Failed ("Cloudflare did not answer: " ^ e))
-  | Ok { status = (401 | 403) as status; body } ->
-      Error (Unauthorized (status, messages body))
+  | Ok { status = (401 | 403) as status; body } -> Error (refusal status body)
   | Ok { status = 200; body } -> (
       match Yojson.Safe.from_string body with
       | `Assoc f when List.assoc_opt "success" f = Some (`Bool true) ->
@@ -156,7 +199,7 @@ let verify_token t ~token ~account_id =
   in
   match call t ~token ~meth:"GET" ~path:"/user/tokens/verify" with
   | Ok r -> active r
-  | Error (Unauthorized _) ->
+  | Error (Unauthorized _ | Forbidden _) ->
       let* r =
         call t ~token ~meth:"GET"
           ~path:("/accounts/" ^ account_id ^ "/tokens/verify")
@@ -241,8 +284,6 @@ let serving_version t ~token ~account_id ~worker =
    a 201 is an answer: the assets upload answers its last bucket with one. *)
 let envelope (r : Relay_client.response) =
   match r with
-  | { status = (401 | 403) as status; body } ->
-      Error (Unauthorized (status, messages body))
   | { status = (200 | 201) as status; body } -> (
       match Yojson.Safe.from_string body with
       | `Assoc f when List.assoc_opt "success" f = Some (`Bool true) ->
@@ -251,7 +292,7 @@ let envelope (r : Relay_client.response) =
       | _ -> Error (Failed "Cloudflare's answer is not a JSON object")
       | exception _ -> Error (Failed "Cloudflare's answer is not JSON"))
   | { status; body } when status >= 400 && status < 500 ->
-      Error (Rejected (status, messages body))
+      Error (refusal status body)
   | { status; body } ->
       Error
         (Failed
@@ -443,9 +484,13 @@ let assets_upload ft ~jwt ~account_id parts =
       | `Assoc f when List.assoc_opt "success" f = Some (`Bool false) ->
           Error (Rejected (202, messages body))
       | _ | (exception _) -> Ok None)
-  | Ok r ->
-      let* r = envelope r in
-      Ok (str "jwt" r)
+  | Ok r -> (
+      match envelope r with
+      | Ok r -> Ok (str "jwt" r)
+      | Error (Unauthorized (status, m)) ->
+          (* The session's token was refused, which says nothing of the deploy token. *)
+          Error (Forbidden (status, m))
+      | Error e -> Error e)
 
 (* POST .../workers/scripts/:name/versions: upload [parts] (the metadata and the modules) as a new
    version, deployed nowhere yet; answers its id. *)
