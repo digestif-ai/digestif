@@ -13,10 +13,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
 import { readDenyList } from "./deny.ts";
+import { endNow } from "./end.ts";
 import { harnessOf, readConfig } from "./hook.ts";
 import { INBOX_PROMPT_FILE, MAX_READS, practicesOf, runInbox, type BatchMessage, type Member, type OwnNote } from "./inbox.ts";
 import { hookStateDir, reportProblem, resolveProblem, USAGE_LIMIT_MARGIN_MS, usageLimitNext } from "./nightly.ts";
-import { agentOf, ALWAYS_ON_FILE, ALWAYS_ON_PLACEHOLDER, killHarnesses, nodeApi, usageLimitDetail, type ApiAccess } from "./writer.ts";
+import { agentOf, ALWAYS_ON_FILE, ALWAYS_ON_PLACEHOLDER, nodeApi, usageLimitDetail, type ApiAccess } from "./writer.ts";
 
 /** The context the node hands the read hook on stdin, checked. */
 export interface ReadContext {
@@ -750,8 +751,7 @@ export function killChildren(): number {
 export function endOnSigterm(): void {
   process.once("SIGTERM", () => {
     killChildren();
-    killHarnesses();
-    process.exit(143);
+    endNow(143);
   });
 }
 

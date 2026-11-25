@@ -1,6 +1,6 @@
 // The read behavior: run against a fake local API over fixture feeds.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
@@ -545,6 +545,18 @@ test("SIGTERM ends the child the behavior started, and the behavior", async () =
   p.kill("SIGTERM");
   assert.equal(await exited, 143);
   await assertGone(pid, "the fake harness");
+});
+
+test("SIGTERM ends the behavior with 143 while a file read is blocked (DIG-483)", async () => {
+  const fifo = join(dir, "fifo");
+  execFileSync("mkfifo", [fifo]);
+  const p = spawn(process.execPath, [join(here, "read-child.ts"), fifo], { stdio: ["ignore", "pipe", "inherit"] });
+  const exited = new Promise<number | null>((r) => p.once("exit", (code) => r(code)));
+  await new Promise((r) => p.stdout.once("data", r));
+  p.kill("SIGTERM");
+  const grace = setTimeout(() => p.kill("SIGKILL"), 15_000);
+  assert.equal(await exited, 143);
+  clearTimeout(grace);
 });
 
 // The Inbox agent's run: the fake harness answers what `answer` holds, the fake node records what it is posted.

@@ -178,6 +178,84 @@
       "mark": false
     },
     {
+      "name": "a project at home with books at home's top level",
+      "files": ["h/main.beancount"],
+      "project": "h",
+      "cwd": "h",
+      "verdict": "financial",
+      "mark": true
+    },
+    {
+      "name": "a project at home with books one level down in a folder named for finance",
+      "files": ["h/finance/2025.ledger"],
+      "project": "h",
+      "cwd": "h",
+      "verdict": "financial",
+      "mark": true
+    },
+    {
+      "name": "a project at home: books one level down in a folder not named for finance are not looked for",
+      "files": ["h/stuff/2025.ledger"],
+      "project": "h",
+      "cwd": "h",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "a project at home: a child past the cap not named for finance is not listed",
+      "crowded": [{ "dir": "h/Drive", "entries": 8 }],
+      "project": "h",
+      "cwd": "h",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "a project at home: a slow child not named for finance is not listed",
+      "files": ["h/Drive/a.txt"],
+      "slow": ["h/Drive"],
+      "project": "h",
+      "cwd": "h",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "a project at home: a slow child named for finance cannot be judged",
+      "files": ["h/finance/a.txt"],
+      "slow": ["h/finance"],
+      "project": "h",
+      "cwd": "h",
+      "verdict": "cannot_judge",
+      "mark": false
+    },
+    {
+      "name": "a project in a repository that is home: books one level down in home's folder named for finance",
+      "dirs": ["h/.git", "h/code/app"],
+      "files": ["h/taxes/2025.ledger"],
+      "project": "h/code/app",
+      "cwd": "h/code/app",
+      "verdict": "financial",
+      "mark": true
+    },
+    {
+      "name": "a project in a repository that is home: books one level down in home's folder not named for finance are not looked for",
+      "dirs": ["h/.git", "h/code/app"],
+      "files": ["h/stuff/2025.ledger"],
+      "project": "h/code/app",
+      "cwd": "h/code/app",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "a project in a repository that is home: a slow child of home not named for finance is not listed",
+      "dirs": ["h/.git", "h/code/app"],
+      "files": ["h/Drive/a.txt"],
+      "slow": ["h/Drive"],
+      "project": "h/code/app",
+      "cwd": "h/code/app",
+      "verdict": "read",
+      "mark": false
+    },
+    {
       "name": "an existing mark with a run that cannot judge past the cap is kept",
       "dirs": ["h/g/work/app"],
       "crowded": [{ "dir": "h/g/work/big", "entries": 8 }],
