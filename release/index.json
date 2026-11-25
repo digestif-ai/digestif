@@ -1,5 +1,11 @@
 {
   "format": "digestif-feed-v0",
-  "releases": [],
+  "releases": [
+    {
+      "version": "0.2.2",
+      "manifest": "https://github.com/digestif-ai/digestif/releases/download/v0.2.2/manifest.json",
+      "signatures": "https://github.com/digestif-ai/digestif/releases/download/v0.2.2/manifest.sig.json"
+    }
+  ],
   "revocations": []
 }
