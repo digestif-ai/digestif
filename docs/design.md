@@ -394,13 +394,25 @@ dismissed, the run's problem resolved, the repositories decided, a reading that 
 Inbox opens on every item not archived, the member's own unanswered question left to Waiting on
 others, the member's own agent named by its name alone.
 
+**The folders sessions are read from.** Claude Code files every session on the machine under
+~/.claude/projects, wherever it started, so the Claude Code source carries the folders it reads
+(`digestif source list` shows them, `digestif source folders` sets them, setup proposes them): only a
+project whose directory name is the encoded path of a chosen folder or of a path under one is read.
+The choice is made from the name alone, so a session started anywhere else is never opened, never
+judged and never counted in a skipped reading, and raises no notice; a folder beside a chosen one
+whose encoded path begins with the chosen one's keeps its own projects unless it is chosen too. What
+a member shares is their choice, never what the operating system lets the node open. Until the
+member chooses, the source reads every folder directly under the home directory that sessions were
+started in but ~/Documents, ~/Desktop, ~/Downloads and the Dev Factory's own, and the first scan keeps
+that as the setting (DIG-512).
+
 **Folder access.** macOS keeps ~/Documents, ~/Desktop and ~/Downloads behind its privacy
 protection, and a node launchd started without Full Disk Access is refused on them, which skips
 every project under them on every reading. So the node tries each when it starts and once a day
 after (hourly while one is refused): one listing that stops at its first entry, made by a child
 process killed at judging's limit for one listing, so a folder macOS holds back cannot block the
 pass, never a walk, no file read and nothing written. A folder that refuses (EACCES or EPERM) and
-holds a session project, known from
+holds a session project under a folder the source reads, known from
 the names of the chosen Claude Code source's project directories alone, is a notice from the node,
 one per folder, local like New repositories: it names the folder and the step (System Settings,
 Privacy and Security, Full Disk Access, add the Digestif node), is raised once, is settled

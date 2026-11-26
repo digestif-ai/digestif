@@ -428,6 +428,16 @@ test("parseSelection takes the node's list or a list with a form, with each sour
   assert.deepEqual(handed[1]!.authors, [{ email: "m@example.com", recorded: false }]);
 });
 
+test("the Claude Code source reads only sessions started under its folders, as the node hands them over (DIG-512)", async () => {
+  const handed = parseSelection([{ ...claude(), folders: ["/Users/member/code"] }]).sources;
+  assert.deepEqual(handed[0]!.folders, ["/Users/member/code"]);
+  const sessions = (r: { lines: string[] }) => r.lines.filter((l) => l.includes("session") || l.includes("prompt"));
+  const all = sessions(await read([claude()], { firstNote: true }));
+  assert.ok(all.length > 0, "the fixture has sessions under /Users/member/code");
+  assert.deepEqual(sessions(await read([claude({ folders: ["/Users/member/code"] })], { firstNote: true })), all);
+  assert.deepEqual(sessions(await read([claude({ folders: ["~/Desktop"] })], { firstNote: true })), [], "none started under the chosen folder");
+});
+
 test("the extract command prints the record the writer reads", async () => {
   const file = join(fx.home, "selection.json");
   writeFileSync(file, JSON.stringify({ sources: [claude(), git()], form: { selected: ["claude-code", "git"] } }));

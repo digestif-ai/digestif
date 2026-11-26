@@ -3756,6 +3756,112 @@ let session_titles () =
        ~history:(Filename.concat dir "absent.jsonl")
        ~since project)
 
+(* DIG-512: the Claude Code source reads only sessions started under the folders it carries. A
+   project is chosen by its directory's name alone, so one started anywhere else is never opened,
+   judged or counted; a folder beside a chosen one whose encoded path begins with the chosen one's
+   keeps its own projects. Until the member chooses, the default is every home folder sessions
+   were started in but the protected ones, kept as the setting. *)
+let session_folders_chosen () =
+  let root = fixture () in
+  let home = Filename.concat root "home" in
+  List.iter
+    (fun d -> Node.mkdir_p (Filename.concat home d))
+    [ "code/alpha"; "code-review"; "ai"; "Desktop/projects"; ".devfactory" ];
+  let enc p = Sources.encode_segment (Filename.concat home p) in
+  let reads =
+    Sources.session_filter
+      [ Filename.concat home "code"; Filename.concat home "ai/" ]
+  in
+  List.iter
+    (fun (name, want) -> Alcotest.(check bool) name want (reads name))
+    [
+      (enc "code", true);
+      (enc "code/alpha", true);
+      (enc "ai", true);
+      (enc "code-review", false);
+      (enc "code-review/x", false);
+      (enc "aim", false);
+      (enc "Desktop/projects/credit-cards", false);
+      (Sources.encode_segment home, false);
+    ];
+  Alcotest.(check bool)
+    "a rival chosen too is read" true
+    (Sources.session_filter
+       [ Filename.concat home "code"; Filename.concat home "code-review" ]
+       (enc "code-review/x"));
+  let names =
+    [
+      enc "code/alpha";
+      enc "code-review";
+      enc "ai";
+      enc "Desktop/projects/credit-cards";
+      enc ".devfactory/runs/r1";
+      "-opt-elsewhere";
+    ]
+  in
+  Alcotest.(check (list string))
+    "every home folder sessions started in"
+    (List.map (Filename.concat home)
+       [ ".devfactory"; "Desktop"; "ai"; "code"; "code-review" ])
+    (Sources.session_home_folders ~home names);
+  Alcotest.(check (list string))
+    "the default leaves out the protected folders and the factory's"
+    (List.map
+       (fun d -> Sources.tilde (Filename.concat home d))
+       [ "ai"; "code"; "code-review" ])
+    (Sources.default_session_folders ~home names);
+  (* The reading passes over a project outside the chosen folders before looking at it. *)
+  let projects = Filename.concat root "projects" in
+  List.iter
+    (fun (p, title) ->
+      let dir = Filename.concat projects (enc p) in
+      Node.mkdir_p dir;
+      write_file
+        (Filename.concat dir "00000001-0000-4000-8000-000000000000.jsonl")
+        [ Printf.sprintf {|{"type":"ai-title","aiTitle":"%s"}|} title ])
+    [
+      ("code/alpha", "Ship the fetcher");
+      ("Desktop/projects/credit-cards", "Pay the card");
+    ];
+  let listed = ref [] in
+  let j =
+    {
+      (Sources.default_judging ()) with
+      Sources.temp_roots = [];
+      system_roots = [];
+      on_listing = (fun d -> listed := d :: !listed);
+    }
+  in
+  let since = Unix.gettimeofday () -. 86400. in
+  Alcotest.(check (list string))
+    "only the chosen folder's session" [ "Ship the fetcher" ]
+    (Sources.session_titles ~root ~judging:j ~reads
+       ~history:(Filename.concat root "absent.jsonl")
+       ~since projects);
+  Alcotest.(check int) "nothing counted unjudged" 0 !(j.unjudged);
+  let desktop = Filename.concat home "Desktop" in
+  Alcotest.(check (list string))
+    "the Desktop is never listed" []
+    (List.filter (fun d -> Sources.under_any d [ desktop ]) !listed);
+  (* The setting: a default kept once, a choice checked before it is kept. *)
+  let log = bare_log () in
+  Alcotest.(check (option (list string)))
+    "unset" None
+    (Store.session_folders log);
+  Alcotest.(check bool)
+    "a relative folder is refused" true
+    (Result.is_error (Sources.set_session_folders log [ "code" ]));
+  Alcotest.(check (option (list string)))
+    "a refusal keeps nothing" None
+    (Store.session_folders log);
+  Alcotest.(check (result (list string) string))
+    "absolute and ~ folders, once each"
+    (Ok [ "~/code"; "/opt/work" ])
+    (Sources.set_session_folders log [ "~/code/"; "/opt/work"; "~/code" ]);
+  Alcotest.(check (list string))
+    "the source reads what was chosen" [ "~/code"; "/opt/work" ]
+    (Sources.session_folders log)
+
 (* A session run in a project that holds financial records adds nothing when the projects directory
    is read, whichever reading of its name, or the directory its transcript was started in, can be
    seen to hold them: itself, its enclosing repository, or a folder enclosing it below home. A
@@ -4484,6 +4590,9 @@ let judging_fail_closed () =
           }
         in
         let log = bare_log () in
+        (* A skip under a folder the source reads is told of (DIG-512): the project is named for
+           /locked. *)
+        Store.set_session_folders log [ "/locked" ];
         let extracted, failures =
           Sources.extract_with_failures log [ source ]
         in
@@ -14837,6 +14946,15 @@ let folder_access_notice () =
   let open_ () =
     List.filter (fun i -> member "done" i = `Null) (node_items ())
   in
+  (* DIG-512: a folder the source does not read raises nothing and is never tried. *)
+  Store.set_session_folders log [ Filename.concat home "code" ];
+  Alcotest.(check (list (pair string int)))
+    "a refused folder the source does not read" []
+    (F.check ~ask:(ask ()) ~home ~names:(F.session_project_names log) ());
+  Alcotest.(check bool)
+    "and it is never tried" false
+    (List.mem documents !opened);
+  Store.set_session_folders log [ documents; Filename.concat home "code" ];
   (* Unit: a refusal with a project under it, and none with no project under it. *)
   Alcotest.(check (list (pair string int)))
     "only the refused folder holding a project"
@@ -16165,6 +16283,8 @@ let () =
             check_could_not_finish;
           Alcotest.test_case "command sources" `Quick command_sources;
           Alcotest.test_case "session titles" `Quick session_titles;
+          Alcotest.test_case "session folders chosen" `Quick
+            (cleaned session_folders_chosen);
           Alcotest.test_case "transcript head bounded" `Quick
             transcript_head_bounded;
           Alcotest.test_case "machine scan stored" `Quick machine_scan_stored;

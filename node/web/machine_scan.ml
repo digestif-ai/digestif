@@ -399,6 +399,7 @@ let scan_report ?root ?discover ?global ?own_budget ?(work_run = false) ~now
           (repos, found, Some stats)
     in
     Store.set_offered log (Sources.offered repos);
+    Sources.keep_session_folders log;
     let at = Time_fmt.of_unix now in
     Store.Repositories.apply_scan log ~at found;
     let t1 = Unix.gettimeofday () in

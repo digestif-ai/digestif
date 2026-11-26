@@ -196,6 +196,7 @@ interface SourceReading {
   log?: (line: string) => void;
   maxBytes?: number;
   onUnjudged?: (u: Unjudged) => void;
+  folders?: string[];
 }
 
 /**
@@ -323,7 +324,8 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
             partial.push({ source: s.label, reason, ...left });
           };
           try {
-            items.push(...(await sessionItems(s, paths, startOf(s, o), now, { ...reading, onPartial, onUnjudged })));
+            const folders = s.folders === undefined ? {} : { folders: s.folders.map((f) => untilde(f, home)) };
+            items.push(...(await sessionItems(s, paths, startOf(s, o), now, { ...reading, ...folders, onPartial, onUnjudged })));
           } finally {
             unjudged = mergeUnjudged(unjudged, told);
           }

@@ -3369,8 +3369,19 @@ let print_sources l =
             | Some (`Bool true) -> "selected"
             | _ -> "-"
           in
-          Printf.printf "%s\t%s\t%s\t%s\t%s\n" (s "id") (s "kind") selected
-            (s "label") paths
+          (* DIG-512: the Claude Code source names the folders it reads *)
+          let folders =
+            match List.assoc_opt "folders" f with
+            | Some (`List p) ->
+                "\tsessions started in: "
+                ^ String.concat " "
+                    (List.filter_map
+                       (function `String v -> Some v | _ -> None)
+                       p)
+            | _ -> ""
+          in
+          Printf.printf "%s\t%s\t%s\t%s\t%s%s\n" (s "id") (s "kind") selected
+            (s "label") paths folders
       | _ -> ())
     l
 
@@ -3444,6 +3455,28 @@ let source_add =
               print_sources
                 (ok_or_die (source_call n ~meth:"GET" ~path:[ "sources" ] None))))
       $ data_dir $ label $ program $ args $ select)
+
+let source_folders =
+  let folders =
+    Arg.(
+      non_empty & pos_all string []
+      & info [] ~docv:"DIR"
+          ~doc:"A folder, absolute or under ~. Every one is named each time.")
+  in
+  cmd "folders"
+    "Set the folders the Claude Code source reads: only a session started in \
+     one of them, or below one, is read. A session started anywhere else is \
+     never opened and never reported as skipped."
+    Term.(
+      const (fun dir folders ->
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              ignore
+                (ok_or_die
+                   (Digestif_web.Sources.set_session_folders n.log folders));
+              print_sources
+                (ok_or_die (source_call n ~meth:"GET" ~path:[ "sources" ] None))))
+      $ data_dir $ folders)
 
 let source_remove =
   let id =
@@ -3939,12 +3972,29 @@ let setup_sources =
   let remove_authors =
     many "remove-author" "EMAIL" "A commit author to remove. Repeatable."
   in
+  let folders =
+    many "session-folder" "DIR"
+      "A folder whose Claude Code sessions are read, absolute or under ~; \
+       sessions started outside every one named are never read. Repeatable; \
+       none keeps the folders $(b,setup found) proposed."
+  in
   cmd "sources"
-    "Save the sources, each organization's choice, each repository left out \
-     and the commit authors: nothing is read from them until now."
+    "Save the sources, each organization's choice, each repository left out, \
+     the commit authors and the folders Claude Code sessions are read from: \
+     nothing is read from them until now."
     Term.(
       const
-        (fun dir all ids organizations approve decline authors remove_authors ->
+        (fun
+          dir
+          all
+          ids
+          organizations
+          approve
+          decline
+          authors
+          remove_authors
+          folders
+        ->
           with_chat dir (fun n ->
               say_or_die
                 (let ( let* ) = Result.bind in
@@ -3952,9 +4002,9 @@ let setup_sources =
                    Chat.choices_of_flags ~organizations ~approve ~decline
                      ~authors ~remove_authors
                  in
-                 Chat.save_sources ~choices n ~all ~ids)))
+                 Chat.save_sources ~choices ~folders n ~all ~ids)))
       $ data_dir $ all $ ids $ organizations $ approve $ decline $ authors
-      $ remove_authors)
+      $ remove_authors $ folders)
 
 let setup_command =
   let label =
@@ -4396,7 +4446,7 @@ let main =
       Cmd.group
         (Cmd.info "source"
            ~doc:"What the nightly note may read (docs/behaviors.md).")
-        [ source_list; source_add; source_remove ];
+        [ source_list; source_add; source_folders; source_remove ];
       Cmd.group
         (Cmd.info "behavior"
            ~doc:"The programs digestif run spawns (docs/behaviors.md).")

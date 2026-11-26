@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { readRecord, type SourceProgress } from "../src/extract.ts";
-import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, maxTranscriptBytes, readTranscript, JudgingTimedOut, ReadingOverran, sessionFiles, sessionsSince, skippedLine, unreadableReason, type Unjudged } from "../src/sessions.ts";
+import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, folderFilter, maxTranscriptBytes, readTranscript, JudgingTimedOut, ReadingOverran, sessionFiles, sessionsSince, skippedLine, unreadableReason, type Unjudged } from "../src/sessions.ts";
 import type { Source } from "../src/sources.ts";
 import { assistant, jsonl, user } from "./fixtures.ts";
 
@@ -522,6 +522,50 @@ test("a capped judgement goes to the log option with the skipped count, and to s
   } finally {
     console.error = old;
   }
+});
+
+test("only a project started under a chosen folder is read: one elsewhere is never listed, judged or counted (DIG-512)", async () => {
+  const { root, projects, file } = judged("folders", "-code-app");
+  mkdirSync(join(root, "code", "app"), { recursive: true });
+  const desktop = join(root, "Desktop");
+  mkdirSync(join(desktop, "projects", "cards"), { recursive: true });
+  const elsewhere = join(projects, "-Desktop-projects-cards");
+  mkdirSync(elsewhere, { recursive: true });
+  writeFileSync(join(elsewhere, "s.jsonl"), jsonl([user("Pay the card", iso(NOW))]));
+  const listed: string[] = [];
+  const skipped: string[] = [];
+  const watch = { tempRoots: [], onListing: (d: string) => void listed.push(d), onSkipped: (d: string) => void skipped.push(d) };
+  const locked = process.getuid?.() !== 0;
+  if (locked) chmodSync(desktop, 0o000);
+  try {
+    if (locked) {
+      await sessionFiles(projects, root, 0, home, undefined, watch);
+      assert.deepEqual(skipped, [elsewhere], "with every folder read, the locked Desktop leaves its project unjudged");
+    }
+    listed.length = 0;
+    skipped.length = 0;
+    const chosen = { ...watch, folders: ["/code"] };
+    assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, chosen), [file]);
+    assert.deepEqual(skipped, [], "a project outside the chosen folders is not counted as skipped");
+    assert.equal(listed.some((d) => d === desktop || d.startsWith(desktop + "/")), false, "nothing under the Desktop is listed");
+  } finally {
+    chmodSync(desktop, 0o700);
+  }
+});
+
+test("a folder beside a chosen one whose encoded path begins with it keeps its own projects (DIG-512)", async () => {
+  const parent = join(home, "rivals");
+  for (const d of ["code", "code-review", "ai"]) mkdirSync(join(parent, d), { recursive: true });
+  const enc = (p: string): string => join(parent, p).replace(/[^a-zA-Z0-9]/g, "-");
+  const reads = await folderFilter([join(parent, "code"), join(parent, "ai") + "/"], async (d) => (await import("node:fs/promises")).readdir(d));
+  assert.equal(reads(enc("code")), true);
+  assert.equal(reads(enc("code/app")), true);
+  assert.equal(reads(enc("ai")), true);
+  assert.equal(reads(enc("code-review")), false, "the look-alike beside it is not chosen");
+  assert.equal(reads(enc("aim")), false);
+  assert.equal(reads(enc("Desktop/projects")), false);
+  const both = await folderFilter([join(parent, "code"), join(parent, "code-review")], async (d) => (await import("node:fs/promises")).readdir(d));
+  assert.equal(both(enc("code-review/x")), true, "a look-alike chosen too is read");
 });
 
 test("a project named exactly for a temp root is skipped without listing it (DIG-295)", async () => {
