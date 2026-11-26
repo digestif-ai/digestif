@@ -251,4 +251,42 @@ migrations --since "$(git -C "$repo" rev-list --max-parents=0 HEAD)" || fail "--
 rm "$repo/relay/migrations/0001_init.sql"
 if migrations; then fail "a removed released migration was not refused"; fi
 
+# A tag push that answers an error is read back (DIG-508). A second scratch repository, whose
+# origin's receive-pack takes the push and then exits 1, as a code host answering a 500 for a tag it
+# created: the tag is made, and `relay tag` answers it. An origin that refuses the tag outright
+# still fails the run, and leaves no tag behind.
+lost="$tmp/lost"
+git init --quiet --bare --initial-branch=main "$lost/origin.git"
+git init --quiet --initial-branch=main "$lost/repo"
+git -C "$lost/repo" remote add origin "$lost/origin.git"
+mkdir -p "$lost/repo/ci" "$lost/repo/relay/src" "$lost/repo/relay/migrations"
+cp "$root/ci/release.sh" "$root/ci/relay-migrations.sh" "$root/ci/relay-release-paths" "$root/ci/release-paths" "$lost/repo/ci/"
+cp "$repo/relay/wrangler.jsonc" "$lost/repo/relay/"
+echo 'export default {};' >"$lost/repo/relay/src/index.ts"
+git -C "$lost/repo" add --all
+git -C "$lost/repo" commit --quiet -m "a relay"
+git -C "$lost/repo" push --quiet origin HEAD:main
+printf '#!/bin/sh\ngit-receive-pack "$@"\nexit 1\n' >"$lost/answers-500"
+chmod +x "$lost/answers-500"
+git -C "$lost/repo" config remote.origin.receivepack "$lost/answers-500"
+lost_release() { "$lost/repo/ci/release.sh" "$@" 2>"$tmp/stderr"; }
+out="$(lost_release relay tag)" || fail "a tag origin took was reported failed: $(cat "$tmp/stderr")"
+expect relay-v0.1.0 "$out" "a tag push answering an error that origin took"
+expect "$(git -C "$lost/repo" rev-parse HEAD)" "$(git -C "$lost/origin.git" rev-parse 'refs/tags/relay-v0.1.0^{commit}')" "origin's tag"
+grep -qF 'answered an error, but origin holds relay-v0.1.0' "$tmp/stderr" || fail "the read-back is not said: $(cat "$tmp/stderr")"
+git -C "$lost/repo" config --unset remote.origin.receivepack
+echo '// more' >>"$lost/repo/relay/src/index.ts"
+git -C "$lost/repo" commit --quiet -am "more"
+git -C "$lost/repo" push --quiet origin HEAD:main
+mkdir -p "$lost/origin.git/hooks"
+printf '#!/bin/sh\nexit 1\n' >"$lost/origin.git/hooks/pre-receive"
+chmod +x "$lost/origin.git/hooks/pre-receive"
+code=0
+lost_release relay tag >/dev/null || code=$?
+[ "$code" -ne 0 ] || fail "a tag origin refused was reported made"
+grep -qF 'could not push relay-v0.1.1' "$tmp/stderr" || fail "the refusal is not said: $(cat "$tmp/stderr")"
+if git -C "$lost/repo" rev-parse --verify --quiet refs/tags/relay-v0.1.1 >/dev/null; then
+  fail "a refused tag was left in the checkout"
+fi
+
 echo "relay-release-test.sh: ok"

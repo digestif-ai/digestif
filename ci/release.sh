@@ -160,6 +160,28 @@ fetch() {
   git -C "$root" fetch --quiet --force --tags origin main
 }
 
+# Pushes the tag $1 this checkout holds, of the commit $2. A push that answers an error is read back
+# before it counts as failed: a code host can create the tag and still answer a 500, and the run that
+# reports it failed then leaves a release nobody retries. Origin holding $1 on $2 is the push made;
+# anything else (the tag absent, on another commit, or origin unreadable) is the failure. DIG-508
+push_tag() {
+  local tag="$1" commit at
+  commit="$(git -C "$root" rev-parse "$2^{commit}")"
+  git -C "$root" push --quiet origin "refs/tags/$tag" && return 0
+  at="$(remote_tag_commit "$tag")" || return 1
+  [ "$at" = "$commit" ] || return 1
+  echo "release.sh: the push of $tag answered an error, but origin holds $tag on $commit, so it is made" >&2
+}
+
+# The commit origin's tag $1 names, empty when origin has no such tag; fails when origin cannot be
+# read. An annotated tag answers the commit it peels to.
+remote_tag_commit() {
+  local refs
+  refs="$(git -C "$root" ls-remote origin "refs/tags/$1" "refs/tags/$1^{}")" || return 1
+  awk -v t="refs/tags/$1" '$2 == t "^{}" { peeled = $1 } $2 == t { plain = $1 }
+    END { print (peeled != "" ? peeled : plain) }' <<<"$refs"
+}
+
 # origin/main as fetched, or exit 75 when the caller judged another commit.
 target_commit() {
   local sha expected="$1"
@@ -310,7 +332,7 @@ cmd_build() {
       else
         git -C "$root" tag "$tag" "$target"
       fi
-      git -C "$root" push --quiet origin "refs/tags/$tag" || {
+      push_tag "$tag" "$target" || {
         git -C "$root" tag -d "$tag" >/dev/null
         die "could not push $tag"
       }
@@ -1110,7 +1132,7 @@ cmd_relay_order() {
 push_relay_tag() {
   relay_tagged="relay-v$(relay_next_patch)"
   git -C "$root" tag "$relay_tagged" "$1"
-  git -C "$root" push --quiet origin "refs/tags/$relay_tagged" || {
+  push_tag "$relay_tagged" "$1" || {
     git -C "$root" tag -d "$relay_tagged" >/dev/null
     die "could not push $relay_tagged"
   }
