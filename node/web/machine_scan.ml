@@ -109,8 +109,11 @@ let summary r =
     r.own_s r.own.heads_read r.own.heads_kept r.own.heads_left
 
 (* The paths each Claude Code project directory's name decodes to (Sources.decode_project_dir),
-   from the index where its stamp has not moved. Only reads: what the index must learn is added to
-   [writes], for the caller to apply under one short transaction. *)
+   from the index where its stamp has not moved. Only a project the Claude Code source reads
+   (Sources.session_filter of Sources.session_folders, DIG-513) is decoded, so one started outside
+   the folders the member chose is never decoded against the file system and its index entry is
+   dropped. Only reads: what the index must learn is added to [writes], for the caller to apply
+   under one short transaction. *)
 let worked_in ?(root = "/") ~judging ~memo ~writes (log : Log.t) =
   let module I = Store.Scan_index in
   let stored = I.projects log in
@@ -119,7 +122,11 @@ let worked_in ?(root = "/") ~judging ~memo ~writes (log : Log.t) =
   (* Names left undecoded once the reading's time ran out. *)
   let left = ref 0 in
   let skipped = Sources.skipped_by_name ~memo judging in
-  let dirs = Sources.children (Sources.claude_projects ()) in
+  let reads = Sources.session_filter (Sources.session_folders log) in
+  let dirs =
+    Sources.children (Sources.claude_projects ())
+    |> List.filter (fun d -> reads (Filename.basename d))
+  in
   let names = List.map Filename.basename dirs in
   let paths =
     List.concat_map
