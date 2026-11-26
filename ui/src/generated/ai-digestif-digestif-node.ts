@@ -81,6 +81,11 @@ export enum ItemAgentAskStatus {
   Failed = 'failed'
 }
 
+export enum ItemArchivedWhy {
+  Settled = 'settled',
+  Unchanged = 'unchanged'
+}
+
 export enum ItemDone {
   Answered = 'answered',
   Picked = 'picked',
@@ -741,8 +746,10 @@ export interface Item {
   done?: ItemDone;
   /** The hash of the message it came from: the note whose Questions part asked it, or the message a work notice was written from. */
   about?: string;
-  /** When the member archived it out of their Inbox. New activity clears it. */
+  /** When it was archived out of the member's Inbox, by the member or by the node (archived_why). New activity clears it. */
   archived_at?: ISODateTimeString;
+  /** Why the node archived it by itself (DIG-507). Absent when the member archived it, and whenever archived_at is. */
+  archived_why?: ItemArchivedWhy;
   waiting?: ItemWaiting;
   /** The paragraph of the message it came from holding the words that produced it, when the run that wrote it recorded them and this node holds that message with those words in it. Absent otherwise; the page then links to the message alone (ISS-85463). */
   source?: ItemSource;
@@ -931,8 +938,10 @@ export interface ItemSummary {
   link?: string;
   /** Why it is settled for the member. */
   done?: ItemDone;
-  /** When the member archived it out of their Inbox. New activity clears it. */
+  /** When it was archived out of the member's Inbox, by the member or by the node (archived_why). New activity clears it. */
   archived_at?: ISODateTimeString;
+  /** Why the node archived it by itself (DIG-507). Absent when the member archived it, and whenever archived_at is. */
+  archived_why?: ItemArchivedWhy;
   waiting?: ItemWaiting;
   /** When the member's agent's reading run read it. Absent on the node's own items, the member's own, and one no run has read. */
   reviewed_at?: ISODateTimeString;

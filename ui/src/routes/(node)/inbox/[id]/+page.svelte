@@ -1,6 +1,15 @@
 <script lang="ts">
   import { goto, invalidateAll } from '$app/navigation';
-  import { ItemDone, ItemKind, ItemStatus, ItemSubject, Stage, Voice, type Item } from '#generated/ai-digestif-digestif-node.ts';
+  import {
+    ItemArchivedWhy,
+    ItemDone,
+    ItemKind,
+    ItemStatus,
+    ItemSubject,
+    Stage,
+    Voice,
+    type Item
+  } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient, type ApiResponse } from '#lib/api/client.ts';
   import { CircleApprovalKind, CircleApprovalState } from '#generated/ai-digestif-digestif-node.ts';
   import { approvalBadge, approvalTitle } from '#lib/approvals.ts';
@@ -204,6 +213,12 @@
     [ItemDone.NotForMe]: 'You set it aside: not for you.',
     [ItemDone.Closed]: 'It is closed.',
     [ItemDone.Resolved]: 'It cleared on its own.'
+  };
+
+  /** DIG-507: why the node archived it by itself, once it waited on nobody. */
+  const ARCHIVED_WHY: Record<ItemArchivedWhy, string> = {
+    [ItemArchivedWhy.Settled]: 'Archived for you a week after it settled.',
+    [ItemArchivedWhy.Unchanged]: 'Archived for you after 30 days with nothing new.'
   };
 
   /** "by Hermes, 2d ago, on Ben Ortiz's answer". */
@@ -444,6 +459,10 @@
   <p class="dg-muted mt-4 text-sm" data-testid="item-done">
     {DONE[item.done]}{#if myPick}&nbsp;{optionLabel(myPick.option_id)}, {relativeTime(myPick.picked_at)}.{/if}
   </p>
+{/if}
+
+{#if item.archived_at !== undefined && item.archived_why !== undefined}
+  <p class="dg-muted mt-4 text-sm" data-testid="item-archived-why">{ARCHIVED_WHY[item.archived_why]}</p>
 {/if}
 
 {#if mode === 'discard'}

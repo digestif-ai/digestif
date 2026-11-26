@@ -8616,6 +8616,100 @@ let inbox_count_threads () =
   Alcotest.(check (list string))
     "an item about a note is not under its own id" [] (thread "adopt-1")
 
+(* DIG-507: the node archives by itself what has waited on nobody for long enough: a settled item
+   (or one the clock shut) a week after it settled with nothing new, a member's or an agent's notice
+   unchanged for 30 days. Never a draft, a New item, an item still open or a node's notice whose
+   cause holds; and new activity brings it back, without the reason. *)
+let inbox_ages_out () =
+  let log = fresh_log () in
+  let roman = "ed25519:roman" in
+  let day = 86400. in
+  let now = Unix.gettimeofday () in
+  let ago d = Time_fmt.of_unix (now -. (d *. day)) in
+  let add ?(kind = "notice") ?(voice = "agent") ?subject ?(sent = true)
+      ?(read = true) ?closes_unix ~at id =
+    Store.Items.add log ~id ~hash:("sha256:" ^ id) ~author:roman
+      ~item:{ (question ("Item " ^ id)) with kind; voice; subject }
+      ~to_:Circle ~created_at:at
+      ?sent_at:(if sent then Some at else None)
+      ?read_at:(if read then Some at else None)
+      ?closes_unix ()
+  in
+  let why id =
+    match Store.Items.find log ~now id with
+    | Some r -> (
+        match (r.archived_at, r.archived_why) with
+        | None, _ -> "in"
+        | Some _, Some w -> w
+        | Some _, None -> "archived")
+    | None -> "missing"
+  in
+  add ~kind:"question" ~at:(ago 20.) "settled-long";
+  Store.Items.settle log "settled-long" ~why:"answered" ~at:(ago 8.);
+  add ~kind:"question" ~at:(ago 20.) "settled-lately";
+  Store.Items.settle log "settled-lately" ~why:"answered" ~at:(ago 2.);
+  add ~kind:"question" ~at:(ago 20.) "settled-then-answered";
+  Store.Items.settle log "settled-then-answered" ~why:"answered" ~at:(ago 8.);
+  Store.Items.put_answer log ~hash:"sha256:late" ~created_at:(ago 1.)
+    (Some ("sha256:settled-then-answered", roman, "person", "One more."));
+  add ~kind:"question"
+    ~closes_unix:(now -. (9. *. day))
+    ~at:(ago 16.) "shut-by-clock";
+  add ~kind:"question" ~at:(ago 40.) "open-question";
+  add ~at:(ago 40.) "old-notice";
+  add ~at:(ago 10.) "young-notice";
+  add ~at:(ago 40.) ~read:false "unread-notice";
+  add ~at:(ago 40.) ~sent:false "draft-notice";
+  add ~voice:"node" ~subject:"folder_access" ~at:(ago 40.) "node-cause-holds";
+  add ~voice:"node" ~subject:"folder_access" ~at:(ago 40.) "node-resolved";
+  Store.Items.settle log "node-resolved" ~why:"resolved" ~at:(ago 8.);
+  add ~kind:"question" ~at:(ago 20.) "member-archived";
+  Store.Items.settle log "member-archived" ~why:"answered" ~at:(ago 8.);
+  Store.Items.archive log "member-archived" ~at:(ago 3.);
+  Store.Items.age_out log ~now;
+  Alcotest.(check (list (pair string string)))
+    "what waits on nobody leaves, with its reason"
+    [
+      ("settled-long", "settled");
+      ("settled-lately", "in");
+      ("settled-then-answered", "in");
+      ("shut-by-clock", "settled");
+      ("open-question", "in");
+      ("old-notice", "unchanged");
+      ("young-notice", "in");
+      ("unread-notice", "in");
+      ("draft-notice", "in");
+      ("node-cause-holds", "in");
+      ("node-resolved", "settled");
+      ("member-archived", "archived");
+    ]
+    (List.map
+       (fun id -> (id, why id))
+       [
+         "settled-long";
+         "settled-lately";
+         "settled-then-answered";
+         "shut-by-clock";
+         "open-question";
+         "old-notice";
+         "young-notice";
+         "unread-notice";
+         "draft-notice";
+         "node-cause-holds";
+         "node-resolved";
+         "member-archived";
+       ]);
+  Store.Items.freshen log "sha256:settled-long" ~me:(Some roman);
+  Alcotest.(check string)
+    "new activity brings it back" "in" (why "settled-long");
+  Store.Items.age_out log ~now;
+  Alcotest.(check string) "and a New item stays in" "in" (why "settled-long");
+  Store.Items.read log "settled-long" ~at:(Time_fmt.of_unix now);
+  Store.Items.archive log "settled-long" ~at:(Time_fmt.of_unix now);
+  Alcotest.(check string)
+    "archived by the member, it carries no reason" "archived"
+    (why "settled-long")
+
 let envelopes_of n kind = List.length (Log.of_kind n.Node.log kind)
 
 let body_of n hash =
@@ -16063,6 +16157,8 @@ let () =
           Alcotest.test_case "sync health" `Quick sync_health;
           Alcotest.test_case "the Inbox count is one per thread" `Quick
             inbox_count_threads;
+          Alcotest.test_case "the Inbox ages out what waits on nobody" `Quick
+            inbox_ages_out;
           Alcotest.test_case "inbox: the index's watermark" `Quick
             inbox_index_mark;
           Alcotest.test_case "a check that cannot finish" `Quick

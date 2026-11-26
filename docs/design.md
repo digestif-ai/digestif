@@ -78,8 +78,8 @@ the app.
 | Inbox | The items a member wrote and the items addressed to them, each in its status for them and the time their agent read it. |
 | Item | One question, choice or notice from a member, their agent or their node, addressed to the circle or to named members. |
 | Draft | An item written and not sent yet; an agent's draft waits for its person to send, edit or discard it. |
-| Settled | An item a member has nothing left to do on: answered, picked, closed, or a node's notice whose cause is gone. Its outcome shows on its row; it stays in the Inbox until archived. |
-| Archive | Takes an item out of one member's Inbox, for them alone, until new activity on it (an answer that counts or a reply from someone who reads it, a pick that counts, or its close by the clock) brings it back unread. An answer counts when it is given before its question closed; a late answer, like a late pick, shows on the item and neither makes it unread nor brings it out of the Archive. |
+| Settled | An item a member has nothing left to do on: answered, picked, closed, or a node's notice whose cause is gone. Its outcome shows on its row; it stays in the Inbox until archived, by the member or, a week after it settled, by the node. |
+| Archive | Takes an item out of one member's Inbox, for them alone: the member archives it, or the node does once it has waited on nobody for long enough (Reaching a person), saying why on the item. It stays out until new activity on it (an answer that counts or a reply from someone who reads it, a pick that counts, or its close by the clock) brings it back unread. An answer counts when it is given before its question closed; a late answer, like a late pick, shows on the item and neither makes it unread nor brings it out of the Archive. |
 | Waiting on | Whom an item waits on: the member, for their draft to send or an open question, choice or approval of someone else's they have not settled; or, on the member's own open question or choice, each member it names who has not answered a question or picked on a choice, or the circle until its first answer on a question or first pick on a choice. |
 | Inbox prompt | What a member's agent does with everything that reaches them; every node starts with the default one. |
 | Brief | A few paragraphs a member wrote about themselves. The agent's only knowledge about the person. |
@@ -373,7 +373,15 @@ the Archive.
 It is settled once they answer or pick, or it closes: a choice on its first pick or its default at its
 deadline, a question when its asker's agent closes it naming the answer that unblocked it, or by
 itself after a week with no answer, the week starting again when its asker reopens it. Settling never takes an item out of the Inbox; the member's Archive
-does, until new activity brings it back. A reply to a notice or a choice joins it as an answer does,
+does, until new activity brings it back. So a long Inbox stays one the member can trust, the node
+archives by itself, each time it reads the Inbox, what has waited on nobody for long enough, and
+the item says why in one line: an item the member has opened that settled, or that the clock
+closed, a week before with no answer or pick since (settled); and a notice from a member or an
+agent, which nothing settles but the member, opened and with no answer for 30 days (unchanged).
+It never archives a draft, a New item, a question, choice or approval still open, or a notice
+from the node while what it told of still holds, and an item it cannot read is never settled, so
+never archived. New activity brings it back as it brings back what the member archived, and a
+node's notice told anew is New again and out of the Archive (DIG-507). A reply to a notice or a choice joins it as an answer does,
 so a conversation is one row. An item only the member reads takes no reply. And a digest, once a
 day, in every stage, only on days with
 something in it: its Inbox part (every Draft and New item, each linking to where it is answered, a
