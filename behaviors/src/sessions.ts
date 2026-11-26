@@ -1022,6 +1022,8 @@ export interface JudgingOptions {
   onSkipped?: (dir: string, reason: SkipReason, transcripts: number) => void;
   /** Told of each project as judging begins on it. */
   onProject?: (dir: string) => void;
+  /** The folders whose sessions are read, absolute (SessionsOptions.folders). Absent: every project. */
+  folders?: string[];
 }
 
 /** Why a project's transcripts were skipped without being read: not the member's, or unjudged past the listing cap, an unreadable folder or a slow listing (DIG-413). */
@@ -1034,6 +1036,34 @@ const encodedPath = (p: string): string => p.replace(/[^a-zA-Z0-9]/g, "-");
 
 /** Whether an encoded project name is the encoded path `e` or a path under it. */
 const namesUnder = (name: string, e: string): boolean => name === e || name.startsWith(e + "-");
+
+/**
+ * Whether a project's directory name is one the chosen folders read (DIG-512): the encoded path of a
+ * chosen folder or of a path under one, decided from the name alone, so a project outside every
+ * chosen folder is never opened. A folder beside a chosen one whose encoded path begins with the
+ * chosen one's (~/code-review beside ~/code) keeps its own projects unless it is chosen too, as in
+ * skipRoots. The node's reader has the same rule (node/web/sources.ml, session_filter).
+ */
+export async function folderFilter(folders: string[], list: (dir: string) => Promise<string[]>): Promise<(name: string) => boolean> {
+  const roots = folders.map((f) => (f.length > 1 ? f.replace(/\/+$/, "") : f));
+  const encoded = roots.map(encodedPath);
+  const rivals: string[] = [];
+  for (const root of roots) {
+    const e = encodedPath(root);
+    const parent = dirname(root);
+    let siblings: string[] = [];
+    try {
+      siblings = await list(parent);
+    } catch {
+      // A parent that cannot be listed shows no look-alikes.
+    }
+    for (const n of siblings) {
+      const r = encodedPath(join(parent, n));
+      if (r !== e && namesUnder(r, e) && !encoded.includes(r)) rivals.push(r);
+    }
+  }
+  return (name) => encoded.some((e) => namesUnder(name, e)) && !rivals.some((r) => namesUnder(name, r));
+}
 
 /** A root a project is skipped under, and the encoded paths of its siblings whose names start with its own. */
 export interface SkipRoot {
@@ -1156,12 +1186,14 @@ async function sessionFilesAt(
   const maxListingMs = options.maxListingMs ?? MAX_LISTING_MS;
   const list = async (dir: string): Promise<string[]> => (await reading.folders.list(dir, Number.MAX_SAFE_INTEGER, maxListingMs)).names;
   const skipping = await skipRoots({ factoryRoots: options.factoryRoots ?? [], tempRoots, home, list });
+  const reads = options.folders === undefined ? (): boolean => true : await folderFilter(options.folders, list);
   // Each project's window is read first, and a project that is not the member's is skipped before
   // judging it or reading a transcript of it. The rest are judged newest first, so a budget that
   // runs out leaves the oldest unjudged.
   const active: { sub: string; recent: { file: string; at: number }[] }[] = [];
   const idle: string[] = [];
-  for (const n of (await names(path)).filter((n) => !n.startsWith(".")).sort()) {
+  // A project outside the chosen folders is passed over before anything of it is looked at (DIG-512).
+  for (const n of (await names(path)).filter((n) => !n.startsWith(".") && reads(n)).sort()) {
     const sub = join(path, n);
     if (budget?.spent() === true) throw new ReadingOverran(sub);
     if (!(await isDir(sub))) continue;
@@ -1268,6 +1300,11 @@ export interface SessionsOptions {
   tempRoots?: string[];
   /** Told once judging is over, of the projects it left unjudged and the folders why; told with none when it skipped nothing (ISS-81609). */
   onUnjudged?: (u: Unjudged) => void;
+  /**
+   * The folders whose sessions are read, absolute (DIG-512): a project started anywhere else is
+   * never opened, judged or counted. Absent: every project.
+   */
+  folders?: string[];
 }
 
 /** What a budget-cut reading left out: the transcripts it never read, all older than every one it read. */
@@ -1344,6 +1381,7 @@ export async function sessionsSince(path: string | string[], since: number, unti
   };
   const judging: JudgingOptions = {
     ...(options.tempRoots === undefined ? {} : { tempRoots: options.tempRoots }),
+    ...(options.folders === undefined ? {} : { folders: options.folders }),
     factoryRoots: factoryRoots(home),
     ...(options.maxJudgedEntries === undefined ? {} : { maxJudgedEntries: options.maxJudgedEntries }),
     onSkipped: (_dir, reason, n) => {

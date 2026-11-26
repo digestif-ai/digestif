@@ -38,7 +38,10 @@ go by Wren. Keep both? And which email should your daily digest go to?" If `setu
 has a `digest_email`, propose it instead of asking. Save all three in one `setup names`.
 
 Sources. List everything found, all of it proposed as approved: `git` by organization, each with
-its repositories, and Claude Code sessions by their `directories`. Until the sources are saved you
+its repositories, and Claude Code sessions by the `folders` they are read from. Only a session
+started in one of those folders is read; `directories` names every folder sessions were started in,
+so say which are left out and that they can add one. A folder they add or drop is saved with
+`--session-folder`, every folder they keep named once each. Until the sources are saved you
 know only names and paths: read no contents, and never propose a source holding financial records.
 At least one source is required.
 

@@ -14,7 +14,7 @@
 
 open Digestif_core
 
-let folders = [ "Documents"; "Desktop"; "Downloads" ]
+let folders = Sources.protected_folders
 
 (* How long the result of a check stands before the next pass takes another. *)
 let max_age = 86400.
@@ -61,15 +61,20 @@ let projects_under ~names dir =
     names
 
 (* The names of the session projects this node reads: the project directories of each chosen Claude
-   Code source. A machine whose member reads no sessions has none, and nothing a refusal could
-   skip. *)
+   Code source that are under a folder the source reads (Sources.session_filter, DIG-512). A machine
+   whose member reads no sessions has none, and nothing a refusal could skip. *)
 let session_project_names (log : Log.t) =
   Store.sources log
   |> List.filter (fun (s : Store.source) ->
       s.selected && s.kind = "claude_code")
   |> List.concat_map (fun (s : Store.source) ->
-      List.map Sources.untilde s.paths)
-  |> List.concat_map (fun p -> List.map Filename.basename (Sources.children p))
+      let reads =
+        Sources.session_filter (Sources.session_folders ~paths:s.paths log)
+      in
+      List.map Sources.untilde s.paths
+      |> List.concat_map (fun p ->
+          List.map Filename.basename (Sources.children p))
+      |> List.filter reads)
   |> Sources.dedupe
 
 (* Each refused folder with how many session projects sit under it, in [folders] order. *)

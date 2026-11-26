@@ -1593,6 +1593,8 @@ export interface Source {
   /** The kinds of data it yields, in plain words. */
   yields: string[];
   selected: boolean;
+  /** The Claude Code source: the folders whose sessions it reads, shown with ~ for the home directory. A session started outside every one is never read. */
+  folders?: string[];
 }
 
 /**

@@ -74,6 +74,7 @@ The behavior is run with no arguments. Its stdin is one JSON object:
       "kind": "claude_code",
       "label": "Claude Code sessions",
       "paths": ["/Users/mike/.claude/projects"],
+      "folders": ["/Users/mike/code", "/Users/mike/ai"],
       "start": "2026-10-28T11:30:00.000Z",
       "recorded": true,
       "yields": ["Session titles and prompts"]
@@ -94,7 +95,7 @@ The behavior is run with no arguments. Its stdin is one JSON object:
 | `data_dir` | The node's data directory. |
 | `digestif` | The binary that spawned the behavior, for `digestif note` and `digestif tick`. |
 | `api` | The local API (`spec/digestif-node.json`) and the headers every request carries: a session that ends when the behavior exits, in the cookie named for the node's port (`digestif_session` on the standard port 7420, `digestif_session_<port>` on any other, so two nodes on one machine keep two browser sessions), and `Digestif-Local`. A behavior sends the headers as given. `null` when the node serves no web UI (`--no-ui`). |
-| `sources` | The sources the member chose, with absolute paths. Nothing else on the machine is the behavior's to read. Each carries where it starts (below): `start`, an ISO 8601 time or `null` for the first note's reach, and `recorded`, true when it is where an approved note ended. The git source carries `repositories`, the approved ones, each one remote with the path of every clone of it that is read (every clone but those the last machine scan judged to hold financial records; an approved repository with no other clone is absent), its `start` and, once recorded, the `sha` of the newest default-branch commit the last approved note read; and `authors`, the commit authors the member owns, each with its `start`, or `null` while there is no list, which reads every author. Its `paths` are every clone in `repositories`. |
+| `sources` | The sources the member chose, with absolute paths. Nothing else on the machine is the behavior's to read. Each carries where it starts (below): `start`, an ISO 8601 time or `null` for the first note's reach, and `recorded`, true when it is where an approved note ended. The git source carries `repositories`, the approved ones, each one remote with the path of every clone of it that is read (every clone but those the last machine scan judged to hold financial records; an approved repository with no other clone is absent), its `start` and, once recorded, the `sha` of the newest default-branch commit the last approved note read; and `authors`, the commit authors the member owns, each with its `start`, or `null` while there is no list, which reads every author. Its `paths` are every clone in `repositories`. The Claude Code source carries `folders`, the folders whose sessions it reads: a project directory is read only when its name is the encoded path of one of them or of a path under one, decided from the name alone, so a session started anywhere else is never opened, judged or counted as skipped. |
 | `first_note` | No note has been approved yet: every source reads the first note's reach. |
 | `draft_replies` | `read` only: the notes the member asked a draft reply to. Each the run does not answer is recorded failed when it exits. |
 | `read_circle` | `read` only: false when the node spawned it for `draft_replies` alone, and the circle is not read. |

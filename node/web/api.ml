@@ -644,18 +644,27 @@ let find_identity c id =
    choice. *)
 let refresh_sources c = Machine_scan.ensure ~now:c.now c.node
 
-let source_json (s : Store.source) : Yojson.Safe.t =
+(* The Claude Code source carries the folders it reads sessions started under (DIG-512). *)
+let source_json log (s : Store.source) : Yojson.Safe.t =
   `Assoc
-    [
-      ("id", str s.id);
-      ("kind", str s.kind);
-      ("label", str s.label);
-      ("paths", `List (List.map str s.paths));
-      ("yields", `List (List.map str s.yields));
-      ("selected", `Bool s.selected);
-    ]
+    ([
+       ("id", str s.id);
+       ("kind", str s.kind);
+       ("label", str s.label);
+       ("paths", `List (List.map str s.paths));
+       ("yields", `List (List.map str s.yields));
+       ("selected", `Bool s.selected);
+     ]
+    @
+    if s.kind = "claude_code" then
+      [
+        ( "folders",
+          `List (List.map str (Sources.session_folders ~paths:s.paths log)) );
+      ]
+    else [])
 
-let sources_json c = `List (List.map source_json (Store.sources (log c)))
+let sources_json c =
+  `List (List.map (source_json (log c)) (Store.sources (log c)))
 
 (* ISS-41944: a list's page size, from the query's limit, or 422 naming it. *)
 let limit_param query ~default =
@@ -687,7 +696,11 @@ let source_page c query =
   | Error e -> e
   | Ok (limit, after) ->
       refresh_sources c;
-      ok (`List (List.map source_json (Store.sources (log c) ?after ~limit)))
+      ok
+        (`List
+           (List.map
+              (source_json (log c))
+              (Store.sources (log c) ?after ~limit)))
 
 (* ISS-41988: one page of members, in the order Members lists them. The order is the fold's, read
    from the circle's summaries, so the page is cut from it; a circle is the people a member knows,

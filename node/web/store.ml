@@ -226,6 +226,18 @@ let add_command_source (log : Log.t) ~id ~label ~command =
 let remove_source (log : Log.t) id =
   Log.exec log "DELETE FROM ui_sources WHERE id = ?" [ Log.s id ]
 
+(* DIG-512: the folders the Claude Code source reads sessions started under, each shown with ~ for
+   the home directory, one setting for the source. It is kept apart from ui_sources, which a
+   rediscovery rewrites (set_offered), so the member's choice survives one. None until it is first
+   set (Sources.session_folders). *)
+let k_session_folders = "claude_code_folders"
+
+let session_folders (log : Log.t) =
+  Option.map strings_of_json (config log k_session_folders)
+
+let set_session_folders (log : Log.t) folders =
+  set_config log k_session_folders (json_strings folders)
+
 let k_sources_saved = "ui_sources_saved"
 
 let select_sources (log : Log.t) ids =

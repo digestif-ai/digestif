@@ -1510,6 +1510,12 @@
         {
           "name": "selected",
           "type": "boolean"
+        },
+        {
+          "name": "folders",
+          "type": "[string]",
+          "required": false,
+          "description": "The Claude Code source: the folders whose sessions it reads, shown with ~ for the home directory. A session started outside every one is never read."
         }
       ]
     },

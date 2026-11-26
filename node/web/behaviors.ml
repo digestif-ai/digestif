@@ -191,7 +191,16 @@ let source_record_fields (log : Log.t) ~now (s : Store.source) =
     ]
   else
     ("paths", strings (List.map Sources.untilde s.paths))
-    :: start_fields log ~now (Store.Record.source_key s.id)
+    ::
+    (if s.kind = "claude_code" then
+       [
+         ( "folders",
+           strings
+             (List.map Sources.untilde
+                (Sources.session_folders ~paths:s.paths log)) );
+       ]
+     else [])
+    @ start_fields log ~now (Store.Record.source_key s.id)
 
 let k_armed_since = "behavior_nightly_armed_since"
 

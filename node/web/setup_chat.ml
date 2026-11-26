@@ -156,6 +156,11 @@ let found (n : Node.t) ~invited_name : Yojson.Safe.t =
                   @
                   if s.kind = "claude_code" then
                     [
+                      (* DIG-512: the folders it reads, and every one sessions
+                         were started in that the member could add *)
+                      ( "folders",
+                        strings (Sources.session_folders ~paths:s.paths n.log)
+                      );
                       ("directories", strings (Sources.session_directories ()));
                     ]
                   else []))
@@ -290,9 +295,10 @@ let apply_choices (n : Node.t) (c : repository_choices) =
         (R.author_by_email n.log email))
     c.remove_authors
 
-(* [ids], or every source offered with [all], and what the member changed of the repositories and
-   commit authors proposed. A command source already saved stays chosen. *)
-let save_sources ?(choices = no_choices) (n : Node.t) ~all ~ids =
+(* [ids], or every source offered with [all], what the member changed of the repositories and
+   commit authors proposed, and the folders the Claude Code source reads ([folders], DIG-512; None
+   keeps those proposed). A command source already saved stays chosen. *)
+let save_sources ?(choices = no_choices) ?folders (n : Node.t) ~all ~ids =
   refresh n;
   let offered = Store.sources n.log in
   let known = List.map (fun (s : Store.source) -> s.id) offered in
@@ -312,7 +318,17 @@ let save_sources ?(choices = no_choices) (n : Node.t) ~all ~ids =
       else
         let () = Machine_scan.propose_authors ~now:(Unix.gettimeofday ()) n in
         let* () = check_choices n choices in
+        let* () =
+          match folders with
+          | None | Some [] -> Ok ()
+          | Some l ->
+              Result.map ignore
+                (Sources.map_checked Sources.check_session_folder l)
+        in
         apply_choices n choices;
+        (match folders with
+        | None | Some [] -> Sources.keep_session_folders n.log
+        | Some l -> ignore (Sources.set_session_folders n.log l));
         Store.select_sources n.log chosen;
         Ok "Saved. Nothing was read from them until now."
 

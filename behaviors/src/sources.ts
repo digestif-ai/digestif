@@ -34,6 +34,8 @@ export interface Source extends Partial<Start> {
   repositories?: Repository[];
   /** The git source: the authors the member owns, each with its start. null or absent: every author. */
   authors?: Author[] | null;
+  /** The Claude Code source: the folders whose sessions are read (DIG-512). Absent: every project. */
+  folders?: string[];
 }
 
 function startOf(o: Record<string, unknown>): Start {
@@ -60,6 +62,7 @@ export function recordFields(o: Record<string, unknown>): Partial<Source> {
       return [{ id: x["id"], name: typeof x["name"] === "string" ? x["name"] : x["id"], paths: x["paths"], ...startOf(x) }];
     });
   }
+  if (isStringArray(o["folders"])) out.folders = o["folders"];
   if (o["authors"] === null) out.authors = null;
   else if (Array.isArray(o["authors"])) {
     out.authors = (o["authors"] as unknown[]).flatMap((a) => {

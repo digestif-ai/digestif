@@ -634,6 +634,134 @@ let offered repos =
   claude @ if repos = [] then [] else [ git_source repos ]
 
 let discover () = offered (discover_repos ())
+
+(* DIG-512: the folders the Claude Code source reads. Claude Code files every session on the
+   machine under ~/.claude/projects, wherever it started, so what a member shares is the folders
+   they chose, never what the operating system happens to let the node open. A project is read
+   only when its directory's name is the encoded path of a chosen folder or of a path under one
+   (Folder_reader.encode_segment). The decision is made from the name alone, so a project outside
+   every chosen folder is never opened, never judged and never counted as skipped.
+
+   The encoding cannot tell ~/code/review from ~/code-review, so a folder beside a chosen one whose
+   encoded path begins with the chosen one's (a rival) keeps its own projects unless it is chosen
+   too, as for the temp and factory roots (behaviors/src/sessions.ts, skipRoots). *)
+let names_under name e =
+  name = e
+  || String.length name > String.length e
+     && String.sub name 0 (String.length e) = e
+     && name.[String.length e] = '-'
+
+(* Every entry of [dir], hidden ones included, or none when it cannot be listed. *)
+let entries dir =
+  match Sys.readdir dir with
+  | names -> Array.to_list names |> List.map (Filename.concat dir)
+  | exception Sys_error _ -> []
+
+let strip_slash p =
+  let n = String.length p in
+  if n > 1 && p.[n - 1] = '/' then String.sub p 0 (n - 1) else p
+
+(* Whether a project directory's [name] is one the chosen [folders] (absolute or with ~) read. *)
+let session_filter folders =
+  let folders = List.map (fun f -> strip_slash (untilde f)) folders in
+  let encoded = List.map encode_segment folders in
+  let rivals =
+    List.concat_map
+      (fun f ->
+        let e = encode_segment f in
+        entries (Filename.dirname f)
+        |> List.map encode_segment
+        |> List.filter (fun r ->
+            r <> e && names_under r e && not (List.mem r encoded)))
+      folders
+  in
+  fun name ->
+    List.exists (names_under name) encoded
+    && not (List.exists (names_under name) rivals)
+
+(* The folders macOS keeps behind its privacy protection (Folder_access), and where a person's own
+   files usually are: never proposed as a folder to read, though a member may choose one. *)
+let protected_folders = [ "Documents"; "Desktop"; "Downloads" ]
+
+(* The folders directly under the home directory that Claude Code sessions were started in, from
+   the project directories' [names] and one listing of the home directory: each name is the
+   longest encoded folder it is under. No folder below the home directory is opened. *)
+let session_home_folders ?(home = home ()) names =
+  let folders =
+    entries home |> List.filter is_dir
+    |> List.map (fun d -> (d, encode_segment d))
+  in
+  List.filter_map
+    (fun name ->
+      List.filter (fun (_, e) -> names_under name e) folders
+      |> List.sort (fun (_, a) (_, b) ->
+          compare (String.length b) (String.length a))
+      |> function
+      | (d, _) :: _ -> Some d
+      | [] -> None)
+    names
+  |> List.sort_uniq compare
+
+(* The project directories' names under [paths] (each a ~/.claude/projects, shown with ~ or not). *)
+let project_names ?(paths = [ claude_projects () ]) () =
+  List.concat_map
+    (fun p -> List.map Filename.basename (children (untilde p)))
+    paths
+  |> dedupe
+
+(* What the source reads until the member chooses: every home folder sessions were started in but
+   the protected ones and the Dev Factory's own. *)
+let default_session_folders ?(home = home ()) names =
+  let left_out =
+    List.map (Filename.concat home) (".devfactory" :: protected_folders)
+  in
+  session_home_folders ~home names
+  |> List.filter (fun d -> not (List.mem d left_out))
+  |> List.map tilde
+
+(* The chosen folders, shown with ~, or the default for the projects under [paths] (the source's own)
+   while none were chosen. It writes nothing, so a read answers while the log is held. *)
+let session_folders ?paths (log : Log.t) =
+  match Store.session_folders log with
+  | Some l -> l
+  | None -> default_session_folders (project_names ?paths ())
+
+(* A node that never chose any folders (one set up before they were a setting) keeps the default
+   the first time its sources are offered, so it is a setting the member can see and change rather
+   than a reading of whatever the folders hold that day. *)
+let keep_session_folders (log : Log.t) =
+  if Store.session_folders log = None && is_dir (claude_projects ()) then
+    Store.set_session_folders log (session_folders log)
+
+(* A folder the member names: absolute or under ~, shown with ~. *)
+let check_session_folder f =
+  let f = String.trim f in
+  if f = "" then Error "Name the folder."
+  else
+    let p = strip_slash (untilde f) in
+    if Filename.is_relative p then
+      Error (f ^ ": name the folder by its absolute path, or one under ~.")
+    else if p = "/" || p = home () then
+      Error (f ^ ": choose a folder below the home directory, not all of it.")
+    else Ok (tilde p)
+
+(* [f] of each of [l], or the first error. *)
+let map_checked f l =
+  let rec go acc = function
+    | [] -> Ok (List.rev acc)
+    | x :: rest -> (
+        match f x with Ok y -> go (y :: acc) rest | Error e -> Error e)
+  in
+  go [] l
+
+let set_session_folders (log : Log.t) folders =
+  Result.map
+    (fun l ->
+      let l = dedupe l in
+      Store.set_session_folders log l;
+      l)
+    (map_checked check_session_folder folders)
+
 let day = 86400.0
 
 let lines s =
@@ -1081,9 +1209,11 @@ let note_financial ?judging ~root ~cache ~memo dir =
    the window are judged first and the idle ones after, each with its verdict recorded
    ([note_financial]), so projects that are stale cannot use up the reading's time before the
    active ones are judged. The reading has one deadline. A caller that reads several paths passes
-   one begun [judging]. The behaviors reader (behaviors/src/sessions.ts, sessionFiles) lists the
-   same files. *)
-let session_files ?(root = "/") ?(since = 0.) ?judging dir =
+   one begun [judging]. A project whose name [reads] refuses (session_filter, DIG-512) is passed
+   over before anything of it is looked at, and is not counted. The behaviors reader
+   (behaviors/src/sessions.ts, sessionFiles) lists the same files. *)
+let session_files ?(root = "/") ?(since = 0.) ?judging ?(reads = fun _ -> true)
+    dir =
   let recent ps =
     List.filter
       (fun p ->
@@ -1101,7 +1231,9 @@ let session_files ?(root = "/") ?(since = 0.) ?judging dir =
       let memo = Hashtbl.create 64 in
       let skipped = skipped_by_name ~also:judging.factory_roots ~memo judging in
       let projects =
-        children dir |> List.filter is_dir
+        children dir
+        |> List.filter (fun p -> reads (Filename.basename p))
+        |> List.filter is_dir
         |> List.filter (fun p -> not (skipped (Filename.basename p)))
         |> List.map (fun p -> (p, recent (jsonl_files p)))
       in
@@ -1261,9 +1393,10 @@ let transcript_head ?(max_bytes = max_title_bytes) p =
    on the session's records, else the summary line older transcripts carry, both read from the
    transcript's head ([transcript_head]), else the session's first prompt in [history] (the transcript's file name is its session id). Equal titles are kept
    once: a resumed session writes a new transcript under the same title. *)
-let session_titles ?root ?(history = claude_history ()) ?judging ~since dir =
+let session_titles ?root ?(history = claude_history ()) ?judging ?reads ~since
+    dir =
   let titled =
-    session_files ?root ?judging ~since dir
+    session_files ?root ?judging ?reads ~since dir
     |> List.filter_map (fun p ->
         match transcript_head p with
         | None -> None
@@ -1286,33 +1419,11 @@ let session_titles ?root ?(history = claude_history ()) ?judging ~since dir =
   |> List.map (fun t -> clip (one_line t))
   |> dedupe
 
-(* What setup shows for Claude Code sessions: the top-level directories they were started in, under
-   the home directory (~/code), read from the names of the project directories and nothing else. *)
-let session_directories ?(root = "/") () =
-  let h = home () in
-  let top p =
-    let prefix = h ^ "/" in
-    let n = String.length prefix in
-    if String.length p > n && String.sub p 0 n = prefix then
-      match String.split_on_char '/' (String.sub p n (String.length p - n)) with
-      | first :: _ -> "~/" ^ first
-      | [] -> tilde p
-    else tilde p
-  in
-  let cache = Hashtbl.create 64 in
-  let memo = Hashtbl.create 8 in
-  let judging = begun (default_judging ()) in
-  let left = ref 0 in
-  let dirs =
-    List.map Filename.basename (children (claude_projects ()))
-    |> List.concat_map (fun n ->
-        try decode_project_dir ~root ~cache ~memo ~judging n
-        with Cannot_judge _ ->
-          if reading_spent memo then incr left;
-          [])
-  in
-  if !left > 0 then judging.on_deadline !left;
-  List.map top dirs |> dedupe
+(* What setup offers beside the chosen folders (session_folders): every folder directly under the
+   home directory that Claude Code sessions were started in (~/code), read from the names of the
+   project directories and one listing of the home directory, so no folder below it is opened. *)
+let session_directories () =
+  List.map tilde (session_home_folders (project_names ()))
 
 (* A command source (docs/behaviors.md, Command sources): the member's program, run as its paths
    with --since and the window's start appended, an ISO 8601 date time with its offset, one item
@@ -1465,8 +1576,9 @@ let extract_reading ?(now = Unix.gettimeofday ()) (log : Log.t)
               (git_paths log s)
             |> List.map (fun x -> "commit: " ^ x)
         | "claude_code" ->
+            let reads = session_filter (session_folders ~paths:s.paths log) in
             List.concat_map
-              (session_titles ~judging ~since)
+              (session_titles ~judging ~reads ~since)
               (List.map untilde s.paths)
             |> List.map (fun x -> "session: " ^ x)
         | k when k = Store.k_command -> (
