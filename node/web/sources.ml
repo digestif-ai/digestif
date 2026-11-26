@@ -576,17 +576,21 @@ let holds_financial_records ?judging ?memo dir =
    has worked in, from its project directories' names. The cost of reading them is bounded in
    [git_subjects], which skips a repository whose default branch has not moved in the window, and by the
    digest's line cap, never by dropping repositories by name. The one repository never proposed is
-   one that holds financial records. *)
+   one that holds financial records. A project directory is decoded only when [reads] accepts its
+   name (session_filter of session_folders, DIG-513), the rule the sessions readers apply, so a
+   project started outside the folders the member chose is never decoded against the file system
+   and no repository is found through it. *)
 let code_dirs () =
   List.concat_map (fun r -> children (Filename.concat (home ()) r)) git_roots
 
-let discover_repos ?(root = "/") () =
+let discover_repos ?(root = "/") ~reads () =
   let judging = begun (default_judging ()) in
   let memo = Hashtbl.create 8 in
   let left = ref 0 in
   let worked_in =
     let cache = Hashtbl.create 64 in
     List.map Filename.basename (children (claude_projects ()))
+    |> List.filter reads
     |> List.concat_map (fun n ->
         try decode_project_dir ~root ~cache ~memo ~judging n
         with Cannot_judge _ ->
@@ -632,8 +636,6 @@ let offered repos =
     else []
   in
   claude @ if repos = [] then [] else [ git_source repos ]
-
-let discover () = offered (discover_repos ())
 
 (* DIG-512: the folders the Claude Code source reads. Claude Code files every session on the
    machine under ~/.claude/projects, wherever it started, so what a member shares is the folders

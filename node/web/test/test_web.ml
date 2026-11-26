@@ -3862,6 +3862,67 @@ let session_folders_chosen () =
     "the source reads what was chosen" [ "~/code"; "/opt/work" ]
     (Sources.session_folders log)
 
+(* DIG-513: discovery decodes only the project names the Claude Code source reads
+   (Sources.session_filter of the chosen folders), so a session started under the Desktop neither
+   lists it nor proposes a repository found there. *)
+let discovery_chosen_folders () =
+  let home = fixture () in
+  let repo p =
+    let d = Filename.concat home p in
+    Node.mkdir_p (Filename.concat d ".git");
+    write_file
+      (Filename.concat d ".git/config")
+      [
+        {|[remote "origin"]|};
+        "\turl = https://github.com/o/" ^ Filename.basename p ^ ".git";
+      ];
+    d
+  in
+  let chosen = repo "work/fetcher" in
+  let _athena = repo "Desktop/projects/athena" in
+  List.iter
+    (fun p ->
+      Node.mkdir_p
+        (Filename.concat home
+           (".claude/projects/"
+           ^ Sources.encode_segment (Filename.concat home p))))
+    [ "work/fetcher"; "Desktop/projects/athena" ];
+  let desktop = Filename.concat home "Desktop" in
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" home;
+  Fun.protect
+    ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+    (fun () ->
+      let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+      Store.init n.log;
+      let scan folders =
+        Store.set_session_folders n.log folders;
+        let listed = ref [] in
+        let judging =
+          {
+            (Sources.default_judging ()) with
+            Sources.temp_roots = [];
+            system_roots = [];
+            on_listing = (fun d -> listed := d :: !listed);
+          }
+        in
+        let repos, _, _ = Machine_scan.discover_indexed ~judging n.log in
+        (repos, List.filter (fun d -> Sources.under_any d [ desktop ]) !listed)
+      in
+      let repos, listed = scan [ "~/work" ] in
+      Alcotest.(check (list string))
+        "only the repository under the chosen folder" [ chosen ] repos;
+      Alcotest.(check (list string)) "the Desktop is never listed" [] listed;
+      Alcotest.(check (list string))
+        "nothing of the Desktop project is indexed" [ chosen ]
+        (Hashtbl.fold
+           (fun _ (_, paths) acc -> paths @ acc)
+           (Store.Scan_index.projects n.log)
+           []);
+      let repos, _ = scan [ "~/work"; "~/Desktop/projects" ] in
+      Alcotest.(check int)
+        "a folder the member chooses is read" 2 (List.length repos))
+
 (* A session run in a project that holds financial records adds nothing when the projects directory
    is read, whichever reading of its name, or the directory its transcript was started in, can be
    seen to hold them: itself, its enclosing repository, or a folder enclosing it below home. A
@@ -5437,18 +5498,26 @@ let project_dirs () =
   let repo = Filename.concat home "Claude/Projects/fetcher" in
   Node.mkdir_p (Filename.concat repo ".git");
   Node.mkdir_p (Filename.concat home "Claude/Projects/notes");
+  (* A repository a session worked in outside the chosen folders is never proposed (DIG-513). *)
+  Node.mkdir_p (Filename.concat home "Desktop/projects/athena/.git");
   List.iter
     (fun p ->
       Node.mkdir_p
         (Filename.concat home
            (".claude/projects/" ^ Sources.encode_segment ("/" ^ p))))
-    [ "Claude/Projects/fetcher"; "Claude/Projects/notes"; "Claude/gone" ];
+    [
+      "Claude/Projects/fetcher";
+      "Claude/Projects/notes";
+      "Claude/gone";
+      "Desktop/projects/athena";
+    ];
+  let reads = Sources.session_filter [ "/Claude" ] in
   let saved = Sys.getenv_opt "HOME" in
   Unix.putenv "HOME" home;
   let repos =
     Fun.protect
       ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
-      (Sources.discover_repos ~root:home)
+      (Sources.discover_repos ~root:home ~reads)
   in
   Alcotest.(check (list string))
     "a repository Claude Code worked in, outside the usual folders" [ repo ]
@@ -5469,7 +5538,7 @@ let project_dirs () =
   let repos =
     Fun.protect
       ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
-      (Sources.discover_repos ~root:home)
+      (Sources.discover_repos ~root:home ~reads)
   in
   Alcotest.(check (list string))
     "books are never proposed; software that handles money is"
@@ -5518,7 +5587,7 @@ let many_repos () =
   let repos =
     Fun.protect
       ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
-      Sources.discover_repos
+      (Sources.discover_repos ~reads:(fun _ -> true))
   in
   Alcotest.(check int) "every repository is kept" 47 (List.length repos);
   Alcotest.(check (option string))
@@ -6488,6 +6557,8 @@ let machine_scan_incremental () =
     ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
     (fun () ->
       let log = fresh_log () in
+      (* The project's name is read from the decoding's root, so the chosen folder is too. *)
+      Store.set_session_folders log [ "/code" ];
       let pass () =
         Option.get (Machine_scan.scan_stats ~root:home ~now:1000. log)
       in
@@ -16285,6 +16356,8 @@ let () =
           Alcotest.test_case "session titles" `Quick session_titles;
           Alcotest.test_case "session folders chosen" `Quick
             (cleaned session_folders_chosen);
+          Alcotest.test_case "discovery reads the chosen folders" `Quick
+            (cleaned discovery_chosen_folders);
           Alcotest.test_case "transcript head bounded" `Quick
             transcript_head_bounded;
           Alcotest.test_case "machine scan stored" `Quick machine_scan_stored;
