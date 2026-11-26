@@ -3380,6 +3380,7 @@ module Inbox = struct
             settle_from_decisions c r)
           (I.by_hash l ~now:c.now h));
     I.clock_close l ~now:c.now;
+    I.age_out l ~now:c.now;
     if change <> Fold_keys.Unchanged then Log.set_config l k_fold fold_state
 
   let index_now c =
@@ -3482,6 +3483,7 @@ module Inbox = struct
         | None when closed c r -> Some "closed"
         | None -> None)
     @ opt "archived_at" r.archived_at
+    @ opt "archived_why" r.archived_why
     @ (match waiting c r with Some j -> [ ("waiting", j) ] | None -> [])
     @ if own c r then [] else opt "reviewed_at" r.reviewed_at
 

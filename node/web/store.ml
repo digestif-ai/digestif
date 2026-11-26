@@ -2805,7 +2805,8 @@ CREATE TABLE IF NOT EXISTS ui_items (
   quote TEXT,
   link TEXT,
   archived_at TEXT,
-  clock_due INTEGER NOT NULL DEFAULT 0
+  clock_due INTEGER NOT NULL DEFAULT 0,
+  archived_why TEXT
 );
 CREATE INDEX IF NOT EXISTS ui_items_created ON ui_items (created_at, id);
 CREATE INDEX IF NOT EXISTS ui_items_about ON ui_items (about);
@@ -2857,7 +2858,9 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   (* ISS-85004: a credit's [adopted]. ISS-85463: the [quote] of the message an item came from.
      DIG-124: [link], where a work notice's or a credit's idea was filed.
      ISS-88476: [archived_at], when the member archived it out of their Inbox, and [clock_due], set
-     on the member's own question or choice until the clock closing it has made it New again. *)
+     on the member's own question or choice until the clock closing it has made it New again.
+     DIG-507: [archived_why], why the node archived it by itself (age_out); NULL when the member
+     did. *)
   let init (log : Log.t) =
     Log.check log.db (Sqlite3.exec log.db schema);
     add_columns log
@@ -2867,6 +2870,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         ("ui_items", "link", "TEXT");
         ("ui_items", "archived_at", "TEXT");
         ("ui_items", "clock_due", "INTEGER NOT NULL DEFAULT 0");
+        ("ui_items", "archived_why", "TEXT");
         ("ui_item_answers", "counts", "INTEGER");
         ("ui_item_picks", "counts", "INTEGER");
         ("ui_item_answers", "in_time", "INTEGER");
@@ -2957,6 +2961,9 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     reviewed_at : string option;
     review : string option;
     archived_at : string option;
+    archived_why : string option;
+        (** DIG-507: why the node archived it by itself; None when the member
+            did *)
     status : string;  (** at the time it was read *)
   }
 
@@ -2988,7 +2995,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     "id, hash, author, kind, subject, voice, to_circle, to_members, title, \
      detail, about, options, default_option, deadline_at, created_at, sent_at, \
      local, drafted_title, drafted_detail, read_at, done, closed, closes_unix, \
-     reviewed_at, review, adopted, quote, link, archived_at"
+     reviewed_at, review, adopted, quote, link, archived_at, archived_why"
 
   (* Every item a reader is shown, with its status, its rank (Draft and New first) and whether it is
      shut: closed by a close or a pick, or by the clock at [now]. *)
@@ -3032,6 +3039,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         quote;
         link;
         archived_at;
+        archived_why;
         status;
       |] ->
         Some
@@ -3075,6 +3083,10 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
             reviewed_at = Log.text_opt reviewed_at;
             review = Log.text_opt review;
             archived_at = Log.text_opt archived_at;
+            archived_why =
+              (match Log.text_opt archived_at with
+              | Some _ -> Log.text_opt archived_why
+              | None -> None);
             status = Log.text status;
           }
     | _ -> None
@@ -3167,8 +3179,11 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     Log.exec log
       "UPDATE ui_items SET title = ?, detail = ?, read_at = CASE WHEN ? THEN \
        NULL ELSE read_at END, archived_at = CASE WHEN ? THEN NULL ELSE \
-       archived_at END WHERE id = ? AND local = 1 AND voice = 'node'"
-      [ Log.s title; Log.s detail; bool fresh; bool fresh; Log.s id ]
+       archived_at END, archived_why = CASE WHEN ? THEN NULL ELSE archived_why \
+       END WHERE id = ? AND local = 1 AND voice = 'node'"
+      [
+        Log.s title; Log.s detail; bool fresh; bool fresh; bool fresh; Log.s id;
+      ]
 
   let discard (log : Log.t) id =
     Log.exec log "DELETE FROM ui_items WHERE id = ? AND sent_at IS NULL"
@@ -3206,12 +3221,58 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      it brings it back (freshen). *)
   let archive (log : Log.t) id ~at =
     Log.exec log
-      "UPDATE ui_items SET archived_at = COALESCE(archived_at, ?) WHERE id = ?"
+      "UPDATE ui_items SET archived_why = CASE WHEN archived_at IS NULL THEN \
+       NULL ELSE archived_why END, archived_at = COALESCE(archived_at, ?) \
+       WHERE id = ?"
       [ Log.s at; Log.s id ]
 
   let unarchive (log : Log.t) id =
-    Log.exec log "UPDATE ui_items SET archived_at = NULL WHERE id = ?"
+    Log.exec log
+      "UPDATE ui_items SET archived_at = NULL, archived_why = NULL WHERE id = ?"
       [ Log.s id ]
+
+  (* DIG-507: days a settled item stays in the Inbox with nothing new on it, and days a notice
+     nobody acts on stays there unchanged, before the node archives it by itself. *)
+  let settled_days = 7
+  let unchanged_days = 30
+
+  (* The newest answer or pick on the item being updated, else ''. *)
+  let last_follow_up =
+    "COALESCE((SELECT MAX(at) FROM (SELECT a.created_at AS at FROM \
+     ui_item_answers a WHERE a.item = ui_items.hash UNION ALL SELECT \
+     p.created_at FROM ui_item_picks p WHERE p.item = ui_items.hash)), '')"
+
+  (* DIG-507: the node archives by itself, at [now], every item the member has opened (never a
+     draft or a New one) that waits on nobody any more: [settled] once it has been settled, or shut
+     by the clock, for [settled_days] with no answer or pick since; [unchanged] once a notice from a
+     member or an agent, which nothing settles but the member, has had no answer for
+     [unchanged_days]. A notice from the node is settled by its own cause and never ages out
+     while that cause holds. New activity brings either back, as it brings back what the member
+     archived (freshen, revise, clock_close). *)
+  let age_out (log : Log.t) ~now =
+    let before days = Time_fmt.of_unix (now -. (float_of_int days *. 86400.)) in
+    let settled = before settled_days and unchanged = before unchanged_days in
+    let opened =
+      "archived_at IS NULL AND sent_at IS NOT NULL AND read_at IS NOT NULL AND \
+       fresh = 0 AND kind IS NOT NULL"
+    in
+    Log.exec log
+      ("UPDATE ui_items SET archived_at = ?1, archived_why = 'settled' WHERE "
+     ^ opened
+     ^ " AND ((done IS NOT NULL AND done_at <= ?2) OR (done IS NULL AND \
+        closes_unix IS NOT NULL AND closes_unix <= ?3)) AND " ^ last_follow_up
+     ^ " <= ?2")
+      [
+        Log.s (Time_fmt.of_unix now);
+        Log.s settled;
+        Sqlite3.Data.FLOAT (now -. (float_of_int settled_days *. 86400.));
+      ];
+    Log.exec log
+      ("UPDATE ui_items SET archived_at = ?1, archived_why = 'unchanged' WHERE "
+     ^ opened
+     ^ " AND kind = 'notice' AND voice IS NOT 'node' AND done IS NULL AND \
+        created_at <= ?2 AND " ^ last_follow_up ^ " <= ?2")
+      [ Log.s (Time_fmt.of_unix now); Log.s unchanged ]
 
   (* Mark unread: New until the member opens it again. *)
   let unread (log : Log.t) id =
@@ -3228,11 +3289,11 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     Option.iter
       (fun m ->
         Log.exec log
-          "UPDATE ui_items SET fresh = 1, archived_at = NULL WHERE hash = ? \
-           AND voice <> 'node' AND (author = ? OR (to_circle = 0 AND EXISTS \
-           (SELECT 1 FROM json_each(to_members) WHERE value = ?)) OR EXISTS \
-           (SELECT 1 FROM ui_item_answers a WHERE a.item = ui_items.hash AND \
-           a.author = ?))"
+          "UPDATE ui_items SET fresh = 1, archived_at = NULL, archived_why = \
+           NULL WHERE hash = ? AND voice <> 'node' AND (author = ? OR \
+           (to_circle = 0 AND EXISTS (SELECT 1 FROM json_each(to_members) \
+           WHERE value = ?)) OR EXISTS (SELECT 1 FROM ui_item_answers a WHERE \
+           a.item = ui_items.hash AND a.author = ?))"
           [ Log.s hash; Log.s m; Log.s m; Log.s m ])
       me
 
@@ -3240,9 +3301,9 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      is new activity: New again and out of the Archive, once. [sent] marks one due. *)
   let clock_close (log : Log.t) ~now =
     Log.exec log
-      "UPDATE ui_items SET fresh = 1, archived_at = NULL, clock_due = 0 WHERE \
-       clock_due = 1 AND closed = 0 AND closes_unix IS NOT NULL AND \
-       closes_unix <= ?"
+      "UPDATE ui_items SET fresh = 1, archived_at = NULL, archived_why = NULL, \
+       clock_due = 0 WHERE clock_due = 1 AND closed = 0 AND closes_unix IS NOT \
+       NULL AND closes_unix <= ?"
       [ Sqlite3.Data.FLOAT now ]
 
   let due (log : Log.t) id =

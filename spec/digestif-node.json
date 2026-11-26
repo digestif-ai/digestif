@@ -654,7 +654,7 @@
       ]
     },
     "item_status": {
-      "description": "Where an item stands for the member reading it; each reader's is their own and never travels. Settling an item never takes it out of the Inbox; Archive does (archived_at).",
+      "description": "Where an item stands for the member reading it; each reader's is their own and never travels. Settling an item never takes it out of the Inbox; Archive does (archived_at), the member's or, a week after it settled, the node's (archived_why).",
       "values": [
         {
           "name": "draft",
@@ -687,7 +687,7 @@
         },
         {
           "name": "archived",
-          "description": "Archived: what the member archived out of their Inbox. New activity brings it back."
+          "description": "Archived: what the member archived out of their Inbox, and what the node archived once it waited on nobody (archived_why). New activity brings it back."
         },
         {
           "name": "done",
@@ -695,8 +695,21 @@
         }
       ]
     },
+    "item_archived_why": {
+      "description": "Why the node archived an item by itself, once it waited on nobody (DIG-507). Never a draft, a New item or one still open, and never a notice from the node while its cause holds. New activity brings it back, as it brings back what the member archived.",
+      "values": [
+        {
+          "name": "settled",
+          "description": "Settled, or closed by the clock, a week before with no answer or pick since."
+        },
+        {
+          "name": "unchanged",
+          "description": "A notice from a member or an agent, which only the member settles, with no answer for 30 days."
+        }
+      ]
+    },
     "item_done": {
-      "description": "Why an item is settled for the member: its outcome. A settled item stays in the Inbox until the member archives it.",
+      "description": "Why an item is settled for the member: its outcome. A settled item stays in the Inbox until the member archives it, or the node does a week later (item_archived_why).",
       "values": [
         {
           "name": "answered"
@@ -2867,7 +2880,13 @@
           "name": "archived_at",
           "type": "date-time-iso8601",
           "required": false,
-          "description": "When the member archived it out of their Inbox. New activity clears it."
+          "description": "When it was archived out of the member's Inbox, by the member or by the node (archived_why). New activity clears it."
+        },
+        {
+          "name": "archived_why",
+          "type": "item_archived_why",
+          "required": false,
+          "description": "Why the node archived it by itself (DIG-507). Absent when the member archived it, and whenever archived_at is."
         },
         {
           "name": "waiting",
@@ -3000,7 +3019,13 @@
           "name": "archived_at",
           "type": "date-time-iso8601",
           "required": false,
-          "description": "When the member archived it out of their Inbox. New activity clears it."
+          "description": "When it was archived out of the member's Inbox, by the member or by the node (archived_why). New activity clears it."
+        },
+        {
+          "name": "archived_why",
+          "type": "item_archived_why",
+          "required": false,
+          "description": "Why the node archived it by itself (DIG-507). Absent when the member archived it, and whenever archived_at is."
         },
         {
           "name": "waiting",
