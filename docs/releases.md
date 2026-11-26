@@ -548,7 +548,9 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
 1. Push the tag. `ci/release.sh build` tags `origin/main` with the next patch of the newest release
    tag and pushes it; a minor or major version is a person's tag (`git tag v0.2.0 <commit> && git
    push origin v0.2.0`), which `ci/release.sh build --version 0.2.0` then builds without minting
-   anything. Pushing the tag is the whole dispatch: the Release workflow runs on every pushed
+   anything. A tag push that answers an error is read back from origin first: origin holding the tag
+   on the commit is the push made (a code host can create a tag and still answer a 500), and
+   anything else fails the run and deletes the local tag. Pushing the tag is the whole dispatch: the Release workflow runs on every pushed
    `v*` tag, and refuses one that is not `v<MAJOR.MINOR.PATCH>`, one on a commit that is not on
    `main`, and one whose GitHub release is already published.
 2. The run builds each platform with `ci/release-artifact.sh` (on Linux inside
@@ -1177,7 +1179,8 @@ signer set with the same tools, and deployed by each relay's operator's node (DE
 Platform creates a rollout for each commit on `main`, and after preflight that rollout's job tags it
 and asks `ci/release.sh relay tag --sha <commit>` beside `ci/release.sh changed`: when
 `ci/release.sh relay changed` answers `changed` and the order allows it (Order between relay
-releases) it tags the next relay patch and pushes it, and a minor or major relay version is a
+releases) it tags the next relay patch and pushes it, reading a push that answers an error back from
+origin as a node tag's is, and a minor or major relay version is a
 person's tag. `ci/relay-release-paths`, in `ci/release-paths`'s
 format, names what a bundle is built from: `relay/src`, `relay/migrations`, the relay's package
 files, the top level of `relay/wrangler.jsonc` (a change inside its `env` object, one deployment's
@@ -1474,6 +1477,13 @@ A step failing before the deploy changes nothing the relay serves. A download, a
 do not match, or Cloudflare not answering or answering 5xx is kept as pending in
 `relay-deploy.json` with its step and cause, and tried again on the update pass's backoff (ten
 minutes, doubling, at most a day).
+
+A write that comes back with a 5xx, a body that is not Cloudflare's, or no answer at all may still
+have been made, so the pass reads it back before it counts as failed, and what the read says is the
+outcome: a deployment (the release's or the rollback's) is made when the version it names is the one
+serving, a version upload when a version carries the release's tag and the bundle's sha256, and a
+script upload when that version is the one serving. A read that fails, or finds the write not
+made, leaves the failure as it was. A refusal Cloudflare means is never read back.
 
 What Cloudflare refuses is read from its error code, never from the HTTP status alone:
 

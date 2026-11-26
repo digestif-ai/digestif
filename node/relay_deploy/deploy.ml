@@ -32,7 +32,8 @@
    line saying what Cloudflare answered. A migration D1 refuses, and a
    signed bundle that cannot be deployed as it stands, are refused for good: a later pass would
    meet the same bytes. Every step reads where the relay is, so a pass interrupted by sleep resumes
-   there. *)
+   there, and a write answered with a 5xx or not at all is read back before it counts as failed
+   ([read_back]). *)
 
 module Version = Digestif_update.Version
 module Release = Digestif_update.Release
@@ -582,27 +583,61 @@ let pending_migrations env (r : Operate.record) ~token (b : bundle) =
 
 (* 3. Upload: the version tagged with this release and annotated with its bundle's sha256, reused
    when Cloudflare already holds one. *)
+(* A write Cloudflare may have made though its answer says nothing of it: a 5xx, a body that is not
+   Cloudflare's, or no answer at all ([Cf.Failed]) can come back for a write Cloudflare carried out,
+   so [made ()] reads the write back and what it reads is the outcome. A refusal Cloudflare means
+   (any other error) is the outcome as it stands, and a read that fails leaves the failure. DIG-508 *)
+let read_back write ~made =
+  match write () with
+  | Error (Cf.Failed _) as failed -> (
+      match made () with Some v -> Ok v | None -> failed)
+  | r -> r
+
+(* The id of the Worker version tagged with [m]'s release and annotated with its bundle's sha256,
+   which an upload of [m] makes. *)
+let uploaded (m : Release.relay_manifest) (versions : Cf.version list) =
+  List.find_map
+    (fun (v : Cf.version) ->
+      if
+        v.tag = Some (tag m.relay_version)
+        && v.message = Some m.bundle.bundle_sha256
+      then Some v.id
+      else None)
+    versions
+
+(* The version serving now, when the read answers. *)
+let serving_now env (r : Operate.record) ~token =
+  Result.to_option
+    (Cf.serving_version env.cloudflare ~token ~account_id:r.account_id
+       ~worker:r.worker)
+
+(* 4's write: [version_id] deployed at 100%, read back as the version serving. *)
+let deploy_version env (r : Operate.record) ~token ~version_id =
+  read_back
+    (fun () ->
+      Cf.deploy env.cloudflare ~token ~account_id:r.account_id ~worker:r.worker
+        ~version_id)
+    ~made:(fun () ->
+      if serving_now env r ~token = Some version_id then Some () else None)
+
 let upload env (r : Operate.record) ~token (m : Release.relay_manifest) ~root
     (b : bundle) ~scratch =
-  let* existing =
-    cf "upload"
-      (Cf.versions env.cloudflare ~token ~account_id:r.account_id
-         ~worker:r.worker)
+  let versions () =
+    Cf.versions env.cloudflare ~token ~account_id:r.account_id ~worker:r.worker
   in
-  match
-    List.find_opt
-      (fun (v : Cf.version) ->
-        v.tag = Some (tag m.relay_version)
-        && v.message = Some m.bundle.bundle_sha256)
-      existing
-  with
-  | Some v -> Ok v.id
+  let* existing = cf "upload" (versions ()) in
+  match uploaded m existing with
+  | Some id -> Ok id
   | None ->
       let* jwt = upload_assets env r ~token ~root ~scratch in
       cf "upload"
-        (Cf.upload_version env.form ~token ~account_id:r.account_id
-           ~worker:r.worker
-           (module_parts ~root b ~scratch (metadata m b ~jwt ())))
+        (read_back
+           (fun () ->
+             Cf.upload_version env.form ~token ~account_id:r.account_id
+               ~worker:r.worker
+               (module_parts ~root b ~scratch (metadata m b ~jwt ())))
+           ~made:(fun () ->
+             Option.bind (Result.to_option (versions ())) (uploaded m)))
 
 (* GET /app/ on the relay's base url answering 200: the phone app serves. *)
 let app_serves env ~url =
@@ -708,10 +743,7 @@ let check env (n : Node.t) (r : Operate.record) ~token
         Option.value previous ~default:"the Worker it ran before relay releases"
       in
       let back =
-        match
-          Cf.deploy env.cloudflare ~token ~account_id:r.account_id
-            ~worker:r.worker ~version_id:r.rollback_version_id
-        with
+        match deploy_version env r ~token ~version_id:r.rollback_version_id with
         | Error e ->
             Error ("Cloudflare did not deploy it: " ^ Cf.error_to_string e)
         | Ok () -> healthy env (fun () -> answers_back env ~url ~want:previous)
@@ -770,11 +802,7 @@ let deploy_and_check env (n : Node.t) (r : Operate.record) ~token
     else
       let r = { r with rollback_version_id = serving } in
       Operate.save n.dir r;
-      let* () =
-        cf "deploy"
-          (Cf.deploy env.cloudflare ~token ~account_id:r.account_id
-             ~worker:r.worker ~version_id)
-      in
+      let* () = cf "deploy" (deploy_version env r ~token ~version_id) in
       Ok r
   in
   check env n r ~token m
@@ -794,9 +822,22 @@ let script_and_check env (n : Node.t) (r : Operate.record) ~token
   Operate.save n.dir r;
   let* () =
     cf "deploy"
-      (Cf.upload_script env.form ~token ~account_id:r.account_id
-         ~worker:r.worker
-         (module_parts ~root b ~scratch (metadata m b ~jwt ~migrations ())))
+      (read_back
+         (fun () ->
+           Cf.upload_script env.form ~token ~account_id:r.account_id
+             ~worker:r.worker
+             (module_parts ~root b ~scratch (metadata m b ~jwt ~migrations ())))
+         ~made:(fun () ->
+           (* A script upload serves its version at once: made when the version serving is the
+              one it uploads. *)
+           match
+             Cf.versions env.cloudflare ~token ~account_id:r.account_id
+               ~worker:r.worker
+           with
+           | Ok vs when Option.is_some (uploaded m vs) ->
+               if serving_now env r ~token = uploaded m vs then Some ()
+               else None
+           | _ -> None))
   in
   check env n r ~token m
 

@@ -120,6 +120,9 @@ type world = {
   mutable metadata : Yojson.Safe.t option;
   mutable served : (string * string option) list;
   mutable fail : string option;  (** a path prefix answering [fail_status] *)
+  mutable lost : string option;
+      (** a path whose writes Cloudflare carries out and then answers 500, as an
+          answer lost on the way back *)
   mutable fail_status : int;
   mutable fail_code : int;
   mutable fail_message : string;
@@ -154,6 +157,7 @@ let world () =
     metadata = None;
     served = [ ("ver-now", Some "0.1.0"); ("ver-new", Some "0.2.0") ];
     fail = None;
+    lost = None;
     fail_status = 503;
     fail_code = 7500;
     fail_message = "no";
@@ -198,7 +202,20 @@ let refuse_token () = refuse ~code:10000 ~message:"Authentication error" 403
 let failing w = refuse ~code:w.fail_code ~message:w.fail_message w.fail_status
 let starts_with ~prefix s = String.starts_with ~prefix s
 
-let cloudflare w : Cf.transport =
+(* [w.lost]: the write [made] carried out, answered 500. *)
+let lost_answer w ~meth ~path made =
+  match w.lost with
+  | Some p when meth <> "GET" && path = p ->
+      ignore (made ());
+      refuse ~code:10013 ~message:"An unknown error has occurred" 500
+  | _ -> made ()
+
+let rec cloudflare w : Cf.transport =
+ fun ~meth ~path ~token ~body ->
+  lost_answer w ~meth ~path (fun () ->
+      cloudflare_made w ~meth ~path ~token ~body)
+
+and cloudflare_made w : Cf.transport =
  fun ~meth ~path ~token:t ~body ->
   if t <> token then refuse_token ()
   else
@@ -344,7 +361,11 @@ let annotation j k =
       | _ -> "")
   | _ -> ""
 
-let form w : Cf.form_transport =
+let rec form w : Cf.form_transport =
+ fun ~meth ~path ~token ~parts ->
+  lost_answer w ~meth ~path (fun () -> form_made w ~meth ~path ~token ~parts)
+
+and form_made w : Cf.form_transport =
  fun ~meth ~path ~token:t ~parts ->
   match w.fail with
   | Some p when starts_with ~prefix:p path -> failing w
@@ -1019,6 +1040,70 @@ let uploads_the_script_for_a_new_migration_tag () =
   Alcotest.(check (option string))
     "records the version" (Some "0.2.0") r.reported_version
 
+(* DIG-508: a write Cloudflare carried out but answered 500 for is read back, and what the read says
+   is the outcome. *)
+let deployments = "/accounts/acct/workers/scripts/digestif-relay/deployments"
+
+let a_deploy_answered_500_that_serves_is_deployed () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.lost <- Some deployments;
+  (match pass w n bytes m with
+  | [ D.Deployed { version; _ } ] ->
+      Alcotest.(check string) "deployed" "0.2.0" (Version.to_string version)
+  | os -> fail_outcomes os);
+  Alcotest.(check (list string)) "deployed once" [ "ver-new" ] w.deployed;
+  let r = record n in
+  Alcotest.(check (option string))
+    "records the version" (Some "0.2.0") r.reported_version;
+  Alcotest.(check bool) "nothing pending" true (r.pending = None)
+
+let a_deploy_answered_500_that_does_not_serve_is_pending () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.fail <- Some deployments;
+  (match pass w n bytes m with [ D.Pending _ ] -> () | os -> fail_outcomes os);
+  Alcotest.(check string) "still serving" "ver-now" w.serving;
+  Alcotest.(check bool)
+    "pending at the deploy" true
+    (match (record n).pending with
+    | Some p -> p.step = "deploy"
+    | None -> false)
+
+let an_upload_answered_500_that_was_taken_is_used () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.lost <- Some "/accounts/acct/workers/scripts/digestif-relay/versions";
+  (match pass w n bytes m with
+  | [ D.Deployed _ ] -> ()
+  | os -> fail_outcomes os);
+  Alcotest.(check int) "uploaded once" 1 w.uploads;
+  Alcotest.(check (list string)) "deployed it" [ "ver-new" ] w.deployed
+
+let a_rollback_answered_500_that_serves_is_rolled_back () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle "0.2.0" in
+  w.served <- [ ("ver-now", Some "0.1.0"); ("ver-new", None) ];
+  w.lost <- Some deployments;
+  (match pass w n bytes m with
+  | [ D.Rolled_back { to_; _ } ] -> Alcotest.(check string) "to" "0.1.0" to_
+  | os -> fail_outcomes os);
+  Alcotest.(check (list string))
+    "deployed, then rolled back" [ "ver-new"; "ver-now" ] w.deployed;
+  Alcotest.(check bool)
+    "no lead line" true
+    (not (List.exists (fun (x : O.note) -> x.lead) (record n).notes))
+
+let a_script_upload_answered_500_that_serves_is_deployed () =
+  let n = operator_node () and w = world () in
+  let m, bytes = bundle ~bundle_json:store_bundle_json "0.2.0" in
+  w.lost <- Some "/accounts/acct/workers/scripts/digestif-relay";
+  (match pass w n bytes m with
+  | [ D.Deployed _ ] -> ()
+  | os -> fail_outcomes os);
+  Alcotest.(check int) "one script upload" 1 w.scripts;
+  Alcotest.(check (option string)) "the tag applied" (Some "v1") w.migration_tag
+
 (* Once the Worker has applied the bundle's newest tag, a release is a version upload as any other,
    still binding the class. *)
 let uploads_a_version_once_the_tag_is_applied () =
@@ -1191,6 +1276,19 @@ let () =
           Alcotest.test_case "a failed migration is refused for good" `Quick
             a_failed_migration_is_refused_for_good;
           Alcotest.test_case "not due" `Quick not_due;
+          Alcotest.test_case "a deploy answered 500 that serves is deployed"
+            `Quick a_deploy_answered_500_that_serves_is_deployed;
+          Alcotest.test_case
+            "a deploy answered 500 that does not serve is pending" `Quick
+            a_deploy_answered_500_that_does_not_serve_is_pending;
+          Alcotest.test_case "an upload answered 500 that was taken is used"
+            `Quick an_upload_answered_500_that_was_taken_is_used;
+          Alcotest.test_case
+            "a rollback answered 500 that serves is rolled back" `Quick
+            a_rollback_answered_500_that_serves_is_rolled_back;
+          Alcotest.test_case
+            "a script upload answered 500 that serves is deployed" `Quick
+            a_script_upload_answered_500_that_serves_is_deployed;
           Alcotest.test_case "uploads the script for a new migration tag" `Quick
             uploads_the_script_for_a_new_migration_tag;
           Alcotest.test_case "uploads a version once the tag is applied" `Quick
