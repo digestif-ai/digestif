@@ -94,10 +94,11 @@ nightly run hands those over with the note, and approval moves each source there
   and one larger than `DIGESTIF_MAX_TRANSCRIPT_BYTES` (32 MB by default) is read from its tail: its
   last 32 MB, which hold the prompts nearest the window's end, and its first megabyte for the title.
   The run's log says what each such transcript left unread ("skipped 534 MB of session ...").
-- `git` sources: for every approved repository (`repositories`, every clone of one remote read
-  together and each commit once; without the list, each listed path is one), the default branch's
-  commits after the repository's start (the commits after its `sha` while that sha is on the
-  branch; a sha rebased away falls back to committer time), each as `commit: <repository> <sha>:
+- `git` sources: for every repository the node hands over (`repositories`: the approved ones, less
+  every clone the last machine scan judged to hold financial records and every repository whose
+  clones all are; the clones of one remote read together and each commit once; without the list,
+  each listed path is one), the default branch's commits after the repository's start (the
+  commits after its `sha` while that sha is on the branch; a sha rebased away falls back to committer time), each as `commit: <repository> <sha>:
   <the whole message>`, never a diff or a path. The default branch is what `origin/HEAD` names,
   else the checked-out branch. Only the owned `authors`' commits enter the record (every author's
   when the list is null); an author added after a repository has a point reads from the author's
