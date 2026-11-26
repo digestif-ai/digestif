@@ -7,7 +7,10 @@ import { parseTime, type Start } from "./record.ts";
 
 export type SourceKind = "claude_code" | "git" | "command";
 
-/** One approved repository of the git source: one remote, every clone of it. */
+/**
+ * One approved repository of the git source: one remote, the clones of it that
+ * are read (none the last machine scan judged to hold financial records).
+ */
 export interface Repository extends Start {
   id: string;
   name: string;

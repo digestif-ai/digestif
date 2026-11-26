@@ -1250,7 +1250,9 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
     Log.exec log "UPDATE ui_repositories SET status = ? WHERE id = ?"
       [ Log.s status; Log.s id ]
 
-  (* The clones the record reads: every clone of every approved repository. *)
+  (* Every clone of every approved repository; what the record reads is
+     [Sources.repositories], which drops the clones the scan judged to hold
+     financial records. *)
   let approved_paths (log : Log.t) =
     Log.rows log
       "SELECT paths FROM ui_repositories WHERE status = 'approved' ORDER BY id"
