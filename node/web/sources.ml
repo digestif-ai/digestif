@@ -637,7 +637,6 @@ let offered repos =
   in
   claude @ if repos = [] then [] else [ git_source repos ]
 
-
 (* DIG-512: the folders the Claude Code source reads. Claude Code files every session on the
    machine under ~/.claude/projects, wherever it started, so what a member shares is the folders
    they chose, never what the operating system happens to let the node open. A project is read
