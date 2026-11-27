@@ -62,7 +62,7 @@ let off_machine_title = function
 (* DIG-355: where on this machine a node's notice is acted on, and the one line that says what to do
    there. Both are fixed by the subject, so neither can name a repository, a path or a failure. *)
 let notice_page = function
-  | "repositories" -> Some "/settings/repositories/edit"
+  | "repositories" -> Some "/settings/repositories/edit?status=undecided"
   | "note_ready" | "pause_coming" -> Some "/feed"
   | "could_not_run" -> Some "/settings/note-log"
   | "invites_halted" -> Some "/members"

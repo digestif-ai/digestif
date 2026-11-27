@@ -1216,7 +1216,7 @@ let digest_lines () =
     (List.mem "1 new repository waits for you on your machine." (texts ()));
   Alcotest.(check (option string))
     "repositories point at the Repositories page"
-    (Some "/settings/repositories/edit")
+    (Some "/settings/repositories/edit?status=undecided")
     (Item.notice_page "repositories");
   Alcotest.(check bool)
     "named by no line" false
@@ -15779,7 +15779,7 @@ let inbox_node_notices_settle () =
   L.raise_notices n ~now:real;
   let first = raised "repositories" in
   Alcotest.(check string)
-    "repositories: page" "/settings/repositories/edit"
+    "repositories: page" "/settings/repositories/edit?status=undecided"
     (s "path" (item first));
   Alcotest.(check string)
     "repositories: what to do"
