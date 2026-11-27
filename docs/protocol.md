@@ -1021,8 +1021,8 @@ is Read and stays on the Inbox page only.
 - **A notice that needs the member says where and what** (DIG-355). Each of the node's notices that
   expects the member to act, `repositories`, `note_ready`, `could_not_run` and `pause_coming`, is an
   Inbox item whose `path` holds the page on the member's machine where they act (Settings,
-  Repositories for `repositories`, the Feed for a note, Settings, Nightly note log for a run that
-  could not) and whose `detail` holds one line of instruction (`Decide whether Digestif may read it.
+  Repositories under its Undecided view for `repositories`, the Feed for a note, Settings, Nightly
+  note log for a run that could not) and whose `detail` holds one line of instruction (`Decide whether Digestif may read it.
   Nothing is read until you say so.`). Both are fixed by the subject and never carry a name, a path or
   the kind of a failure, except that a `could_not_run`'s `detail` opens with why, and it is local for
   that (DIG-484). A notice raised before it carried a `detail` reads the line its subject fixes. Only the
@@ -1048,8 +1048,8 @@ is Read and stays on the Inbox page only.
   Kind: notice
   Title: 1 new repository waits for you on your machine.
   What the member does there: Decide whether Digestif may read it. Nothing is read until you say so.
-  Page: /settings/repositories/edit
-  Address, on the member's machine: http://127.0.0.1:7420/settings/repositories/edit
+  Page: /settings/repositories/edit?status=undecided
+  Address, on the member's machine: http://127.0.0.1:7420/settings/repositories/edit?status=undecided
   Do not open anything: you cannot. Say where the member should act and how, in a few short steps, or what you would do and what you need from them.
   ```
 
