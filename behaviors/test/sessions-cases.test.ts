@@ -3,7 +3,7 @@
 // asserted. node/web/test runs the same file against the node's reader, so a verdict changed in one
 // reader and not the corpus fails that reader's suite. Every path here is made up.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -37,7 +37,7 @@ const asRoot = process.getuid?.() === 0;
 
 // Every case is built under the system temp folder and decoded from the real root, so a sandbox that
 // hides a folder above the temp folder leaves no case a verdict of its own (DIG-833, DIG-835).
-const hiddenAboveTemp = hiddenAboveDir(realpathSync(tmpdir()));
+const hiddenAboveTemp = hiddenAboveDir(tmpdir());
 
 /** A project directory's name for a path, as Claude Code writes it. */
 const encoded = (p: string) => p.replace(/[^a-zA-Z0-9]/g, "-");
