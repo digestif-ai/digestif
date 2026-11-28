@@ -9054,6 +9054,83 @@ let note_questions_and_closer () =
     "every close kept" 3
     (List.length (list (member "closes" r)))
 
+(* DIG-837: a reply to the note a question came from is a candidate answer: listed for the closer
+   and on the question's page, marked with the note, on every open question of the note, and never
+   one of its answers, so the lapse, reopen and late-answer rules do not read it. *)
+let note_reply_is_a_candidate_answer () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let text =
+    "Worked on: the timer tests.\n\
+     Questions:\n\
+     - Has anyone used a fake clock for timer tests?\n\
+     - Which relay region answers fastest from Europe?"
+  in
+  let id = ok (Api.submit_note_text ~approve:true n text) in
+  Api.send_notes n;
+  let note_hash =
+    Option.get (Option.get (Store.Notes.find n.log id)).n_posted_hash
+  in
+  let qs =
+    Store.Items.page n.log ~now:(Unix.gettimeofday ()) ~kind:"question"
+      ~limit:200 ()
+    |> List.filter (fun (r : Store.Items.row) ->
+        r.item.subject = Some "note_question")
+  in
+  Alcotest.(check int) "both questions" 2 (List.length qs);
+  Alcotest.(check int)
+    "no reply, nothing to read" 0
+    (List.length (Api.Questions.open_answered (Api.ctx_of n)));
+  let reply =
+    peer_write n pia "summary"
+      (Content.summary_body ~text:"A fake clock, and eu-west."
+         ~voice:"person" ~reply_to:note_hash ())
+  in
+  let listed = Api.Questions.open_answered (Api.ctx_of n) in
+  Alcotest.(check int) "every open question of the note" 2 (List.length listed);
+  List.iter
+    (fun q ->
+      Alcotest.(check (list string))
+        "the reply, marked as one to the note" [ reply; note_hash ]
+        (match list (member "note_replies" q) with
+        | [ r ] -> [ s "hash" r; s "reply_to" r ]
+        | _ -> []);
+      Alcotest.(check int)
+        "and no item answer" 0
+        (List.length (list (member "answers" q))))
+    listed;
+  List.iter
+    (fun (r : Store.Items.row) ->
+      let _, page = call ("items/" ^ r.id) in
+      Alcotest.(check (list string))
+        "the page lists it beside its answers" [ reply; note_hash ]
+        (match list (member "note_replies" page) with
+        | [ x ] -> [ s "hash" x; s "reply_to" x ]
+        | _ -> []);
+      Alcotest.(check int)
+        "not among its answers" 0
+        (List.length (list (member "answers" page))))
+    qs;
+  (* The lapse, reopen and late-answer rules stay on item answers: the reply is no counted answer,
+     so the question still has none and its lapse is its own week. *)
+  List.iter
+    (fun (r : Store.Items.row) ->
+      Alcotest.(check int)
+        "no counted answer" 0
+        (List.length (Api.Inbox.counted_answers (Api.ctx_of n) r));
+      Alcotest.(check bool)
+        "its lapse is still its own week" true
+        (Api.Inbox.answers_until (Api.ctx_of n) r
+        = Some (Api.unix r.created_at +. Item.question_lapse)))
+    qs;
+  (* It is a candidate only: a close cannot name it. *)
+  let qid = (List.hd qs).id in
+  Alcotest.(check bool)
+    "a close cannot name it" true
+    (Result.is_error (Api.Questions.close (Api.ctx_of n) qid ~answer:reply))
+
 (* ISS-83154: the Inbox agent answers a note as well as a question: within the brief, a reply in
    the circle in the agent's voice; else a draft reply the member reads on the work notice about the
    note and on the note, and sends as their own. The member asks for one on demand, and a read run
@@ -16296,6 +16373,8 @@ let () =
             note_questions_parsed;
           Alcotest.test_case "the note's questions and their closer" `Quick
             note_questions_and_closer;
+          Alcotest.test_case "a reply to a note is a candidate answer" `Quick
+            note_reply_is_a_candidate_answer;
           Alcotest.test_case "the Inbox: the node's items and the digest" `Quick
             inbox_node_items_and_digest;
           Alcotest.test_case "the Inbox: the node's notices clear themselves"

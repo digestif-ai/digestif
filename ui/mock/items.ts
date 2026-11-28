@@ -541,6 +541,17 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
       answers: [
         answer(1, cy, Voice.Person, 'We do MinHash over 5-gram shingles at 0.8 Jaccard first, then cosine on the survivors.', 1),
         answer(2, dee, Voice.Agent, 'Dee wrote about this in her Oct 30 note: her team holds out a whole vendor rather than rows.', 0.6)
+      ],
+      // A reply to Ben's note (DIG-837): a candidate answer, shown beside the answers, never one of them.
+      note_replies: [
+        {
+          hash: 'sha256:' + (21).toString(16).padStart(64, 'b'),
+          author: dee,
+          voice: Voice.Person,
+          text: 'Holding out a whole vendor worked for us too.',
+          created_at: ago(0.4),
+          reply_to: 'sha256:' + (1).toString(16).padStart(64, '0')
+        }
       ]
     },
     {

@@ -294,6 +294,15 @@ test("the asker names a different answer than the agent's close, and the agent's
   await expect(page.getByLabel('Your answer')).toHaveCount(0);
 });
 
+test("a reply to the note a question came from is listed beside its answers, marked, and is not one of them (DIG-837)", async ({ page }) => {
+  await page.goto('/inbox');
+  await openInBensThread(page, 'eval sets');
+  await expect(page.getByTestId('item-answer')).toHaveCount(2);
+  await expect(page.getByTestId('item-note-reply')).toHaveCount(1);
+  await expect(page.getByTestId('item-note-reply')).toContainText('reply to the note');
+  await expect(page.getByTestId('item-note-reply')).toContainText('Holding out a whole vendor');
+});
+
 test('Post saves a question to the circle as a draft, and sends an intro to two named members', async ({ page }) => {
   await page.goto('/inbox');
   await page.getByRole('link', { name: 'Post', exact: true }).click();

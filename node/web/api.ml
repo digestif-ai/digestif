@@ -3622,6 +3622,36 @@ module Inbox = struct
         Option.bind (message_text c h) (fun text -> Source.find ~quote text)
     | _ -> None
 
+  (* DIG-837: the replies to the note a question came from, by someone other than the question's
+     author, that still hold their text, oldest first: a candidate answer to the question, kept
+     beside its answers and never one of them. Every question of the note has the same ones. A
+     reply to a note is a signed message with reply_to set to it, not an item answer, so the lapse,
+     reopen and late-answer rules (answers_until, counted_answers) never read it. *)
+  let note_replies c (r : I.row) : (string * msg) list =
+    match (r.item.kind, r.item.about) with
+    | "question", Some note ->
+        View.replies ~kinds:Content.feed_kinds (log c) c.fold note
+        |> List.map (of_row c)
+        |> List.filter (fun (m : msg) ->
+            m.author <> r.author && m.status <> "retracted"
+            && Time_fmt.is_z m.created_at
+            && (match m.text with Some t -> String.trim t <> "" | None -> false))
+        |> List.stable_sort (fun (a : msg) (b : msg) ->
+            compare (a.created_at, a.hash) (b.created_at, b.hash))
+        |> List.map (fun m -> (note, m))
+    | _ -> []
+
+  let note_reply_json c (note, (m : msg)) : Yojson.Safe.t =
+    `Assoc
+      [
+        ("hash", str m.hash);
+        ("author", member_ref c m.author);
+        ("voice", str m.voice);
+        ("text", str (Option.value m.text ~default:""));
+        ("created_at", str m.created_at);
+        ("reply_to", str note);
+      ]
+
   (* The approval an approval item carries (Approvals.of_item, ISS-87806), set once Approvals is
      defined below. *)
   let approval_of : (ctx -> I.row -> Yojson.Safe.t option) ref =
@@ -3652,6 +3682,8 @@ module Inbox = struct
                        ("created_at", str a.a_at);
                      ])
                  (answers c r)) );
+          ( "note_replies",
+            `List (List.map (note_reply_json c) (note_replies c r)) );
           ( "picks",
             `List
               (List.map
@@ -6273,9 +6305,10 @@ module Questions = struct
     r.item.kind = "question" && Inbox.own c r && r.hash <> None
     && (not (Inbox.closed c r))
     && (not (person_closed c r))
-    && List.exists
-         (fun (a : I.answer) -> a.a_author <> r.author && a.a_z)
-         (Inbox.answers c r)
+    && (List.exists
+          (fun (a : I.answer) -> a.a_author <> r.author && a.a_z)
+          (Inbox.answers c r)
+       || Inbox.note_replies c r <> [])
 
   let json c (r : I.row) : Yojson.Safe.t =
     `Assoc
@@ -6299,6 +6332,11 @@ module Questions = struct
                           ("created_at", str a.a_at);
                         ]))
                (Inbox.answers c r)) );
+        (* DIG-837: replies to the note it came from, candidates beside the answers, each marked
+           with the note it replies to. Not numbered with the answers, and never named by a close. *)
+        ( "note_replies",
+          `List
+            (List.map (Inbox.note_reply_json c) (Inbox.note_replies c r)) );
       ]
 
   (* Every question the closer reads, oldest first. *)
