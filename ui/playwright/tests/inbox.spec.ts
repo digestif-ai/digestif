@@ -40,27 +40,69 @@ test('the Inbox opens on everything not archived, unread rows bold, and the filt
   await page.getByText('Filters').click();
   const check = (group: string, name: string) =>
     page.getByRole('navigation', { name: group }).getByRole('link', { name: new RegExp(`^(Showing )?${name}$`) });
+  // The menu closes after each pick (DIG-827), so each pick opens it first.
+  const pick = async (group: string, name: string) => {
+    if ((await page.locator('details[open]').count()) === 0) await page.getByText('Filters').click();
+    await check(group, name).click();
+  };
   await expect(check('Filter by view', 'Inbox')).toHaveAttribute('aria-current', 'true');
-  await check('Filter by view', 'Archived').click();
+  await pick('Filter by view', 'Archived');
   await expect(page).toHaveURL(/\/inbox\?state=archived$/);
   await expect(row(page, 'batch sends')).toBeVisible();
   await expect(row(page, 'nightly writer')).toHaveCount(0);
-  await check('Filter by view', 'Waiting on you').click();
+  await pick('Filter by view', 'Waiting on you');
   await expect(page).toHaveURL(/\/inbox\?state=you$/);
   await expect(row(page, 'eval sets')).toBeVisible();
   await expect(row(page, 'nightly writer')).toHaveCount(0);
   await expect(page.getByRole('navigation', { name: 'Filter by kind' })).toHaveCount(0);
   const voices = () => rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-voice')));
-  await check('Filter by who wrote it', 'From people').click();
+  await pick('Filter by who wrote it', 'From people');
   await expect(page).toHaveURL(/state=you&from=people$/);
   await expect(rows.first()).toBeVisible();
   expect(new Set(await voices())).toEqual(new Set(['person']));
-  await check('Filter by who wrote it', 'From agents').click();
+  await pick('Filter by who wrote it', 'From agents');
   await expect(page).toHaveURL(/state=you&from=agents$/);
   await expect.poll(async () => (await voices()).every((v) => v === 'agent')).toBe(true);
   // Picking the From that is on turns it off.
-  await check('Filter by who wrote it', 'From agents').click();
+  await pick('Filter by who wrote it', 'From agents');
   await expect(page).toHaveURL(/\/inbox\?state=you$/);
+});
+
+test('the Filters menu closes after a pick, a click outside and Escape, and the button still toggles it (DIG-827)', async ({ page }) => {
+  await page.goto('/inbox');
+  const button = page.getByText('Filters');
+  const views = page.getByRole('navigation', { name: 'Filter by view' });
+  await button.click();
+  await expect(views).toBeVisible();
+  await views.getByRole('link', { name: 'Waiting on you' }).click();
+  await expect(page).toHaveURL(/\/inbox\?state=you$/);
+  await expect(views).toBeHidden();
+
+  await button.click();
+  await expect(views).toBeVisible();
+  // A press on the page's own margin: no link, so only the outside handler can close the menu.
+  await page.locator('body').click({ position: { x: 2, y: 2 } });
+  await expect(views).toBeHidden();
+  await expect(page).toHaveURL(/\/inbox\?state=you$/);
+
+  // Focus is inside the menu when Escape is pressed, so the focus on the button is the handler's.
+  await button.click();
+  await expect(views).toBeVisible();
+  await views.getByRole('link', { name: 'Waiting on you' }).focus();
+  await page.keyboard.press('Escape');
+  await expect(views).toBeHidden();
+  await expect(button).toBeFocused();
+
+  // The button toggles by mouse and by keyboard.
+  await button.click();
+  await expect(views).toBeVisible();
+  await button.click();
+  await expect(views).toBeHidden();
+  await button.focus();
+  await page.keyboard.press('Enter');
+  await expect(views).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(views).toBeHidden();
 });
 
 test('More reads the next page through the same filters, and the page has no Newer or Older (DIG-474)', async ({ page, request }) => {
