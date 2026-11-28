@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { afterNavigate } from '$app/navigation';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -52,7 +53,30 @@
   );
   const filtered = $derived(data.from !== undefined || data.state !== undefined);
   const viewLabel = $derived(INBOX_VIEWS.find((x) => x.state === data.state)?.label ?? 'Inbox');
+
+  // The Filters menu is a <details>. Its links navigate client side and keep this page mounted, so it is
+  // closed by hand: after any navigation (a pick), on a press outside it, and on Escape, which puts focus
+  // back on the Filters button (DIG-827).
+  let menuOpen = $state(false);
+  let menu: HTMLDetailsElement | undefined = $state();
+  let button: HTMLElement | undefined = $state();
+
+  afterNavigate(() => {
+    menuOpen = false;
+  });
+
+  function outside(event: PointerEvent): void {
+    if (menuOpen && menu !== undefined && event.target instanceof Node && !menu.contains(event.target)) menuOpen = false;
+  }
+
+  function escape(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || !menuOpen) return;
+    menuOpen = false;
+    button?.focus();
+  }
 </script>
+
+<svelte:window onpointerdown={outside} onkeydown={escape} />
 
 {#snippet check(link: { label: string; on: boolean; href: string })}
   <a
@@ -66,8 +90,9 @@
 {/snippet}
 
 <div class="mb-3 flex items-center justify-between gap-3">
-  <details class="relative">
+  <details class="relative" bind:this={menu} bind:open={menuOpen}>
     <summary
+      bind:this={button}
       class="inline-flex min-h-11 cursor-pointer list-none items-center rounded-md border border-stone-300 bg-white px-3 text-sm dark:border-stone-700 dark:bg-stone-900"
       >Filters{filtered ? ' (on)' : ''}</summary
     >
