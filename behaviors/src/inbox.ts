@@ -28,7 +28,7 @@
 // is, with `adopted` saying how; the node sends it only once it saves the line (ISS-85004).
 
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runChecks, modelPiiCheck, modelRulesCheck, type ModelCheck } from "./checks.ts";
@@ -388,20 +388,37 @@ function alive(pid: number): boolean {
   }
 }
 
-/** How long a lock directory without an owner file is left before it is taken to be a holder that died between making it and writing it. */
+/** How long a lock directory without a readable owner is left before it is taken to be a holder that died while writing it. */
 const LOCK_UNOWNED_MS = 30 * 1000;
+/** How often a holder shows it is alive, by touching its lock; and how long without that a lock is taken to be left. */
+const LOCK_HEARTBEAT_MS = 10 * 1000;
+const LOCK_STALE_MS = 2 * 60 * 1000;
+/** The tokens of the locks this process holds now: an owner file with this pid and another token was left by an earlier run. */
+const heldHere = new Set<string>();
+
+/** Whether the owner `held` of a lock last touched at `touched` (ms) is gone, so the lock may be taken over. */
+function lockLeft(held: string | undefined, touched: number): boolean {
+  const [pidText, token] = (held ?? "").split(" ");
+  if (pidText === undefined || !/^[1-9]\d*$/.test(pidText) || token === undefined || token === "") return Date.now() - touched > LOCK_UNOWNED_MS;
+  const pid = Number(pidText);
+  if (pid === process.pid && !heldHere.has(token)) return true;
+  return !alive(pid) || Date.now() - touched > LOCK_STALE_MS;
+}
 
 /**
  * Runs `fn` holding the one lock of a state directory, which every filing (a read pass's and a
  * retry's) takes, so no two of them file at once (DIG-824). A lock directory is made atomically and
- * holds its holder's pid and a token. A lock is taken over only when its holder's process is gone,
- * never for being old, since a filing run has no time limit; the holder lets go of its own lock only.
+ * holds its holder's pid and a token; the holder touches it every few seconds while `fn` runs. A lock
+ * is taken over only when its holder is gone (its process is, or it is this process's and no longer
+ * held here, or it has not been touched for LOCK_STALE_MS), by renaming it away first so that two
+ * waiters never both remove it. The holder lets go of its own lock only.
  */
 export async function withFilingLock<T>(stateDir: string, fn: () => Promise<T>): Promise<T> {
   mkdirSync(stateDir, { recursive: true });
   const lock = join(stateDir, "filing.lock");
   const owner = join(lock, "owner");
-  const mine = `${process.pid} ${randomUUID()}`;
+  const token = randomUUID();
+  const mine = `${process.pid} ${token}`;
   for (;;) {
     try {
       mkdirSync(lock);
@@ -416,18 +433,46 @@ export async function withFilingLock<T>(stateDir: string, fn: () => Promise<T>):
         } catch {
           held = undefined;
         }
-        const pid = held === undefined ? NaN : Number(held.split(" ")[0]);
-        const dead = held === undefined ? Date.now() - statSync(lock).mtimeMs > LOCK_UNOWNED_MS : !alive(pid);
-        if (dead) rmSync(lock, { recursive: true, force: true });
+        if (lockLeft(held, statSync(lock).mtimeMs)) {
+          const aside = `${lock}.${randomUUID()}.stale`;
+          renameSync(lock, aside);
+          let still: string | undefined;
+          try {
+            still = readFileSync(join(aside, "owner"), "utf8");
+          } catch {
+            still = undefined;
+          }
+          if (still === held) rmSync(aside, { recursive: true, force: true });
+          else {
+            // Another waiter took it over meanwhile and this is its live lock: put it back.
+            try {
+              renameSync(aside, lock);
+            } catch {
+              rmSync(aside, { recursive: true, force: true });
+            }
+          }
+        }
       } catch {
         // gone already: take it on the next turn
       }
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   }
+  heldHere.add(token);
+  const beat = setInterval(() => {
+    try {
+      const now = new Date();
+      utimesSync(lock, now, now);
+    } catch {
+      // the lock is gone: nothing to keep alive
+    }
+  }, LOCK_HEARTBEAT_MS);
+  beat.unref();
   try {
     return await fn();
   } finally {
+    clearInterval(beat);
+    heldHere.delete(token);
     try {
       if (readFileSync(owner, "utf8") === mine) rmSync(lock, { recursive: true, force: true });
     } catch {
@@ -866,7 +911,8 @@ export async function retryFiling(m: BatchMessage, titles: string[], a: RetryArg
       const title = titles[i]!;
       let had: FiledEntry | undefined;
       try {
-        had = readFiledStrict(a.stateDir)[`${m.hash} ${i}`];
+        // Under the lock, so a read pass that is filing this key has finished and written it.
+        had = await withFilingLock(a.stateDir, async () => readFiledStrict(a.stateDir)[`${m.hash} ${i}`]);
       } catch {
         say(title, { error: LEDGER_UNREADABLE }, false);
         continue;

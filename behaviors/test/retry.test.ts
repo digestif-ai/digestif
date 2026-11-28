@@ -83,25 +83,76 @@ test("a ledger that cannot be read files nothing and is left as it was; so is a 
   assert.equal(readFileSync(join(dir, "failed.json"), "utf8"), "[1]");
 });
 
-test("a lock whose holder is alive is not displaced however old it is; one whose holder is gone is taken", async () => {
+const leave = (owner: string, ageMs = 0): string => {
   const lock = join(dir, "filing.lock");
   mkdirSync(lock);
-  writeFileSync(join(lock, "owner"), `${process.pid} live-token`);
-  const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  utimesSync(lock, old, old);
+  if (owner !== "") writeFileSync(join(lock, "owner"), owner);
+  const t = new Date(Date.now() - ageMs);
+  utimesSync(lock, t, t);
+  return lock;
+};
+
+test("a lock held by a live filing in this process is not displaced while it works", async () => {
+  let release = (): void => {};
+  const holder = withFilingLock(dir, () => new Promise<void>((r) => (release = r)));
   let got = false;
   const waiting = withFilingLock(dir, async () => {
     got = true;
   });
   await new Promise((r) => setTimeout(r, 150));
-  assert.equal(got, false, "a live holder keeps it");
+  assert.equal(got, false, "the holder keeps it");
+  release();
+  await holder;
+  await waiting;
+  assert.equal(got, true);
+  assert.equal(existsSync(join(dir, "filing.lock")), false, "released");
+});
+
+test("a lock left by a run that died is taken: its pid gone, this pid with a token not held here, a stale touch, or no readable owner", async () => {
+  const cases: [string, number][] = [
+    ["2147483646 dead-token", 0], // pid gone
+    [`${process.pid} other-token`, 1000], // an earlier run's, whose pid this process now has
+    [`${process.ppid} live-token`, 3 * 60 * 60 * 1000], // a live pid that reused the number, not touched for hours
+    ["", 60 * 1000], // no owner file
+    ["not-a-pid x", 60 * 1000], // garbled owner
+    ["0 ", 60 * 1000], // pid 0 is no run
+  ];
+  for (const [owner, age] of cases) {
+    const lock = join(dir, "filing.lock");
+    leave(owner, age);
+    let got = false;
+    await withFilingLock(dir, async () => {
+      got = true;
+    });
+    assert.equal(got, true, `taken over: ${JSON.stringify(owner)}`);
+    assert.equal(existsSync(lock), false);
+  }
+});
+
+test("a lock whose owner is another live run, touched lately, is not taken", async () => {
+  const lock = leave(`${process.ppid} live-token`, 1000);
+  let got = false;
+  const waiting = withFilingLock(dir, async () => {
+    got = true;
+  });
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(got, false);
   rmSync(lock, { recursive: true });
   await waiting;
   assert.equal(got, true);
-  mkdirSync(lock);
-  writeFileSync(join(lock, "owner"), `2147483646 dead-token`);
-  await withFilingLock(dir, async () => {});
-  assert.equal(existsSync(lock), false, "released");
+});
+
+test("a retry's line for an idea with no kept entry waits for a read pass filing it and says where it went", async () => {
+  await readPass(base(filer({})), [idea("One")]); // One is kept as failed; Two has no kept entry
+  assert.deepEqual(Object.keys(readFailed(dir)), ["sha256:1 0"]);
+  calls = [];
+  const slow = filer({ One: { link: A }, Two: { link: B } }, 60);
+  const pass = readPass(base(slow), [idea("One"), idea("Two")]);
+  await new Promise((r) => setTimeout(r, 15));
+  const r = await retry(slow, ["One", "Two"]);
+  assert.equal(await pass, 2);
+  assert.deepEqual(calls, ["One", "Two"], "one fileOne call each");
+  assert.deepEqual(r.lines, [`Already filed One: ${A}`, `Already filed Two: ${B}`], "not 'could not be matched'");
 });
 
 test("a retry that fails again keeps the idea and says Could not file with the reason; an existing answer is Already filed", async () => {
