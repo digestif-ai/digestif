@@ -9113,6 +9113,18 @@ let note_reply_is_a_candidate_answer () =
         "not among its answers" 0
         (List.length (list (member "answers" page))))
     qs;
+  (* The lapse, reopen and late-answer rules stay on item answers: the reply is no counted answer,
+     so the question still has none and its lapse is its own week. *)
+  List.iter
+    (fun (r : Store.Items.row) ->
+      Alcotest.(check int)
+        "no counted answer" 0
+        (List.length (Api.Inbox.counted_answers (Api.ctx_of n) r));
+      Alcotest.(check bool)
+        "its lapse is still its own week" true
+        (Api.Inbox.answers_until (Api.ctx_of n) r
+        = Some (Api.unix r.created_at +. Item.question_lapse)))
+    qs;
   (* It is a candidate only: a close cannot name it. *)
   let qid = (List.hd qs).id in
   Alcotest.(check bool)

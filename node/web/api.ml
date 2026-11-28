@@ -3634,6 +3634,7 @@ module Inbox = struct
         |> List.map (of_row c)
         |> List.filter (fun (m : msg) ->
             m.author <> r.author && m.status <> "retracted"
+            && Time_fmt.is_z m.created_at
             && (match m.text with Some t -> String.trim t <> "" | None -> false))
         |> List.stable_sort (fun (a : msg) (b : msg) ->
             compare (a.created_at, a.hash) (b.created_at, b.hash))
@@ -6307,9 +6308,7 @@ module Questions = struct
     && (List.exists
           (fun (a : I.answer) -> a.a_author <> r.author && a.a_z)
           (Inbox.answers c r)
-       || List.exists
-            (fun (_, (m : msg)) -> Time_fmt.is_z m.created_at)
-            (Inbox.note_replies c r))
+       || Inbox.note_replies c r <> [])
 
   let json c (r : I.row) : Yojson.Safe.t =
     `Assoc
@@ -6337,12 +6336,7 @@ module Questions = struct
            with the note it replies to. Not numbered with the answers, and never named by a close. *)
         ( "note_replies",
           `List
-            (List.filter_map
-               (fun ((_, (m : msg)) as nr) ->
-                 if Time_fmt.is_z m.created_at then
-                   Some (Inbox.note_reply_json c nr)
-                 else None)
-               (Inbox.note_replies c r)) );
+            (List.map (Inbox.note_reply_json c) (Inbox.note_replies c r)) );
       ]
 
   (* Every question the closer reads, oldest first. *)

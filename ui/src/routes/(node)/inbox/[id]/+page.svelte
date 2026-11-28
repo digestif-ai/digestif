@@ -444,6 +444,24 @@
   {#if mode === 'name'}
     <div class="mt-2"><Button disabled={submission.busy()} onclick={() => (mode = 'view')}>Cancel</Button></div>
   {/if}
+  {#if (item.note_replies ?? []).length > 0}
+    <h2 class="dg-label mt-6 mb-2">Replies to the note · {(item.note_replies ?? []).length}</h2>
+    <ul class="dg-card dg-rows" aria-label="Replies to the note">
+      {#each item.note_replies ?? [] as r (r.hash)}
+        {@const who = answerer(r, self)}
+        <li class="px-4 py-3" data-testid="item-note-reply">
+          <p class="dg-muted mb-1 flex flex-wrap items-center gap-2 text-xs">
+            <span class="font-medium text-stone-900 dark:text-stone-100"
+              >{#if who.agent}<AgentName author={r.author} {self} />{:else}{who.name}{/if}</span
+            >
+            <span class="rounded border border-stone-200 px-1 dark:border-stone-700">reply to the note</span>
+            <span>{relativeTime(r.created_at)}</span>
+          </p>
+          <p class="text-sm break-words whitespace-pre-wrap {who.agent ? 'dg-agent' : ''}"><ReviewText review={r.text} /></p>
+        </li>
+      {/each}
+    </ul>
+  {/if}
 {/if}
 
 {#if item.review}
