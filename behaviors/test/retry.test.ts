@@ -1,7 +1,7 @@
 // A "Could not file" notice's retry (DIG-824): failed ideas are kept, a retry files exactly them,
 // and no idea is filed twice, whether the retry is pressed twice or races a read pass.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -64,8 +64,44 @@ test("a retry files the failed idea, not the filed one, and writes one line each
   calls = [];
   const r = await retry(filer({ Two: { link: B } }), ["One", "Two"]);
   assert.deepEqual(calls, ["Two"]);
-  assert.deepEqual(r.lines, [`Filed Two: ${B}`]);
-  assert.equal(r.text, `Filed Two: ${B}`);
+  assert.deepEqual(r.lines, [`Already filed One: ${A}`, `Filed Two: ${B}`], "one line for each idea the notice lists, in its order");
+  assert.equal(r.text, `Already filed One: ${A}\nFiled Two: ${B}`);
+});
+
+test("a ledger that cannot be read files nothing and is left as it was; so is a failed.json that cannot", async () => {
+  writeFileSync(join(dir, "filed.json"), "{not json");
+  const fileOne = filer({ One: { link: A } });
+  assert.equal(await readPass(base(fileOne), [idea("One")]), 0);
+  assert.deepEqual(calls, []);
+  assert.equal(readFileSync(join(dir, "filed.json"), "utf8"), "{not json");
+  const r = await retry(fileOne, ["One"], async () => [idea("One")]);
+  assert.deepEqual(r.lines, ["Could not file One: the ledger could not be read"]);
+  assert.deepEqual(calls, []);
+  rmSync(join(dir, "filed.json"));
+  writeFileSync(join(dir, "failed.json"), "[1]");
+  assert.equal(await readPass(base(fileOne), [idea("One")]), 1, "the ledger is the truth");
+  assert.equal(readFileSync(join(dir, "failed.json"), "utf8"), "[1]");
+});
+
+test("a lock whose holder is alive is not displaced however old it is; one whose holder is gone is taken", async () => {
+  const lock = join(dir, "filing.lock");
+  mkdirSync(lock);
+  writeFileSync(join(lock, "owner"), `${process.pid} live-token`);
+  const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  utimesSync(lock, old, old);
+  let got = false;
+  const waiting = withFilingLock(dir, async () => {
+    got = true;
+  });
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(got, false, "a live holder keeps it");
+  rmSync(lock, { recursive: true });
+  await waiting;
+  assert.equal(got, true);
+  mkdirSync(lock);
+  writeFileSync(join(lock, "owner"), `2147483646 dead-token`);
+  await withFilingLock(dir, async () => {});
+  assert.equal(existsSync(lock), false, "released");
 });
 
 test("a retry that fails again keeps the idea and says Could not file with the reason; an existing answer is Already filed", async () => {

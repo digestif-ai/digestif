@@ -27,6 +27,7 @@
 // filed. Each practice carries the credit to its author, written and checked here as a filed idea's
 // is, with `adopted` saying how; the node sends it only once it saves the line (ISS-85004).
 
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -346,24 +347,78 @@ function saveFailed(stateDir: string, failed: Record<string, KeptIdea>): void {
   renameSync(tmp, file);
 }
 
-/** How long a filing lock may stand before it is taken to be left by a run that died. */
-const LOCK_STALE_MS = 30 * 60 * 1000;
+/** A JSON object file read strictly: `{}` only when the file is absent; anything unreadable or not an object throws. */
+function readObjectStrict(file: string): Record<string, unknown> {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw e;
+  }
+  const j: unknown = JSON.parse(text);
+  if (typeof j !== "object" || j === null || Array.isArray(j)) throw new Error("not a JSON object");
+  return j as Record<string, unknown>;
+}
+
+/** filed.json read so that a file that cannot be read is told from none: it throws, never answers `{}` (DIG-824). */
+export function readFiledStrict(stateDir: string): Record<string, FiledEntry> {
+  const o = readObjectStrict(filedFile(stateDir));
+  if (!Object.values(o).every(isEntry)) throw new Error("an entry is not a link");
+  return o as Record<string, FiledEntry>;
+}
+
+/** failed.json read the same way. */
+export function readFailedStrict(stateDir: string): Record<string, KeptIdea> {
+  const o = readObjectStrict(failedFile(stateDir));
+  if (!Object.values(o).every(isKept)) throw new Error("an entry is not an idea");
+  return o as Record<string, KeptIdea>;
+}
+
+/** Why a filing that could not read the ledger files nothing. */
+export const LEDGER_UNREADABLE = "the ledger could not be read";
+
+/** Whether a process is alive: signal 0 says so; EPERM means it is, owned by another user. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/** How long a lock directory without an owner file is left before it is taken to be a holder that died between making it and writing it. */
+const LOCK_UNOWNED_MS = 30 * 1000;
 
 /**
  * Runs `fn` holding the one lock of a state directory, which every filing (a read pass's and a
- * retry's) takes, so no two of them file at once (DIG-824). A lock directory is made atomically.
+ * retry's) takes, so no two of them file at once (DIG-824). A lock directory is made atomically and
+ * holds its holder's pid and a token. A lock is taken over only when its holder's process is gone,
+ * never for being old, since a filing run has no time limit; the holder lets go of its own lock only.
  */
 export async function withFilingLock<T>(stateDir: string, fn: () => Promise<T>): Promise<T> {
   mkdirSync(stateDir, { recursive: true });
   const lock = join(stateDir, "filing.lock");
+  const owner = join(lock, "owner");
+  const mine = `${process.pid} ${randomUUID()}`;
   for (;;) {
     try {
       mkdirSync(lock);
+      writeFileSync(owner, mine);
       break;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       try {
-        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { recursive: true, force: true });
+        let held: string | undefined;
+        try {
+          held = readFileSync(owner, "utf8");
+        } catch {
+          held = undefined;
+        }
+        const pid = held === undefined ? NaN : Number(held.split(" ")[0]);
+        const dead = held === undefined ? Date.now() - statSync(lock).mtimeMs > LOCK_UNOWNED_MS : !alive(pid);
+        if (dead) rmSync(lock, { recursive: true, force: true });
       } catch {
         // gone already: take it on the next turn
       }
@@ -373,7 +428,11 @@ export async function withFilingLock<T>(stateDir: string, fn: () => Promise<T>):
   try {
     return await fn();
   } finally {
-    rmSync(lock, { recursive: true, force: true });
+    try {
+      if (readFileSync(owner, "utf8") === mine) rmSync(lock, { recursive: true, force: true });
+    } catch {
+      // not ours any more: leave it
+    }
   }
 }
 
@@ -716,11 +775,23 @@ const entryOutcome = (e: FiledEntry): FiledOutcome => (isStr(e) ? { link: e } : 
  */
 async function fileKeyed(key: string, f: Filing, m: BatchMessage, frame: string, a: FileArgs): Promise<{ r: FiledOutcome; before: boolean }> {
   return withFilingLock(a.stateDir, async () => {
-    const ledger = readFiled(a.stateDir);
+    // A ledger that cannot be read is not an empty one: file nothing, and write neither file over it.
+    let ledger: Record<string, FiledEntry>;
+    try {
+      ledger = readFiledStrict(a.stateDir);
+    } catch {
+      a.log(`${m.hash}: filed.json could not be read, so nothing is filed`);
+      return { r: { error: LEDGER_UNREADABLE }, before: false };
+    }
     const had = ledger[key];
-    const failed = readFailed(a.stateDir);
+    let failed: Record<string, KeptIdea> | undefined;
+    try {
+      failed = readFailedStrict(a.stateDir);
+    } catch {
+      failed = undefined; // kept ideas are not written over; the ledger stays the truth
+    }
     if (had !== undefined) {
-      if (failed[key] !== undefined) {
+      if (failed?.[key] !== undefined) {
         delete failed[key];
         saveFailed(a.stateDir, failed);
       }
@@ -728,12 +799,14 @@ async function fileKeyed(key: string, f: Filing, m: BatchMessage, frame: string,
     }
     const r = await (a.fileOne ?? fileOne)(f, m, frame, a);
     if ("error" in r) {
-      failed[key] = { ref: f.ref, title: f.title, body: f.body, ...(f.quote === undefined ? {} : { quote: f.quote }) };
-      saveFailed(a.stateDir, failed);
+      if (failed !== undefined) {
+        failed[key] = { ref: f.ref, title: f.title, body: f.body, ...(f.quote === undefined ? {} : { quote: f.quote }) };
+        saveFailed(a.stateDir, failed);
+      }
     } else {
       ledger[key] = "link" in r ? r.link : { existing: r.existing };
       saveFiled(a.stateDir, ledger);
-      if (failed[key] !== undefined) {
+      if (failed?.[key] !== undefined) {
         delete failed[key];
         saveFailed(a.stateDir, failed);
       }
@@ -777,19 +850,40 @@ export async function retryFiling(m: BatchMessage, titles: string[], a: RetryArg
     lines.push(existing !== undefined ? `Already filed ${title}: ${existing}` : "link" in r ? `Filed ${title}: ${r.link}` : `Could not file ${title}: ${"error" in r ? r.error : ""}`);
   };
   const prefix = `${m.hash} `;
-  const kept = Object.entries(readFailed(a.stateDir))
-    .filter(([k]) => k.startsWith(prefix))
-    .sort((x, y) => Number(x[0].slice(prefix.length)) - Number(y[0].slice(prefix.length)));
-  if (kept.length > 0) {
-    for (const [key, k] of kept) {
-      const f: Filing = { ref: k.ref, title: k.title, body: k.body, credit_within_brief: false, ...(k.quote === undefined ? {} : { quote: k.quote }) };
-      const { r, before } = await fileKeyed(key, f, m, frame, a);
-      say(k.title, r, before);
+  const keptAt = new Map<number, KeptIdea>();
+  for (const [k, v] of Object.entries(readFailed(a.stateDir))) if (k.startsWith(prefix) && /^\d+$/.test(k.slice(prefix.length))) keptAt.set(Number(k.slice(prefix.length)), v);
+  if (keptAt.size > 0) {
+    // One line for each idea the notice lists, in its order: the kept ones are filed, the rest said from the ledger.
+    const places = [...new Set([...titles.keys(), ...keptAt.keys()])].sort((x, y) => x - y);
+    for (const i of places) {
+      const k = keptAt.get(i);
+      if (k !== undefined) {
+        const f: Filing = { ref: k.ref, title: k.title, body: k.body, credit_within_brief: false, ...(k.quote === undefined ? {} : { quote: k.quote }) };
+        const { r, before } = await fileKeyed(`${m.hash} ${i}`, f, m, frame, a);
+        say(k.title, r, before);
+        continue;
+      }
+      const title = titles[i]!;
+      let had: FiledEntry | undefined;
+      try {
+        had = readFiledStrict(a.stateDir)[`${m.hash} ${i}`];
+      } catch {
+        say(title, { error: LEDGER_UNREADABLE }, false);
+        continue;
+      }
+      say(title, had === undefined ? { error: NOT_MATCHED } : entryOutcome(had), had !== undefined);
     }
   } else {
     const keys = titles.map((_, i) => `${m.hash} ${i}`);
-    const ledger = readFiled(a.stateDir);
-    if (keys.length > 0 && keys.every((k) => ledger[k] !== undefined)) {
+    let ledger: Record<string, FiledEntry> | undefined;
+    try {
+      ledger = readFiledStrict(a.stateDir);
+    } catch {
+      ledger = undefined;
+    }
+    if (ledger === undefined) {
+      titles.forEach((t) => say(t, { error: LEDGER_UNREADABLE }, false));
+    } else if (keys.length > 0 && keys.every((k) => ledger[k] !== undefined)) {
       keys.forEach((k, i) => say(titles[i]!, entryOutcome(ledger[k]!), true));
     } else {
       const ideas = await (a.extract ?? ((x) => extractIdeas(x, a)))(m);
