@@ -27,7 +27,8 @@
 // filed. Each practice carries the credit to its author, written and checked here as a filed idea's
 // is, with `adopted` saying how; the node sends it only once it saves the line (ISS-85004).
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runChecks, modelPiiCheck, modelRulesCheck, type ModelCheck } from "./checks.ts";
@@ -308,6 +309,184 @@ function saveFiled(stateDir: string, filed: Record<string, FiledEntry>): void {
   renameSync(tmp, file);
 }
 
+/**
+ * `failed.json`: the ideas a filing run did not file (DIG-824), under the ledger's own
+ * `<hash> <place>` key, so a retry files exactly them. A success removes the idea.
+ */
+export const failedFile = (stateDir: string): string => join(stateDir, "failed.json");
+
+/** A failed idea as kept: what the filing run was given, and the reading run's ref. */
+export interface KeptIdea {
+  ref: string;
+  title: string;
+  body: string;
+  quote?: string;
+}
+
+const isKept = (v: unknown): v is KeptIdea => {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return isStr(o["ref"]) && isStr(o["title"]) && isStr(o["body"]) && (o["quote"] === undefined || isStr(o["quote"]));
+};
+
+export function readFailed(stateDir: string): Record<string, KeptIdea> {
+  try {
+    const j: unknown = JSON.parse(readFileSync(failedFile(stateDir), "utf8"));
+    if (typeof j !== "object" || j === null || Array.isArray(j)) return {};
+    return Object.fromEntries(Object.entries(j).filter((e): e is [string, KeptIdea] => isKept(e[1])));
+  } catch {
+    return {};
+  }
+}
+
+function saveFailed(stateDir: string, failed: Record<string, KeptIdea>): void {
+  mkdirSync(stateDir, { recursive: true });
+  const file = failedFile(stateDir);
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(failed, null, 2) + "\n");
+  renameSync(tmp, file);
+}
+
+/** A JSON object file read strictly: `{}` only when the file is absent; anything unreadable or not an object throws. */
+function readObjectStrict(file: string): Record<string, unknown> {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw e;
+  }
+  const j: unknown = JSON.parse(text);
+  if (typeof j !== "object" || j === null || Array.isArray(j)) throw new Error("not a JSON object");
+  return j as Record<string, unknown>;
+}
+
+/** filed.json read so that a file that cannot be read is told from none: it throws, never answers `{}` (DIG-824). */
+export function readFiledStrict(stateDir: string): Record<string, FiledEntry> {
+  const o = readObjectStrict(filedFile(stateDir));
+  if (!Object.values(o).every(isEntry)) throw new Error("an entry is not a link");
+  return o as Record<string, FiledEntry>;
+}
+
+/** failed.json read the same way. */
+export function readFailedStrict(stateDir: string): Record<string, KeptIdea> {
+  const o = readObjectStrict(failedFile(stateDir));
+  if (!Object.values(o).every(isKept)) throw new Error("an entry is not an idea");
+  return o as Record<string, KeptIdea>;
+}
+
+/** Why a filing that could not read the ledger files nothing. */
+export const LEDGER_UNREADABLE = "the ledger could not be read";
+
+/** Whether a process is alive: signal 0 says so; EPERM means it is, owned by another user. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/** How long a lock directory without a readable owner is left before it is taken to be a holder that died while writing it. */
+const LOCK_UNOWNED_MS = 30 * 1000;
+/** How often a holder shows it is alive, by touching its lock; and how long without that a lock is taken to be left. */
+export const lockTiming = { heartbeatMs: 10 * 1000, staleMs: 2 * 60 * 1000 };
+/** The tokens of the locks this process holds now: an owner file with this pid and another token was left by an earlier run. */
+const heldHere = new Set<string>();
+
+/** Whether the owner `held` of a lock last touched at `touched` (ms) is gone, so the lock may be taken over. */
+function lockLeft(held: string | undefined, touched: number): boolean {
+  const [pidText, token] = (held ?? "").split(" ");
+  if (pidText === undefined || !/^[1-9]\d*$/.test(pidText) || token === undefined || token === "") return Date.now() - touched > LOCK_UNOWNED_MS;
+  const pid = Number(pidText);
+  if (pid === process.pid && !heldHere.has(token)) return true;
+  return !alive(pid) || Date.now() - touched > lockTiming.staleMs;
+}
+
+/**
+ * Runs `fn` holding the one lock of a state directory, which every filing (a read pass's and a
+ * retry's) takes, so no two of them file at once (DIG-824). A lock directory is made atomically and
+ * holds its holder's pid and a token; the holder touches it every few seconds while `fn` runs. A lock
+ * is taken over only when its holder is gone (its process is, or it is this process's and no longer
+ * held here, or it has not been touched for LOCK_STALE_MS), by renaming it away first so that two
+ * waiters never both remove it. The holder lets go of its own lock only.
+ */
+export async function withFilingLock<T>(stateDir: string, fn: () => Promise<T>): Promise<T> {
+  mkdirSync(stateDir, { recursive: true });
+  const lock = join(stateDir, "filing.lock");
+  const owner = join(lock, "owner");
+  const token = randomUUID();
+  const mine = `${process.pid} ${token}`;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      try {
+        writeFileSync(owner, mine);
+      } catch (e) {
+        // Another waiter took the new, still unowned directory away: a lost race, so try again.
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw e;
+      }
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      try {
+        let held: string | undefined;
+        try {
+          held = readFileSync(owner, "utf8");
+        } catch {
+          held = undefined;
+        }
+        if (lockLeft(held, statSync(lock).mtimeMs)) {
+          const aside = `${lock}.${randomUUID()}.stale`;
+          renameSync(lock, aside);
+          let still: string | undefined;
+          try {
+            still = readFileSync(join(aside, "owner"), "utf8");
+          } catch {
+            still = undefined;
+          }
+          if (still === held) rmSync(aside, { recursive: true, force: true });
+          else {
+            // Another waiter took it over meanwhile and this is its live lock: put it back. If that
+            // fails, leave the directory aside; removing it would delete a live holder's lock.
+            try {
+              renameSync(aside, lock);
+            } catch {
+              // left aside
+            }
+          }
+        }
+      } catch {
+        // gone already: take it on the next turn
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  heldHere.add(token);
+  const beat = setInterval(() => {
+    try {
+      const now = new Date();
+      utimesSync(lock, now, now);
+    } catch {
+      // the lock is gone: nothing to keep alive
+    }
+  }, lockTiming.heartbeatMs);
+  beat.unref();
+  try {
+    return await fn();
+  } finally {
+    clearInterval(beat);
+    heldHere.delete(token);
+    try {
+      if (readFileSync(owner, "utf8") === mine) rmSync(lock, { recursive: true, force: true });
+    } catch {
+      // not ours any more: leave it
+    }
+  }
+}
+
 /** The agent's memory; empty when the file is absent. */
 export function readMemory(stateDir: string): string {
   try {
@@ -352,7 +531,12 @@ export interface InboxRunArgs {
    * wrote (reviews, memory, items, filings, practices) is, since the batch was read already.
    */
   draftOnly?: boolean;
+  /** Files one idea; the filing run when absent. A seam for tests. */
+  fileOne?: (f: Filing, m: BatchMessage, frame: string, a: FileArgs) => Promise<FiledOutcome>;
 }
+
+/** What filing one idea needs of a run's arguments. */
+export type FileArgs = Pick<InboxRunArgs, "stateDir" | "harness" | "inboxPrompt" | "log" | "fileOne">;
 
 /** What a run came to: `done` when the node recorded it, else the problem that leaves the batch unreviewed. */
 export type InboxRunResult =
@@ -482,7 +666,7 @@ export function filingInput(f: Filing, m: BatchMessage): string {
  * Files one idea where the member's Inbox prompt says, in a run whose one tool is the harness's shell,
  * started in an empty directory; its link is kept only when it is on a tracker that prompt names.
  */
-async function fileOne(f: Filing, m: BatchMessage, frame: string, a: InboxRunArgs): Promise<FiledOutcome> {
+async function fileOne(f: Filing, m: BatchMessage, frame: string, a: FileArgs): Promise<FiledOutcome> {
   const ran = await askHarness(buildFilePrompt(frame, a.inboxPrompt), filingInput(f, m), { ...a.harness, tools: true });
   if (ran.status !== "note") return { error: `the filing run gave no answer (${ran.status})` };
   const r = checkFiled(parseFiled(ran.note), a.inboxPrompt);
@@ -597,11 +781,10 @@ async function postDrafts(a: InboxRunArgs, answers: { item: string; text: string
  * event (DIG-306): one work notice for that message, and one credit to its author listing every
  * idea filed, never one each. Returns how many were filed.
  */
-async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, selfName: string, a: InboxRunArgs, items: Record<string, unknown>[], reviews: Map<string, string>): Promise<number> {
+export async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, selfName: string, a: InboxRunArgs, items: Record<string, unknown>[], reviews: Map<string, string>): Promise<number> {
   if (filings.length === 0) return 0;
   const frame = await readFile(INBOX_FILE_PROMPT_FILE, "utf8");
   const self = a.members.find((m) => m.is_self)?.identity;
-  const ledger = readFiled(a.stateDir);
   const place = new Map<string, number>();
   const outcomes = new Map<string, string[]>();
   const byMessage = new Map<string, { m: BatchMessage; filed: FiledIdea[] }>();
@@ -615,12 +798,7 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
     const k = place.get(m.hash) ?? 0;
     place.set(m.hash, k + 1);
     const key = `${m.hash} ${k}`;
-    const before = ledger[key];
-    const r: FiledOutcome = before === undefined ? await fileOne(f, m, frame, a) : isStr(before) ? { link: before } : { existing: before.existing };
-    if (before === undefined && !("error" in r)) {
-      ledger[key] = "link" in r ? r.link : { existing: r.existing };
-      saveFiled(a.stateDir, ledger);
-    }
+    const { r } = await fileKeyed(key, f, m, frame, a);
     const o = filingOutcome(f, m, r);
     outcomes.set(f.ref, [...(outcomes.get(f.ref) ?? []), o.review]);
     a.log(`${m.hash}: ${o.log}`);
@@ -636,6 +814,142 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
   }
   for (const [ref, lines] of outcomes) reviews.set(ref, reviewWithFilings(reviews.get(ref) ?? "", lines));
   return n;
+}
+
+const entryOutcome = (e: FiledEntry): FiledOutcome => (isStr(e) ? { link: e } : { existing: e.existing });
+
+/**
+ * Files one idea under its ledger key, holding the state directory's lock and reading filed.json
+ * under it, so an idea whose key is there is never filed again, by a read pass or a retry (DIG-824).
+ * A failure keeps the idea in failed.json; a success writes the ledger and removes it from there.
+ * `before` says the ledger had the key already.
+ */
+async function fileKeyed(key: string, f: Filing, m: BatchMessage, frame: string, a: FileArgs): Promise<{ r: FiledOutcome; before: boolean }> {
+  return withFilingLock(a.stateDir, async () => {
+    // A ledger that cannot be read is not an empty one: file nothing, and write neither file over it.
+    let ledger: Record<string, FiledEntry>;
+    try {
+      ledger = readFiledStrict(a.stateDir);
+    } catch {
+      a.log(`${m.hash}: filed.json could not be read, so nothing is filed`);
+      return { r: { error: LEDGER_UNREADABLE }, before: false };
+    }
+    const had = ledger[key];
+    let failed: Record<string, KeptIdea> | undefined;
+    try {
+      failed = readFailedStrict(a.stateDir);
+    } catch {
+      failed = undefined; // kept ideas are not written over; the ledger stays the truth
+    }
+    if (had !== undefined) {
+      if (failed?.[key] !== undefined) {
+        delete failed[key];
+        saveFailed(a.stateDir, failed);
+      }
+      return { r: entryOutcome(had), before: true };
+    }
+    const r = await (a.fileOne ?? fileOne)(f, m, frame, a);
+    if ("error" in r) {
+      if (failed !== undefined) {
+        failed[key] = { ref: f.ref, title: f.title, body: f.body, ...(f.quote === undefined ? {} : { quote: f.quote }) };
+        saveFailed(a.stateDir, failed);
+      }
+    } else {
+      ledger[key] = "link" in r ? r.link : { existing: r.existing };
+      saveFiled(a.stateDir, ledger);
+      if (failed?.[key] !== undefined) {
+        delete failed[key];
+        saveFailed(a.stateDir, failed);
+      }
+    }
+    return { r, before: false };
+  });
+}
+
+/** A retry's arguments: a run's, less the batch and the node's record, which a retry has none of. */
+export type RetryArgs = Omit<InboxRunArgs, "batch" | "post"> & {
+  /** The ideas the reading run takes from the note, in order; the reading run when absent. */
+  extract?: (m: BatchMessage) => Promise<Filing[] | undefined>;
+};
+
+/** The ideas the reading run takes from one note, in its order; undefined when it gave no usable answer. */
+export async function extractIdeas(m: BatchMessage, a: RetryArgs): Promise<Filing[] | undefined> {
+  const frame = await readFile(INBOX_RUN_PROMPT_FILE, "utf8");
+  const system = buildInboxPrompt(frame, a.inboxPrompt, a.brief, a.rules, a.learnings, a.practices ?? []);
+  const ran = await askHarness(system, inboxInput(readMemory(a.stateDir), a.members, [m], a.ownNotes ?? []), { ...a.harness, tools: false });
+  if (ran.status !== "note") return undefined;
+  const d = parseRun(ran.note, new Set([m.ref]));
+  return "error" in d ? undefined : d.filings.filter((f) => f.ref === m.ref);
+}
+
+/** Why a retry that could not tell which ideas a notice held files none of them. */
+export const NOT_MATCHED = "the idea could not be matched";
+
+/**
+ * The retry of a "Could not file" notice about message `m`, whose ideas had `titles`, in order
+ * (DIG-824). It files, through the filing run, exactly the ideas kept as failed under the message's
+ * ledger keys and none whose key is in filed.json. A notice with no kept idea (written before they
+ * were kept) has its ideas taken from the note again, in order, under the same keys; if their count
+ * or order is not the notice's, nothing is filed. Returns the reply, one line an idea: "Filed <title>: <link>",
+ * "Already filed <title>: <link>" or "Could not file <title>: <reason>".
+ */
+export async function retryFiling(m: BatchMessage, titles: string[], a: RetryArgs): Promise<{ lines: string[]; text: string }> {
+  const frame = await readFile(INBOX_FILE_PROMPT_FILE, "utf8");
+  const lines: string[] = [];
+  const say = (title: string, r: FiledOutcome, before: boolean): void => {
+    const existing = "existing" in r ? r.existing : before && "link" in r ? r.link : undefined;
+    lines.push(existing !== undefined ? `Already filed ${title}: ${existing}` : "link" in r ? `Filed ${title}: ${r.link}` : `Could not file ${title}: ${"error" in r ? r.error : ""}`);
+  };
+  const prefix = `${m.hash} `;
+  const keptAt = new Map<number, KeptIdea>();
+  for (const [k, v] of Object.entries(readFailed(a.stateDir))) if (k.startsWith(prefix) && /^\d+$/.test(k.slice(prefix.length))) keptAt.set(Number(k.slice(prefix.length)), v);
+  if (keptAt.size > 0) {
+    // One line for each idea the notice lists, in its order: the kept ones are filed, the rest said from the ledger.
+    const places = [...new Set([...titles.keys(), ...keptAt.keys()])].sort((x, y) => x - y);
+    for (const i of places) {
+      const k = keptAt.get(i);
+      if (k !== undefined) {
+        const f: Filing = { ref: k.ref, title: k.title, body: k.body, credit_within_brief: false, ...(k.quote === undefined ? {} : { quote: k.quote }) };
+        const { r, before } = await fileKeyed(`${m.hash} ${i}`, f, m, frame, a);
+        say(k.title, r, before);
+        continue;
+      }
+      const title = titles[i]!;
+      let had: FiledEntry | undefined;
+      try {
+        // Under the lock, so a read pass that is filing this key has finished and written it.
+        had = await withFilingLock(a.stateDir, async () => readFiledStrict(a.stateDir)[`${m.hash} ${i}`]);
+      } catch {
+        say(title, { error: LEDGER_UNREADABLE }, false);
+        continue;
+      }
+      say(title, had === undefined ? { error: NOT_MATCHED } : entryOutcome(had), had !== undefined);
+    }
+  } else {
+    const keys = titles.map((_, i) => `${m.hash} ${i}`);
+    let ledger: Record<string, FiledEntry> | undefined;
+    try {
+      ledger = readFiledStrict(a.stateDir);
+    } catch {
+      ledger = undefined;
+    }
+    if (ledger === undefined) {
+      titles.forEach((t) => say(t, { error: LEDGER_UNREADABLE }, false));
+    } else if (keys.length > 0 && keys.every((k) => ledger[k] !== undefined)) {
+      keys.forEach((k, i) => say(titles[i]!, entryOutcome(ledger[k]!), true));
+    } else {
+      const ideas = await (a.extract ?? ((x) => extractIdeas(x, a)))(m);
+      const same = ideas !== undefined && ideas.length === titles.length && ideas.every((f, i) => bare(f.title) === bare(titles[i]!));
+      if (!same) titles.forEach((t) => say(t, { error: NOT_MATCHED }, false));
+      else {
+        for (const [i, f] of ideas.entries()) {
+          const { r, before } = await fileKeyed(keys[i]!, f, m, frame, a);
+          say(f.title, r, before);
+        }
+      }
+    }
+  }
+  return { lines, text: lines.join("\n") };
 }
 
 /** One idea a run filed, or tried to: the reading run's filing and what the filing run came to. */
