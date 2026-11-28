@@ -155,8 +155,12 @@ async function revoke(p: Person, d: Person, after: number): Promise<void> {
 const identityOf = (by: string): string =>
   by.startsWith('author') ? 'author' : by === 'late' ? 'member' : by.startsWith('leaver') ? 'leaver' : by;
 
+// One test signs, seals and reads every envelope of the whole corpus: well under a second on a
+// quiet machine, and past vitest's 5s default when the box is loaded, so it carries its own budget.
+const CORPUS_BUDGET_MS = 120_000;
+
 describe('the phone holds the follow-up rule the node holds (DIG-556, DIG-100)', () => {
-  it('agrees with every generated case', async () => {
+  it('agrees with every generated case', { timeout: CORPUS_BUDGET_MS }, async () => {
     const me = await person();
     const ada = await person();
     const quinn = await person();
