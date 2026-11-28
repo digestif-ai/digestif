@@ -13,8 +13,8 @@ export type Entry = Record<string, unknown>;
  * stops the decode of a real path there, before it reaches the test's own folders (DIG-833). Only a
  * refused listing counts: any other error is thrown, so a broken machine does not skip tests quietly.
  */
-export const hiddenAbove = ((): string | false => {
-  for (let d = import.meta.dirname; ; d = dirname(d)) {
+export function hiddenAboveDir(from: string): string | false {
+  for (let d = from; ; d = dirname(d)) {
     try {
       readdirSync(d);
     } catch (e) {
@@ -24,7 +24,9 @@ export const hiddenAbove = ((): string | false => {
     }
     if (dirname(d) === d) return false;
   }
-})();
+}
+
+export const hiddenAbove = hiddenAboveDir(import.meta.dirname);
 
 export function user(text: string | unknown[], at: string, extra: Entry = {}): Entry {
   return { type: "user", message: { role: "user", content: text }, timestamp: at, uuid: `u-${at}`, ...extra };
