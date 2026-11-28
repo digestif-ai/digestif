@@ -63,6 +63,33 @@ test('the Inbox opens on everything not archived, unread rows bold, and the filt
   await expect(page).toHaveURL(/\/inbox\?state=you$/);
 });
 
+test('the Filters menu closes after a pick, a click outside and Escape, and the button still toggles it (DIG-827)', async ({ page }) => {
+  await page.goto('/inbox');
+  const button = page.getByText('Filters');
+  const views = page.getByRole('navigation', { name: 'Filter by view' });
+  await button.click();
+  await expect(views).toBeVisible();
+  await views.getByRole('link', { name: 'Waiting on you' }).click();
+  await expect(page).toHaveURL(/\/inbox\?state=you$/);
+  await expect(views).toBeHidden();
+
+  await button.click();
+  await expect(views).toBeVisible();
+  await page.mouse.click(1000, 600);
+  await expect(views).toBeHidden();
+
+  await button.click();
+  await expect(views).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(views).toBeHidden();
+  await expect(button).toBeFocused();
+
+  await button.click();
+  await expect(views).toBeVisible();
+  await button.click();
+  await expect(views).toBeHidden();
+});
+
 test('More reads the next page through the same filters, and the page has no Newer or Older (DIG-474)', async ({ page, request }) => {
   const headers = { 'Digestif-Local': '1' };
   for (let i = 0; i < 52; i++) {
