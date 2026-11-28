@@ -391,8 +391,7 @@ function alive(pid: number): boolean {
 /** How long a lock directory without a readable owner is left before it is taken to be a holder that died while writing it. */
 const LOCK_UNOWNED_MS = 30 * 1000;
 /** How often a holder shows it is alive, by touching its lock; and how long without that a lock is taken to be left. */
-const LOCK_HEARTBEAT_MS = 10 * 1000;
-const LOCK_STALE_MS = 2 * 60 * 1000;
+export const lockTiming = { heartbeatMs: 10 * 1000, staleMs: 2 * 60 * 1000 };
 /** The tokens of the locks this process holds now: an owner file with this pid and another token was left by an earlier run. */
 const heldHere = new Set<string>();
 
@@ -402,7 +401,7 @@ function lockLeft(held: string | undefined, touched: number): boolean {
   if (pidText === undefined || !/^[1-9]\d*$/.test(pidText) || token === undefined || token === "") return Date.now() - touched > LOCK_UNOWNED_MS;
   const pid = Number(pidText);
   if (pid === process.pid && !heldHere.has(token)) return true;
-  return !alive(pid) || Date.now() - touched > LOCK_STALE_MS;
+  return !alive(pid) || Date.now() - touched > lockTiming.staleMs;
 }
 
 /**
@@ -422,7 +421,13 @@ export async function withFilingLock<T>(stateDir: string, fn: () => Promise<T>):
   for (;;) {
     try {
       mkdirSync(lock);
-      writeFileSync(owner, mine);
+      try {
+        writeFileSync(owner, mine);
+      } catch (e) {
+        // Another waiter took the new, still unowned directory away: a lost race, so try again.
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw e;
+      }
       break;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -444,11 +449,12 @@ export async function withFilingLock<T>(stateDir: string, fn: () => Promise<T>):
           }
           if (still === held) rmSync(aside, { recursive: true, force: true });
           else {
-            // Another waiter took it over meanwhile and this is its live lock: put it back.
+            // Another waiter took it over meanwhile and this is its live lock: put it back. If that
+            // fails, leave the directory aside; removing it would delete a live holder's lock.
             try {
               renameSync(aside, lock);
             } catch {
-              rmSync(aside, { recursive: true, force: true });
+              // left aside
             }
           }
         }
@@ -466,7 +472,7 @@ export async function withFilingLock<T>(stateDir: string, fn: () => Promise<T>):
     } catch {
       // the lock is gone: nothing to keep alive
     }
-  }, LOCK_HEARTBEAT_MS);
+  }, lockTiming.heartbeatMs);
   beat.unref();
   try {
     return await fn();

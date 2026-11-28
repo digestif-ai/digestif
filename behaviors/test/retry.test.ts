@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { fileAll, readFailed, readFiled, retryFiling, withFilingLock, type BatchMessage, type FiledOutcome, type Filing, type InboxRunArgs, type RetryArgs } from "../src/inbox.ts";
+import { fileAll, lockTiming, readFailed, readFiled, retryFiling, withFilingLock, type BatchMessage, type FiledOutcome, type Filing, type InboxRunArgs, type RetryArgs } from "../src/inbox.ts";
 
 let dir = "";
 let calls: string[] = [];
@@ -129,6 +129,28 @@ test("a lock left by a run that died is taken: its pid gone, this pid with a tok
   }
 });
 
+test("a holder touches its lock, so a filing that outlasts the stale bound keeps it", async () => {
+  const was = { ...lockTiming };
+  lockTiming.heartbeatMs = 30;
+  lockTiming.staleMs = 250;
+  try {
+    let release = (): void => {};
+    const holder = withFilingLock(dir, () => new Promise<void>((r) => (release = r)));
+    let got = false;
+    const waiting = withFilingLock(dir, async () => {
+      got = true;
+    });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(got, false, "held past the stale bound, and not taken");
+    release();
+    await holder;
+    await waiting;
+    assert.equal(got, true);
+  } finally {
+    Object.assign(lockTiming, was);
+  }
+});
+
 test("a lock whose owner is another live run, touched lately, is not taken", async () => {
   const lock = leave(`${process.ppid} live-token`, 1000);
   let got = false;
@@ -143,8 +165,9 @@ test("a lock whose owner is another live run, touched lately, is not taken", asy
 });
 
 test("a retry's line for an idea with no kept entry waits for a read pass filing it and says where it went", async () => {
-  await readPass(base(filer({})), [idea("One")]); // One is kept as failed; Two has no kept entry
-  assert.deepEqual(Object.keys(readFailed(dir)), ["sha256:1 0"]);
+  // Only Two is kept, so the retry's first place, One, has no kept entry and is read from the ledger while the pass is still filing it.
+  writeFileSync(join(dir, "failed.json"), JSON.stringify({ "sha256:1 1": { ref: "m1", title: "Two", body: "Two body" } }));
+  assert.deepEqual(Object.keys(readFailed(dir)), ["sha256:1 1"]);
   calls = [];
   const slow = filer({ One: { link: A }, Two: { link: B } }, 60);
   const pass = readPass(base(slow), [idea("One"), idea("Two")]);
