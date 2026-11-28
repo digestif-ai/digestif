@@ -11,7 +11,7 @@ import { after, before, test } from "node:test";
 import { readRecord, type SourceProgress } from "../src/extract.ts";
 import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, folderFilter, maxTranscriptBytes, readTranscript, JudgingTimedOut, ReadingOverran, sessionFiles, sessionsSince, skippedLine, unreadableReason, type Unjudged } from "../src/sessions.ts";
 import type { Source } from "../src/sources.ts";
-import { assistant, jsonl, user } from "./fixtures.ts";
+import { assistant, hiddenAbove, jsonl, user } from "./fixtures.ts";
 
 let home: string;
 before(() => {
@@ -55,7 +55,7 @@ const claude = (paths: string[], extra: Partial<Source> = {}): Source => ({
 });
 
 test("a 100 MB transcript is read from its tail in seconds, and the note gets its last prompts and its title", async () => {
-  const { dir } = bigTranscript("-Users-member-code-farm", 100);
+  const { dir } = bigTranscript("-fixture-member-code-farm", 100);
   const logged: string[] = [];
   const began = Date.now();
   const record = await readRecord([claude([dir])], { firstNote: false, now: () => NOW, home, log: (l) => logged.push(l) });
@@ -104,7 +104,7 @@ test("a spent budget stops the read with the file it was in", async () => {
 });
 
 test("a source past its share is abandoned naming the file, and the other sources are read", async () => {
-  const { dir } = bigTranscript("-Users-member-code-slow", 2);
+  const { dir } = bigTranscript("-fixture-member-code-slow", 2);
   const repo = join(home, "code", "fetcher");
   mkdirSync(repo, { recursive: true });
   const env = { ...process.env, GIT_AUTHOR_NAME: "M", GIT_AUTHOR_EMAIL: "m@example.com", GIT_COMMITTER_NAME: "M", GIT_COMMITTER_EMAIL: "m@example.com", GIT_AUTHOR_DATE: iso(NOW - 3_600_000), GIT_COMMITTER_DATE: iso(NOW - 3_600_000), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
@@ -126,7 +126,7 @@ test("a source past its share is abandoned naming the file, and the other source
   });
   assert.deepEqual(record.failedSources, ["Claude Code sessions"]);
   assert.deepEqual(record.readSources, ["Git repositories"]);
-  assert.deepEqual(record.overran, [{ source: "Claude Code sessions", file: "~/.claude/projects/-Users-member-code-slow/c0000000-0000-4000-8000-000000000001.jsonl" }]);
+  assert.deepEqual(record.overran, [{ source: "Claude Code sessions", file: "~/.claude/projects/-fixture-member-code-slow/c0000000-0000-4000-8000-000000000001.jsonl" }]);
   assert.match(record.failures[0]!, /^Claude Code sessions: past its share of the deadline while reading ~\/\.claude\/projects\//);
   assert.deepEqual(
     record.lines.map((l) => l.replace(/ [0-9a-f]{12}: /, " <sha>: ")),
@@ -426,7 +426,7 @@ function projectFor(home: string, project: string): { projects: string; dir: str
   return { projects, dir };
 }
 
-test("a temp folder that is the home directory or encloses it is no temp root for decoding: the project under it is judged (DIG-413)", async () => {
+test("a temp folder that is the home directory or encloses it is no temp root for decoding: the project under it is judged (DIG-413)", { skip: hiddenAbove }, async () => {
   const { base, done } = realRoot("guard");
   const old = process.env.TMPDIR;
   try {
@@ -447,7 +447,7 @@ test("a temp folder that is the home directory or encloses it is no temp root fo
   }
 });
 
-test("decoding against the real root never lists the system temp folder, whatever temp roots were chosen (DIG-413)", async () => {
+test("decoding against the real root never lists the system temp folder, whatever temp roots were chosen (DIG-413)", { skip: hiddenAbove }, async () => {
   const { base, done } = realRoot("sysprune");
   const old = process.env.TMPDIR;
   try {
@@ -910,7 +910,7 @@ test("a folder that refuses to open is told as no access, any other failure as c
   assert.equal(unreadableReason(new JudgingTimedOut("/x", 1).why), "too_long");
 });
 
-test("a project under a folder the member cannot open: the folder reaches the node's notice and never the record (ISS-81609)", { skip: asRoot }, async () => {
+test("a project under a folder the member cannot open: the folder reaches the node's notice and never the record (ISS-81609)", { skip: asRoot || hiddenAbove }, async () => {
   const { base, done } = realRoot("no-access");
   try {
     const h = join(base, "h");

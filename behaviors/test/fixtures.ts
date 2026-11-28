@@ -1,11 +1,30 @@
 // Fixtures built in a temp directory by the tests: a fake ~/.claude/projects tree and a fake git
 // repository. Every value is made up; no transcript or repository of a real member is read.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export type Entry = Record<string, unknown>;
+
+/**
+ * Why a test that decodes a project's name from the real root is skipped, or false when it runs. A
+ * sandbox that hides a folder between the root and this test folder (a factory run hides /Users)
+ * stops the decode of a real path there, before it reaches the test's own folders (DIG-833). Only a
+ * refused listing counts: any other error is thrown, so a broken machine does not skip tests quietly.
+ */
+export const hiddenAbove = ((): string | false => {
+  for (let d = import.meta.dirname; ; d = dirname(d)) {
+    try {
+      readdirSync(d);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "EPERM" && code !== "EACCES") throw e;
+      return `${d} cannot be listed (${code}), so a real path under it cannot be decoded (DIG-833)`;
+    }
+    if (dirname(d) === d) return false;
+  }
+})();
 
 export function user(text: string | unknown[], at: string, extra: Entry = {}): Entry {
   return { type: "user", message: { role: "user", content: text }, timestamp: at, uuid: `u-${at}`, ...extra };
@@ -34,7 +53,7 @@ export function build(): Fixture {
   // Session alpha: begun the day before (its title), continued today with prompts of every shape
   // Claude Code records as "user": slash commands, tool results, skill injections, a sidechain,
   // a compaction summary, an SDK-sent prompt, a pasted image, a repeated prompt and an over-long one.
-  const alpha = join(projects, "-Users-member-code-alpha");
+  const alpha = join(projects, "-fixture-member-code-alpha");
   mkdirSync(alpha, { recursive: true });
   const long = "Please rewrite the fetcher so that it " + "retries politely ".repeat(80);
   writeFileSync(
@@ -73,7 +92,7 @@ export function build(): Fixture {
 
   // Session beta: begun today, so its title is also today's first prompt. A subagent transcript
   // sits under a directory named after the session and is not the member's.
-  const beta = join(projects, "-Users-member-code-beta");
+  const beta = join(projects, "-fixture-member-code-beta");
   const betaId = "bbbb0000-0000-4000-8000-000000000002";
   mkdirSync(join(beta, betaId), { recursive: true });
   writeFileSync(
@@ -91,7 +110,7 @@ export function build(): Fixture {
 
   // Session gamma: nothing today. Session delta: a prompt today, but the file was last written
   // before the day began, which cannot happen for a real transcript; it is skipped unread.
-  const gamma = join(projects, "-Users-member-code-gamma");
+  const gamma = join(projects, "-fixture-member-code-gamma");
   mkdirSync(gamma, { recursive: true });
   writeFileSync(join(gamma, "dddd0000-0000-4000-8000-000000000004.jsonl"), jsonl([user("Old work", "2026-10-26T10:00:00.000Z")]));
   const stale = join(gamma, "eeee0000-0000-4000-8000-000000000005.jsonl");
