@@ -55,7 +55,7 @@ const claude = (paths: string[], extra: Partial<Source> = {}): Source => ({
 });
 
 test("a 100 MB transcript is read from its tail in seconds, and the note gets its last prompts and its title", async () => {
-  const { dir } = bigTranscript("-Users-member-code-farm", 100);
+  const { dir } = bigTranscript("-fixture-member-code-farm", 100);
   const logged: string[] = [];
   const began = Date.now();
   const record = await readRecord([claude([dir])], { firstNote: false, now: () => NOW, home, log: (l) => logged.push(l) });
@@ -104,7 +104,7 @@ test("a spent budget stops the read with the file it was in", async () => {
 });
 
 test("a source past its share is abandoned naming the file, and the other sources are read", async () => {
-  const { dir } = bigTranscript("-Users-member-code-slow", 2);
+  const { dir } = bigTranscript("-fixture-member-code-slow", 2);
   const repo = join(home, "code", "fetcher");
   mkdirSync(repo, { recursive: true });
   const env = { ...process.env, GIT_AUTHOR_NAME: "M", GIT_AUTHOR_EMAIL: "m@example.com", GIT_COMMITTER_NAME: "M", GIT_COMMITTER_EMAIL: "m@example.com", GIT_AUTHOR_DATE: iso(NOW - 3_600_000), GIT_COMMITTER_DATE: iso(NOW - 3_600_000), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
@@ -126,7 +126,7 @@ test("a source past its share is abandoned naming the file, and the other source
   });
   assert.deepEqual(record.failedSources, ["Claude Code sessions"]);
   assert.deepEqual(record.readSources, ["Git repositories"]);
-  assert.deepEqual(record.overran, [{ source: "Claude Code sessions", file: "~/.claude/projects/-Users-member-code-slow/c0000000-0000-4000-8000-000000000001.jsonl" }]);
+  assert.deepEqual(record.overran, [{ source: "Claude Code sessions", file: "~/.claude/projects/-fixture-member-code-slow/c0000000-0000-4000-8000-000000000001.jsonl" }]);
   assert.match(record.failures[0]!, /^Claude Code sessions: past its share of the deadline while reading ~\/\.claude\/projects\//);
   assert.deepEqual(
     record.lines.map((l) => l.replace(/ [0-9a-f]{12}: /, " <sha>: ")),

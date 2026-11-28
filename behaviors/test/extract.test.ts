@@ -10,7 +10,7 @@ import { isBookkeeping } from "../src/git.ts";
 import { dateTimeWithOffset, firstNoteCutoff, FIRST_NOTE_ITEMS, limitOldestFirst, parseOffset, RECORD_LIMIT, render, type Item } from "../src/record.ts";
 import { FINANCIAL_MARK, itemLine, MAX_ITEM_CHARS, promptText, sessionFiles } from "../src/sessions.ts";
 import { chosen, parseSelection, type Source } from "../src/sources.ts";
-import { build, hiddenAbove, jsonl, user, type Fixture } from "./fixtures.ts";
+import { build, jsonl, user, type Fixture } from "./fixtures.ts";
 import { existsSync, mkdirSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -50,7 +50,7 @@ const git = (extra: Partial<Source> = {}): Source => ({ id: "git", kind: "git", 
 const repo = (extra: Record<string, unknown> = {}) => ({ id: "github.com/member/fetcher", name: "fetcher", paths: ["~/code/fetcher"], recorded: false, ...extra });
 const long = "prompt: " + itemLine("Please rewrite the fetcher so that it " + "retries politely ".repeat(80));
 
-test("the first note reads back to 100 items as far as 30 days, oldest first, every source in time order", { skip: hiddenAbove }, async () => {
+test("the first note reads back to 100 items as far as 30 days, oldest first, every source in time order", async () => {
   const r = await read([claude(), git()], { firstNote: true });
   assert.deepEqual(masked(r.lines), [
     "session: Old work",
@@ -79,7 +79,7 @@ test("the first note reads back to 100 items as far as 30 days, oldest first, ev
   });
 });
 
-test("each source starts where the last approved note ended: a commit, a time", { skip: hiddenAbove }, async () => {
+test("each source starts where the last approved note ended: a commit, a time", async () => {
   const r = await read([
     claude({ start: at("2026-10-28T13:00:00Z"), recorded: true }),
     git({ repositories: [repo({ start: at("2026-10-28T00:00:00Z"), sha: sha("Start the fetcher"), recorded: true })] }),
@@ -135,7 +135,7 @@ test("a repository approved later starts at the 24 hours before it was approved,
 });
 
 test("the record limit reads oldest first: the rest waits, and the source ends at the last item read", async () => {
-  const dir = join(fx.projects, "-Users-member-code-busy");
+  const dir = join(fx.projects, "-fixture-member-code-busy");
   mkdirSync(dir, { recursive: true });
   const base = Date.UTC(2026, 9, 30, 10);
   const entries = Array.from({ length: RECORD_LIMIT + 5 }, (_, i) => user(`Prompt ${i}`, new Date(base + i * 1000).toISOString()));
@@ -198,7 +198,7 @@ test("the sources_form picks the sources; empty means nothing is read", async ()
 });
 
 test("a path that is a project directory, a missing path and a repository that is not one", async () => {
-  const one: Source[] = [claude({ paths: [join(fx.projects, "-Users-member-code-beta"), join(fx.home, "nowhere")], start: at("2026-10-28T00:00:00Z"), recorded: true }), git({ paths: [fx.home] })];
+  const one: Source[] = [claude({ paths: [join(fx.projects, "-fixture-member-code-beta"), join(fx.home, "nowhere")], start: at("2026-10-28T00:00:00Z"), recorded: true }), git({ paths: [fx.home] })];
   assert.deepEqual((await read(one)).lines, ["session: Why does the beta build fail on Linux?", "prompt: Try the Linux build with the older toolchain"]);
 });
 
@@ -339,7 +339,7 @@ test("a project whose books were seen keeps being skipped once they are moved or
 });
 
 test("a session's title is the aiTitle it records, else its summary line, else its first prompt; equal titles once", async () => {
-  const dir = join(fx.projects, "-Users-member-code-titled");
+  const dir = join(fx.projects, "-fixture-member-code-titled");
   mkdirSync(dir, { recursive: true });
   const at = (h: number) => `2026-10-30T${String(h).padStart(2, "0")}:00:00.000Z`;
   const toolResult = user(
@@ -428,13 +428,13 @@ test("parseSelection takes the node's list or a list with a form, with each sour
   assert.deepEqual(handed[1]!.authors, [{ email: "m@example.com", recorded: false }]);
 });
 
-test("the Claude Code source reads only sessions started under its folders, as the node hands them over (DIG-512)", { skip: hiddenAbove }, async () => {
-  const handed = parseSelection([{ ...claude(), folders: ["/Users/member/code"] }]).sources;
-  assert.deepEqual(handed[0]!.folders, ["/Users/member/code"]);
+test("the Claude Code source reads only sessions started under its folders, as the node hands them over (DIG-512)", async () => {
+  const handed = parseSelection([{ ...claude(), folders: ["/fixture/member/code"] }]).sources;
+  assert.deepEqual(handed[0]!.folders, ["/fixture/member/code"]);
   const sessions = (r: { lines: string[] }) => r.lines.filter((l) => l.includes("session") || l.includes("prompt"));
   const all = sessions(await read([claude()], { firstNote: true }));
-  assert.ok(all.length > 0, "the fixture has sessions under /Users/member/code");
-  assert.deepEqual(sessions(await read([claude({ folders: ["/Users/member/code"] })], { firstNote: true })), all);
+  assert.ok(all.length > 0, "the fixture has sessions under /fixture/member/code");
+  assert.deepEqual(sessions(await read([claude({ folders: ["/fixture/member/code"] })], { firstNote: true })), all);
   assert.deepEqual(sessions(await read([claude({ folders: ["~/Desktop"] })], { firstNote: true })), [], "none started under the chosen folder");
 });
 

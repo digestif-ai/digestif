@@ -8,16 +8,19 @@ import { dirname, join } from "node:path";
 export type Entry = Record<string, unknown>;
 
 /**
- * Whether a folder between the root and this test folder cannot be listed. A sandbox that hides one
- * (a factory run hides /Users) stops the decode of a real path there, before it reaches the test's
- * own folders, so a test that decodes a project's name from the real root is skipped there (DIG-833).
+ * Why a test that decodes a project's name from the real root is skipped, or false when it runs. A
+ * sandbox that hides a folder between the root and this test folder (a factory run hides /Users)
+ * stops the decode of a real path there, before it reaches the test's own folders (DIG-833). Only a
+ * refused listing counts: any other error is thrown, so a broken machine does not skip tests quietly.
  */
-export const hiddenAbove = ((): boolean => {
+export const hiddenAbove = ((): string | false => {
   for (let d = import.meta.dirname; ; d = dirname(d)) {
     try {
       readdirSync(d);
-    } catch {
-      return true;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "EPERM" && code !== "EACCES") throw e;
+      return `${d} cannot be listed (${code}), so a real path under it cannot be decoded (DIG-833)`;
     }
     if (dirname(d) === d) return false;
   }
@@ -50,7 +53,7 @@ export function build(): Fixture {
   // Session alpha: begun the day before (its title), continued today with prompts of every shape
   // Claude Code records as "user": slash commands, tool results, skill injections, a sidechain,
   // a compaction summary, an SDK-sent prompt, a pasted image, a repeated prompt and an over-long one.
-  const alpha = join(projects, "-Users-member-code-alpha");
+  const alpha = join(projects, "-fixture-member-code-alpha");
   mkdirSync(alpha, { recursive: true });
   const long = "Please rewrite the fetcher so that it " + "retries politely ".repeat(80);
   writeFileSync(
@@ -89,7 +92,7 @@ export function build(): Fixture {
 
   // Session beta: begun today, so its title is also today's first prompt. A subagent transcript
   // sits under a directory named after the session and is not the member's.
-  const beta = join(projects, "-Users-member-code-beta");
+  const beta = join(projects, "-fixture-member-code-beta");
   const betaId = "bbbb0000-0000-4000-8000-000000000002";
   mkdirSync(join(beta, betaId), { recursive: true });
   writeFileSync(
@@ -107,7 +110,7 @@ export function build(): Fixture {
 
   // Session gamma: nothing today. Session delta: a prompt today, but the file was last written
   // before the day began, which cannot happen for a real transcript; it is skipped unread.
-  const gamma = join(projects, "-Users-member-code-gamma");
+  const gamma = join(projects, "-fixture-member-code-gamma");
   mkdirSync(gamma, { recursive: true });
   writeFileSync(join(gamma, "dddd0000-0000-4000-8000-000000000004.jsonl"), jsonl([user("Old work", "2026-10-26T10:00:00.000Z")]));
   const stale = join(gamma, "eeee0000-0000-4000-8000-000000000005.jsonl");
