@@ -7,6 +7,7 @@ import { chmodSync, existsSync, symlinkSync, mkdirSync, mkdtempSync, readFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { hiddenAboveDir } from "./fixtures.ts";
 import { factoryRoots, FINANCIAL_MARK, MAX_LISTING_MS, sessionFiles, type SkipReason } from "../src/sessions.ts";
 
 type Verdict = "read" | "financial" | "skipped" | "cannot_judge";
@@ -33,6 +34,10 @@ const corpus = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "no
 };
 
 const asRoot = process.getuid?.() === 0;
+
+// Every case is built under the system temp folder and decoded from the real root, so a sandbox that
+// hides a folder above the temp folder leaves no case a verdict of its own (DIG-833, DIG-835).
+const hiddenAboveTemp = hiddenAboveDir(tmpdir());
 
 /** A project directory's name for a path, as Claude Code writes it. */
 const encoded = (p: string) => p.replace(/[^a-zA-Z0-9]/g, "-");
@@ -104,7 +109,7 @@ test("the corpus has cases", () => {
 });
 
 for (const c of corpus.cases) {
-  const skip = asRoot && (c.unreadable ?? []).length > 0 ? "root reads a folder of mode 000" : false;
+  const skip = asRoot && (c.unreadable ?? []).length > 0 ? "root reads a folder of mode 000" : hiddenAboveTemp;
   test(`sessions corpus: ${c.name}`, { skip }, async () => {
     assert.deepEqual(await run(c), { verdict: c.verdict, mark: c.mark });
   });
