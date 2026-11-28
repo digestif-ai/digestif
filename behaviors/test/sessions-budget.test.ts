@@ -10,7 +10,7 @@ import { readRecord } from "../src/extract.ts";
 import { readingWriter } from "../src/hook.ts";
 import { ReadingOverran, sessionsSince, type LeftOut, type ReadingProgress } from "../src/sessions.ts";
 import type { Source } from "../src/sources.ts";
-import { jsonl, user } from "./fixtures.ts";
+import { hiddenAbove, jsonl, user } from "./fixtures.ts";
 
 let home: string;
 before(() => {
@@ -36,7 +36,7 @@ function transcript(projects: string, cwd: string, name: string, prompts: string
 
 const claude = (paths: string[]): Source => ({ id: "claude-code", kind: "claude_code", label: "Claude Code sessions", paths, yields: [], selected: true, start: SINCE, recorded: true });
 
-test("400 factory transcripts and one 700 MB member transcript: only the member's tail is read, the rest are skipped by path", async () => {
+test("400 factory transcripts and one 700 MB member transcript: only the member's tail is read, the rest are skipped by path", { skip: hiddenAbove }, async () => {
   const projects = join(home, "one", ".claude", "projects");
   const h = join(home, "one");
   mkdirSync(join(h, "code", "app"), { recursive: true });
@@ -81,7 +81,7 @@ test("400 factory transcripts and one 700 MB member transcript: only the member'
   assert.match(line[0]!, /^skipped 400 transcripts before reading, 400 under the factory's directory$/);
 });
 
-test("a temp root and the factory's other directories are skipped, each counted with its reason, and a denied name is not a root", async () => {
+test("a temp root and the factory's other directories are skipped, each counted with its reason, and a denied name is not a root", { skip: hiddenAbove }, async () => {
   const h = join(home, "two");
   const projects = join(h, ".claude", "projects");
   mkdirSync(join(h, "code", "app"), { recursive: true });
@@ -97,7 +97,7 @@ test("a temp root and the factory's other directories are skipped, each counted 
   assert.deepEqual(logged, ["skipped 3 transcripts before reading, 1 under the factory's directory, 2 under a temp root"]);
 });
 
-test("nothing under a skipped root is opened: an unreadable transcript there does not matter", async () => {
+test("nothing under a skipped root is opened: an unreadable transcript there does not matter", { skip: hiddenAbove }, async () => {
   const h = join(home, "locked");
   const projects = join(h, ".claude", "projects");
   mkdirSync(join(h, "code", "app"), { recursive: true });
@@ -224,7 +224,7 @@ test("a budget that runs out after transcripts with nothing in the window fails 
   assert.equal(record.ends["source:claude-code"], undefined, "the end does not move");
 });
 
-test("a look-alike beside a skipped root is read, and a temp root that is home or above it skips nothing", async () => {
+test("a look-alike beside a skipped root is read, and a temp root that is home or above it skips nothing", { skip: hiddenAbove }, async () => {
   const h = join(home, "alike");
   const projects = join(h, ".claude", "projects");
   mkdirSync(join(h, ".devfactory"), { recursive: true });
@@ -243,7 +243,7 @@ test("a look-alike beside a skipped root is read, and a temp root that is home o
   }
 });
 
-test("the byte budget ends the source with the newest sessions it read, and the record says it was partial", async () => {
+test("the byte budget ends the source with the newest sessions it read, and the record says it was partial", { skip: hiddenAbove }, async () => {
   const h = join(home, "bytes");
   const projects = join(h, ".claude", "projects");
   mkdirSync(join(h, "code", "app"), { recursive: true });
@@ -281,7 +281,7 @@ test("slow parsing: the source stops at its time budget, returns what it read, a
   assert.equal(record.ends["source:claude-code"]?.at, NOW, "read through, not failed");
 });
 
-test("progress advances as bytes are read: elapsed time and bytes change, and progress.json follows", async () => {
+test("progress advances as bytes are read: elapsed time and bytes change, and progress.json follows", { skip: hiddenAbove }, async () => {
   const h = join(home, "prog");
   const projects = join(h, ".claude", "projects");
   mkdirSync(join(h, "code", "app"), { recursive: true });

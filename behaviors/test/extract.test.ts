@@ -10,7 +10,7 @@ import { isBookkeeping } from "../src/git.ts";
 import { dateTimeWithOffset, firstNoteCutoff, FIRST_NOTE_ITEMS, limitOldestFirst, parseOffset, RECORD_LIMIT, render, type Item } from "../src/record.ts";
 import { FINANCIAL_MARK, itemLine, MAX_ITEM_CHARS, promptText, sessionFiles } from "../src/sessions.ts";
 import { chosen, parseSelection, type Source } from "../src/sources.ts";
-import { build, jsonl, user, type Fixture } from "./fixtures.ts";
+import { build, hiddenAbove, jsonl, user, type Fixture } from "./fixtures.ts";
 import { existsSync, mkdirSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -50,7 +50,7 @@ const git = (extra: Partial<Source> = {}): Source => ({ id: "git", kind: "git", 
 const repo = (extra: Record<string, unknown> = {}) => ({ id: "github.com/member/fetcher", name: "fetcher", paths: ["~/code/fetcher"], recorded: false, ...extra });
 const long = "prompt: " + itemLine("Please rewrite the fetcher so that it " + "retries politely ".repeat(80));
 
-test("the first note reads back to 100 items as far as 30 days, oldest first, every source in time order", async () => {
+test("the first note reads back to 100 items as far as 30 days, oldest first, every source in time order", { skip: hiddenAbove }, async () => {
   const r = await read([claude(), git()], { firstNote: true });
   assert.deepEqual(masked(r.lines), [
     "session: Old work",
@@ -79,7 +79,7 @@ test("the first note reads back to 100 items as far as 30 days, oldest first, ev
   });
 });
 
-test("each source starts where the last approved note ended: a commit, a time", async () => {
+test("each source starts where the last approved note ended: a commit, a time", { skip: hiddenAbove }, async () => {
   const r = await read([
     claude({ start: at("2026-10-28T13:00:00Z"), recorded: true }),
     git({ repositories: [repo({ start: at("2026-10-28T00:00:00Z"), sha: sha("Start the fetcher"), recorded: true })] }),
@@ -428,7 +428,7 @@ test("parseSelection takes the node's list or a list with a form, with each sour
   assert.deepEqual(handed[1]!.authors, [{ email: "m@example.com", recorded: false }]);
 });
 
-test("the Claude Code source reads only sessions started under its folders, as the node hands them over (DIG-512)", async () => {
+test("the Claude Code source reads only sessions started under its folders, as the node hands them over (DIG-512)", { skip: hiddenAbove }, async () => {
   const handed = parseSelection([{ ...claude(), folders: ["/Users/member/code"] }]).sources;
   assert.deepEqual(handed[0]!.folders, ["/Users/member/code"]);
   const sessions = (r: { lines: string[] }) => r.lines.filter((l) => l.includes("session") || l.includes("prompt"));

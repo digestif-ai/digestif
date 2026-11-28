@@ -1,11 +1,27 @@
 // Fixtures built in a temp directory by the tests: a fake ~/.claude/projects tree and a fake git
 // repository. Every value is made up; no transcript or repository of a real member is read.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export type Entry = Record<string, unknown>;
+
+/**
+ * Whether a folder between the root and this test folder cannot be listed. A sandbox that hides one
+ * (a factory run hides /Users) stops the decode of a real path there, before it reaches the test's
+ * own folders, so a test that decodes a project's name from the real root is skipped there (DIG-833).
+ */
+export const hiddenAbove = ((): boolean => {
+  for (let d = import.meta.dirname; ; d = dirname(d)) {
+    try {
+      readdirSync(d);
+    } catch {
+      return true;
+    }
+    if (dirname(d) === d) return false;
+  }
+})();
 
 export function user(text: string | unknown[], at: string, extra: Entry = {}): Entry {
   return { type: "user", message: { role: "user", content: text }, timestamp: at, uuid: `u-${at}`, ...extra };

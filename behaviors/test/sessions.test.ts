@@ -11,7 +11,7 @@ import { after, before, test } from "node:test";
 import { readRecord, type SourceProgress } from "../src/extract.ts";
 import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, folderFilter, maxTranscriptBytes, readTranscript, JudgingTimedOut, ReadingOverran, sessionFiles, sessionsSince, skippedLine, unreadableReason, type Unjudged } from "../src/sessions.ts";
 import type { Source } from "../src/sources.ts";
-import { assistant, jsonl, user } from "./fixtures.ts";
+import { assistant, hiddenAbove, jsonl, user } from "./fixtures.ts";
 
 let home: string;
 before(() => {
@@ -426,7 +426,7 @@ function projectFor(home: string, project: string): { projects: string; dir: str
   return { projects, dir };
 }
 
-test("a temp folder that is the home directory or encloses it is no temp root for decoding: the project under it is judged (DIG-413)", async () => {
+test("a temp folder that is the home directory or encloses it is no temp root for decoding: the project under it is judged (DIG-413)", { skip: hiddenAbove }, async () => {
   const { base, done } = realRoot("guard");
   const old = process.env.TMPDIR;
   try {
@@ -447,7 +447,7 @@ test("a temp folder that is the home directory or encloses it is no temp root fo
   }
 });
 
-test("decoding against the real root never lists the system temp folder, whatever temp roots were chosen (DIG-413)", async () => {
+test("decoding against the real root never lists the system temp folder, whatever temp roots were chosen (DIG-413)", { skip: hiddenAbove }, async () => {
   const { base, done } = realRoot("sysprune");
   const old = process.env.TMPDIR;
   try {
@@ -910,7 +910,7 @@ test("a folder that refuses to open is told as no access, any other failure as c
   assert.equal(unreadableReason(new JudgingTimedOut("/x", 1).why), "too_long");
 });
 
-test("a project under a folder the member cannot open: the folder reaches the node's notice and never the record (ISS-81609)", { skip: asRoot }, async () => {
+test("a project under a folder the member cannot open: the folder reaches the node's notice and never the record (ISS-81609)", { skip: asRoot || hiddenAbove }, async () => {
   const { base, done } = realRoot("no-access");
   try {
     const h = join(base, "h");
