@@ -27,7 +27,7 @@
 // filed. Each practice carries the credit to its author, written and checked here as a filed idea's
 // is, with `adopted` saying how; the node sends it only once it saves the line (ISS-85004).
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runChecks, modelPiiCheck, modelRulesCheck, type ModelCheck } from "./checks.ts";
@@ -308,6 +308,75 @@ function saveFiled(stateDir: string, filed: Record<string, FiledEntry>): void {
   renameSync(tmp, file);
 }
 
+/**
+ * `failed.json`: the ideas a filing run did not file (DIG-824), under the ledger's own
+ * `<hash> <place>` key, so a retry files exactly them. A success removes the idea.
+ */
+export const failedFile = (stateDir: string): string => join(stateDir, "failed.json");
+
+/** A failed idea as kept: what the filing run was given, and the reading run's ref. */
+export interface KeptIdea {
+  ref: string;
+  title: string;
+  body: string;
+  quote?: string;
+}
+
+const isKept = (v: unknown): v is KeptIdea => {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return isStr(o["ref"]) && isStr(o["title"]) && isStr(o["body"]) && (o["quote"] === undefined || isStr(o["quote"]));
+};
+
+export function readFailed(stateDir: string): Record<string, KeptIdea> {
+  try {
+    const j: unknown = JSON.parse(readFileSync(failedFile(stateDir), "utf8"));
+    if (typeof j !== "object" || j === null || Array.isArray(j)) return {};
+    return Object.fromEntries(Object.entries(j).filter((e): e is [string, KeptIdea] => isKept(e[1])));
+  } catch {
+    return {};
+  }
+}
+
+function saveFailed(stateDir: string, failed: Record<string, KeptIdea>): void {
+  mkdirSync(stateDir, { recursive: true });
+  const file = failedFile(stateDir);
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(failed, null, 2) + "\n");
+  renameSync(tmp, file);
+}
+
+/** How long a filing lock may stand before it is taken to be left by a run that died. */
+const LOCK_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Runs `fn` holding the one lock of a state directory, which every filing (a read pass's and a
+ * retry's) takes, so no two of them file at once (DIG-824). A lock directory is made atomically.
+ */
+export async function withFilingLock<T>(stateDir: string, fn: () => Promise<T>): Promise<T> {
+  mkdirSync(stateDir, { recursive: true });
+  const lock = join(stateDir, "filing.lock");
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { recursive: true, force: true });
+      } catch {
+        // gone already: take it on the next turn
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
+}
+
 /** The agent's memory; empty when the file is absent. */
 export function readMemory(stateDir: string): string {
   try {
@@ -352,7 +421,12 @@ export interface InboxRunArgs {
    * wrote (reviews, memory, items, filings, practices) is, since the batch was read already.
    */
   draftOnly?: boolean;
+  /** Files one idea; the filing run when absent. A seam for tests. */
+  fileOne?: (f: Filing, m: BatchMessage, frame: string, a: FileArgs) => Promise<FiledOutcome>;
 }
+
+/** What filing one idea needs of a run's arguments. */
+export type FileArgs = Pick<InboxRunArgs, "stateDir" | "harness" | "inboxPrompt" | "log" | "fileOne">;
 
 /** What a run came to: `done` when the node recorded it, else the problem that leaves the batch unreviewed. */
 export type InboxRunResult =
@@ -482,7 +556,7 @@ export function filingInput(f: Filing, m: BatchMessage): string {
  * Files one idea where the member's Inbox prompt says, in a run whose one tool is the harness's shell,
  * started in an empty directory; its link is kept only when it is on a tracker that prompt names.
  */
-async function fileOne(f: Filing, m: BatchMessage, frame: string, a: InboxRunArgs): Promise<FiledOutcome> {
+async function fileOne(f: Filing, m: BatchMessage, frame: string, a: FileArgs): Promise<FiledOutcome> {
   const ran = await askHarness(buildFilePrompt(frame, a.inboxPrompt), filingInput(f, m), { ...a.harness, tools: true });
   if (ran.status !== "note") return { error: `the filing run gave no answer (${ran.status})` };
   const r = checkFiled(parseFiled(ran.note), a.inboxPrompt);
@@ -597,11 +671,10 @@ async function postDrafts(a: InboxRunArgs, answers: { item: string; text: string
  * event (DIG-306): one work notice for that message, and one credit to its author listing every
  * idea filed, never one each. Returns how many were filed.
  */
-async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, selfName: string, a: InboxRunArgs, items: Record<string, unknown>[], reviews: Map<string, string>): Promise<number> {
+export async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, selfName: string, a: InboxRunArgs, items: Record<string, unknown>[], reviews: Map<string, string>): Promise<number> {
   if (filings.length === 0) return 0;
   const frame = await readFile(INBOX_FILE_PROMPT_FILE, "utf8");
   const self = a.members.find((m) => m.is_self)?.identity;
-  const ledger = readFiled(a.stateDir);
   const place = new Map<string, number>();
   const outcomes = new Map<string, string[]>();
   const byMessage = new Map<string, { m: BatchMessage; filed: FiledIdea[] }>();
@@ -615,12 +688,7 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
     const k = place.get(m.hash) ?? 0;
     place.set(m.hash, k + 1);
     const key = `${m.hash} ${k}`;
-    const before = ledger[key];
-    const r: FiledOutcome = before === undefined ? await fileOne(f, m, frame, a) : isStr(before) ? { link: before } : { existing: before.existing };
-    if (before === undefined && !("error" in r)) {
-      ledger[key] = "link" in r ? r.link : { existing: r.existing };
-      saveFiled(a.stateDir, ledger);
-    }
+    const { r } = await fileKeyed(key, f, m, frame, a);
     const o = filingOutcome(f, m, r);
     outcomes.set(f.ref, [...(outcomes.get(f.ref) ?? []), o.review]);
     a.log(`${m.hash}: ${o.log}`);
@@ -636,6 +704,106 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
   }
   for (const [ref, lines] of outcomes) reviews.set(ref, reviewWithFilings(reviews.get(ref) ?? "", lines));
   return n;
+}
+
+const entryOutcome = (e: FiledEntry): FiledOutcome => (isStr(e) ? { link: e } : { existing: e.existing });
+
+/**
+ * Files one idea under its ledger key, holding the state directory's lock and reading filed.json
+ * under it, so an idea whose key is there is never filed again, by a read pass or a retry (DIG-824).
+ * A failure keeps the idea in failed.json; a success writes the ledger and removes it from there.
+ * `before` says the ledger had the key already.
+ */
+async function fileKeyed(key: string, f: Filing, m: BatchMessage, frame: string, a: FileArgs): Promise<{ r: FiledOutcome; before: boolean }> {
+  return withFilingLock(a.stateDir, async () => {
+    const ledger = readFiled(a.stateDir);
+    const had = ledger[key];
+    const failed = readFailed(a.stateDir);
+    if (had !== undefined) {
+      if (failed[key] !== undefined) {
+        delete failed[key];
+        saveFailed(a.stateDir, failed);
+      }
+      return { r: entryOutcome(had), before: true };
+    }
+    const r = await (a.fileOne ?? fileOne)(f, m, frame, a);
+    if ("error" in r) {
+      failed[key] = { ref: f.ref, title: f.title, body: f.body, ...(f.quote === undefined ? {} : { quote: f.quote }) };
+      saveFailed(a.stateDir, failed);
+    } else {
+      ledger[key] = "link" in r ? r.link : { existing: r.existing };
+      saveFiled(a.stateDir, ledger);
+      if (failed[key] !== undefined) {
+        delete failed[key];
+        saveFailed(a.stateDir, failed);
+      }
+    }
+    return { r, before: false };
+  });
+}
+
+/** A retry's arguments: a run's, less the batch and the node's record, which a retry has none of. */
+export type RetryArgs = Omit<InboxRunArgs, "batch" | "post"> & {
+  /** The ideas the reading run takes from the note, in order; the reading run when absent. */
+  extract?: (m: BatchMessage) => Promise<Filing[] | undefined>;
+};
+
+/** The ideas the reading run takes from one note, in its order; undefined when it gave no usable answer. */
+export async function extractIdeas(m: BatchMessage, a: RetryArgs): Promise<Filing[] | undefined> {
+  const frame = await readFile(INBOX_RUN_PROMPT_FILE, "utf8");
+  const system = buildInboxPrompt(frame, a.inboxPrompt, a.brief, a.rules, a.learnings, a.practices ?? []);
+  const ran = await askHarness(system, inboxInput(readMemory(a.stateDir), a.members, [m], a.ownNotes ?? []), { ...a.harness, tools: false });
+  if (ran.status !== "note") return undefined;
+  const d = parseRun(ran.note, new Set([m.ref]));
+  return "error" in d ? undefined : d.filings.filter((f) => f.ref === m.ref);
+}
+
+/** Why a retry that could not tell which ideas a notice held files none of them. */
+export const NOT_MATCHED = "the idea could not be matched";
+
+/**
+ * The retry of a "Could not file" notice about message `m`, whose ideas had `titles`, in order
+ * (DIG-824). It files, through the filing run, exactly the ideas kept as failed under the message's
+ * ledger keys and none whose key is in filed.json. A notice with no kept idea (written before they
+ * were kept) has its ideas taken from the note again, in order, under the same keys; if their count
+ * or order is not the notice's, nothing is filed. Returns the reply, one line an idea: "Filed <title>: <link>",
+ * "Already filed <title>: <link>" or "Could not file <title>: <reason>".
+ */
+export async function retryFiling(m: BatchMessage, titles: string[], a: RetryArgs): Promise<{ lines: string[]; text: string }> {
+  const frame = await readFile(INBOX_FILE_PROMPT_FILE, "utf8");
+  const lines: string[] = [];
+  const say = (title: string, r: FiledOutcome, before: boolean): void => {
+    const existing = "existing" in r ? r.existing : before && "link" in r ? r.link : undefined;
+    lines.push(existing !== undefined ? `Already filed ${title}: ${existing}` : "link" in r ? `Filed ${title}: ${r.link}` : `Could not file ${title}: ${"error" in r ? r.error : ""}`);
+  };
+  const prefix = `${m.hash} `;
+  const kept = Object.entries(readFailed(a.stateDir))
+    .filter(([k]) => k.startsWith(prefix))
+    .sort((x, y) => Number(x[0].slice(prefix.length)) - Number(y[0].slice(prefix.length)));
+  if (kept.length > 0) {
+    for (const [key, k] of kept) {
+      const f: Filing = { ref: k.ref, title: k.title, body: k.body, credit_within_brief: false, ...(k.quote === undefined ? {} : { quote: k.quote }) };
+      const { r, before } = await fileKeyed(key, f, m, frame, a);
+      say(k.title, r, before);
+    }
+  } else {
+    const keys = titles.map((_, i) => `${m.hash} ${i}`);
+    const ledger = readFiled(a.stateDir);
+    if (keys.length > 0 && keys.every((k) => ledger[k] !== undefined)) {
+      keys.forEach((k, i) => say(titles[i]!, entryOutcome(ledger[k]!), true));
+    } else {
+      const ideas = await (a.extract ?? ((x) => extractIdeas(x, a)))(m);
+      const same = ideas !== undefined && ideas.length === titles.length && ideas.every((f, i) => bare(f.title) === bare(titles[i]!));
+      if (!same) titles.forEach((t) => say(t, { error: NOT_MATCHED }, false));
+      else {
+        for (const [i, f] of ideas.entries()) {
+          const { r, before } = await fileKeyed(keys[i]!, f, m, frame, a);
+          say(f.title, r, before);
+        }
+      }
+    }
+  }
+  return { lines, text: lines.join("\n") };
 }
 
 /** One idea a run filed, or tried to: the reading run's filing and what the filing run came to. */
