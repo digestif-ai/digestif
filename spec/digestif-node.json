@@ -2771,6 +2771,37 @@
         }
       ]
     },
+    "item_note_reply": {
+      "description": "One reply to the note a question came from: a candidate answer to the question, not one of its answers.",
+      "fields": [
+        {
+          "name": "hash",
+          "type": "string",
+          "description": "The reply's envelope hash."
+        },
+        {
+          "name": "author",
+          "type": "member_ref"
+        },
+        {
+          "name": "voice",
+          "type": "voice"
+        },
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "reply_to",
+          "type": "string",
+          "description": "The envelope hash of the note it replies to."
+        }
+      ]
+    },
     "item_pick": {
       "description": "One reader's pick on a choice. This node reads the member's own picks and every pick on a choice the member wrote.",
       "fields": [
@@ -3095,6 +3126,12 @@
           "name": "answers",
           "type": "[item_answer]",
           "description": "The item's answers and replies whose author is a reader, oldest first."
+        },
+        {
+          "name": "note_replies",
+          "type": "[item_note_reply]",
+          "required": false,
+          "description": "On a question that came from a note: the replies to that note by someone other than the question's author, oldest first. A candidate answer, shown beside the answers and marked as a reply to the note; every question of the note has the same ones. They are not answers: the lapse, reopen and late-answer rules do not read them."
         },
         {
           "name": "picks",

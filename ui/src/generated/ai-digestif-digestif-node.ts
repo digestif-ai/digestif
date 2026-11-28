@@ -771,6 +771,8 @@ export interface Item {
   default_option?: string;
   /** The item's answers and replies whose author is a reader, oldest first. */
   answers: ItemAnswer[];
+  /** On a question that came from a note: the replies to that note by someone other than the question's author, oldest first. A candidate answer, shown beside the answers and marked as a reply to the note; every question of the note has the same ones. They are not answers: the lapse, reopen and late-answer rules do not read them. */
+  note_replies?: ItemNoteReply[];
   /** The picks this node can read on a choice. */
   picks: ItemPick[];
   /** The close that stands. */
@@ -831,6 +833,20 @@ export interface ItemAnswer {
 
 export interface ItemAnswerForm {
   text: string;
+}
+
+/**
+ * One reply to the note a question came from: a candidate answer to the question, not one of its answers.
+ */
+export interface ItemNoteReply {
+  /** The reply's envelope hash. */
+  hash: string;
+  author: MemberRef;
+  voice: Voice;
+  text: string;
+  created_at: ISODateTimeString;
+  /** The envelope hash of the note it replies to. */
+  reply_to: string;
 }
 
 /**
